@@ -36,10 +36,7 @@ gestor_audiencias/
 │   └── ai_service.py             # Servicio de inteligencia artificial
 ├── 📂 templates/                 # Plantillas de archivos
 │   └── plantilla_audiencias.xlsx # Plantilla de Excel
-├── 📂 tests/                     # Pruebas del sistema
-│   └── test_seguridad_maxima.py  # Pruebas de seguridad
 ├── 📂 utils/                     # Utilidades
-│   ├── anonimizador.py           # Sistema de anonimización
 │   ├── file_manager.py           # Gestor de archivos
 │   └── validators.py             # Validaciones
 ├── 📂 archivos_creados/          # Archivos generados por la app

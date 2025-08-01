@@ -1,6 +1,7 @@
 """
 Servicio de IA para autocompletar formularios de audiencias.
-Utiliza OpenAI GPT para extraer información de texto libre con máxima precisión.
+Utiliza OpenAI GPT para extraer información de texto libre directamente.
+Sistema optimizado para máxima precisión en extracción.
 """
 
 import json
@@ -17,26 +18,13 @@ except ImportError:
     print("❌ Error: OpenAI no está instalado. Ejecuta: pip install openai")
 
 try:
-    from config.config import (
-        OPENAI_API_KEY, OPENAI_MODEL, 
-        ANONYMIZE_DATA, USE_FREE_TIER, SHOW_PRIVACY_WARNING
-    )
+    from config.config import OPENAI_API_KEY, OPENAI_MODEL
     HAS_CONFIG = True
 except ImportError:
     print("❌ Error: config.py no encontrado. Crea el archivo config/config.py con tu API key.")
-    OPENAI_API_KEY = ""
+    OPENAI_API_KEY = "***REMOVED***"
     OPENAI_MODEL = "gpt-4o-mini"
-    ANONYMIZE_DATA = False
-    USE_FREE_TIER = False
-    SHOW_PRIVACY_WARNING = True
     HAS_CONFIG = False
-
-try:
-    from utils.anonimizador import anonimizar_para_ia, restaurar_datos_ia
-    HAS_ANONYMIZER = True
-except ImportError:
-    print("⚠️ Advertencia: Anonimizador no disponible")
-    HAS_ANONYMIZER = False
 
 
 class AIFormFiller:
@@ -54,11 +42,11 @@ class AIFormFiller:
         # Inicializar cliente OpenAI
         self.client = OpenAI(api_key=self.api_key)
         self.model = OPENAI_MODEL
-        print(f"� OpenAI configurado correctamente - Modelo: {self.model}")
+        print(f"🤖 OpenAI configurado correctamente - Modelo: {self.model}")
     
     def extract_audiencia_info(self, texto: str) -> Dict[str, Any]:
         """
-        Extrae información de audiencias usando OpenAI GPT con anonimización opcional.
+        Extrae información de audiencias usando OpenAI GPT directamente.
         
         Args:
             texto (str): Texto libre con información de la audiencia
@@ -68,25 +56,10 @@ class AIFormFiller:
         """
         
         try:
-            texto_para_ia = texto
-            mapeo_reverso = {}
+            # Procesar directamente con OpenAI
+            resultado = self._extract_with_openai(texto)
             
-            # Aplicar anonimización si está habilitada
-            if ANONYMIZE_DATA and HAS_ANONYMIZER:
-                print("🔒 Anonimizando datos sensibles...")
-                texto_para_ia, mapeo_reverso = anonimizar_para_ia(texto)
-                print("✅ Datos anonimizados para procesamiento seguro")
-            
-            # Procesar con OpenAI
-            resultado = self._extract_with_openai(texto_para_ia)
-            
-            # Restaurar datos reales si se anonimizó
-            if ANONYMIZE_DATA and HAS_ANONYMIZER and mapeo_reverso:
-                print("🔓 Restaurando datos reales...")
-                resultado = restaurar_datos_ia(resultado, mapeo_reverso)
-                print("✅ Datos reales restaurados")
-            
-            print("🤖 Procesado con OpenAI" + (" (con anonimización)" if ANONYMIZE_DATA else ""))
+            print("🤖 Procesado directamente con OpenAI")
             return resultado
             
         except Exception as e:
@@ -112,69 +85,84 @@ class AIFormFiller:
         """
         
         prompt = f"""
-Eres un asistente especializado en extraer información de textos judiciales colombianos.
-
-IMPORTANTE: Responde SOLO con un objeto JSON válido, sin texto adicional.
-
-Extrae la siguiente información del texto:
+Eres un experto en extraer información de documentos judiciales colombianos.
 
 TEXTO A ANALIZAR:
 "{texto}"
 
-ESTRUCTURA JSON REQUERIDA:
+Extrae ÚNICAMENTE la información que encuentres en el texto y responde con JSON válido:
+
 {{
-    "radicado": "número de radicado COMPLETO (incluye TODOS los números y guiones)",
-    "tipo_audiencia": "tipo específico de audiencia",
+    "radicado": "NOMBRE_PERSONA - NÚMERO_RADICADO (si hay ambos) o solo lo que encuentres",
+    "tipo_audiencia": "tipo exacto de audiencia encontrado",
     "fecha": "DD/MM/YYYY",
     "hora": "HH",
-    "minuto": "MM", 
-    "juzgado": "nombre completo del juzgado o tribunal",
-    "se_realizo": "SI" o "NO",
-    "motivos": "un_solo_motivo_principal",
-    "observaciones": "información adicional relevante y TODOS los motivos si hay múltiples",
-    "demandante": "nombre del demandante/actor/solicitante",
-    "demandado": "nombre del demandado/accionado"
+    "minuto": "MM",
+    "juzgado": "nombre del juzgado encontrado",
+    "se_realizo": "SI o NO según el texto",
+    "motivos": "motivo principal si NO se realizó",
+    "observaciones": "información adicional relevante",
+    "demandante": "",
+    "demandado": ""
 }}
 
-REGLAS CRÍTICAS PARA RADICADO:
-1. BUSCA números largos tipo: "2024-00145-001", "25754315800420240012300", "2023-001234-00"
-2. BUSCA también nombres de personas en el documento
-3. COMBINA nombre + radicado en UNA SOLA línea separados por " - "
-4. Ejemplo: "MARÍA GONZÁLEZ PÉREZ - 2024-00145-001"
-5. Si solo encuentras radicado sin nombre: solo pon el número
-6. Si solo encuentras nombre sin radicado: solo pon el nombre
-7. FORMATO PREFERIDO: "NOMBRE COMPLETO - NÚMERO_RADICADO_COMPLETO"
+REGLAS CRÍTICAS:
+1. RADICADO: 
+   - Busca números largos (10+ dígitos) juntos o con guiones: "2024-00123-45" o "200016001075201602652"
+   - Busca nombres de personas ANYWHERE en el texto: "GARCÍA LÓPEZ MIGUEL ÁNGEL", "LÓPEZ TORRES, CARLOS EDUARDO"
+   - Si hay nombre Y radicado: "NOMBRE_COMPLETO - RADICADO"
+   - Si solo hay uno: pon solo ese
+   - IMPORTANTE: Nombres pueden estar con etiquetas como "(procesado)", "(imputado)", "identificado con cédula"
 
-OTRAS REGLAS:
-- Para fechas en texto, conviértelas a formato DD/MM/YYYY
-- Para horas AM/PM, convierte a formato 24h (ej: 2:30 PM = hora: "14", minuto: "30")
-- Si no encuentras algún dato, usa cadena vacía "" o array vacío []
-- El campo "se_realizo" debe ser "SI" si la audiencia se realizó, "NO" si no
-- Para "motivos": Si la audiencia NO se realizó, identifica SOLO EL PRIMER motivo principal:
-  * "juez" - si faltó el juez, por el juez, inasistencia del juez
-  * "fiscalía" - si faltó la fiscalía, por fiscalía, inasistencia fiscalía  
-  * "usuario" - si faltó el usuario, demandante, actor, solicitante
-  * "inpec" - si faltó INPEC, instituto penitenciario
-  * "víctima" - si faltó la víctima, por la víctima
-  * "icbf" - si faltó ICBF, instituto bienestar familiar
-  * "defensor confianza" - si faltó defensor de confianza, abogado privado
-  * "defensor público" - si faltó defensor público, defensoría
-  IMPORTANTE: Solo selecciona UN motivo (el más importante). Si hay múltiples motivos, menciónalos todos en "observaciones".
-- Para "observaciones": Incluye detalles adicionales y TODOS los motivos de no realización si hay múltiples.
-- Identifica tipos específicos: Audiencia De Conciliación, Audiencia Concentrada, etc.
-- Para juzgados, incluye la designación completa
-- Extrae nombres completos de demandante y demandado si están presentes
+2. FECHAS EN TEXTO:
+   - "veintidós de mayo de 2025" → "22/05/2025"
+   - "28 de febrero de 2025" → "28/02/2025"
+   - "miércoles 15 de abril" → busca el año y convierte
+
+3. HORAS:
+   - "tres y media de la tarde" → hora:"15", minuto:"30"
+   - "11:45" → hora:"11", minuto:"45"
+   - "2:30 PM" → hora:"14", minuto:"30"
+   - "8:30 AM" → hora:"08", minuto:"30"
+
+4. SE_REALIZO:
+   - "se realizó", "se llevó a cabo", "exitosamente" → "SI"
+   - "NO se llevó a cabo", "suspendida", "no compareció" → "NO"
+   - Si hay contradicción, usar el resultado FINAL
+
+5. MOTIVOS (SOLO si NO se realizó):
+   - "inasistencia del defensor público" → "defensor público"
+   - "falta del Juez", "ausencia del juez" → "juez"
+   - "fiscalía no compareció" → "fiscalía"
+   - "problemas técnicos del Usuario" → "usuario"
+   - "INPEC reportó fuga" → "inpec"
+   - IMPORTANTE: Los motivos NO son observaciones. Solo pon códigos simples.
+
+6. OBSERVACIONES:
+   - Información adicional importante: reprogramaciones, cambios, detalles técnicos
+   - Si hay cambio de tipo de audiencia, mencionalo: "Originalmente era X, ahora es Y"
+   - Si hay traslados, confirmaciones del INPEC, nuevas fechas, etc.
+   - NO pongas aquí los motivos de suspensión (van en "motivos")
+
+7. Si no encuentras algo, déjalo vacío ""
+
+EJEMPLOS DE EXTRACCIÓN:
+- "GARCÍA LÓPEZ MIGUEL ÁNGEL (procesado). Radicado: 11001-123" → radicado: "GARCÍA LÓPEZ MIGUEL ÁNGEL - 11001-123"
+- "proceso contra MARTÍNEZ SILVA, ANA - número 2024-456" → radicado: "MARTÍNEZ SILVA, ANA - 2024-456"
+- "28 de febrero de 2025 a las tres y media de la tarde" → fecha: "28/02/2025", hora: "15", minuto: "30"
+
+RESPONDE SOLO EL JSON, NADA MÁS.
 """
         
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "Eres un experto en procesamiento de documentos judiciales colombianos. Responde solo con JSON válido."},
+                    {"role": "system", "content": "Eres un experto en extraer datos de documentos judiciales. Responde SOLO con JSON válido, sin explicaciones."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=1000,
-                temperature=0.1  # Baja temperatura para mayor precisión
+                max_tokens=1000,  # Más tokens para casos complejos
+                temperature=0  # Máxima precisión
             )
             
             resultado_texto = response.choices[0].message.content

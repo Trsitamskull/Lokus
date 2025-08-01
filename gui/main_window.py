@@ -506,6 +506,22 @@ class VentanaPrincipal:
         # Desactivar auto-scroll para evitar movimientos no deseados
         self.page.auto_scroll = False
 
+    def restaurar_foco_teclado(self):
+        """Restaura el foco y los eventos de teclado después de cerrar diálogos."""
+        try:
+            # Reconectar eventos de teclado
+            self.page.on_keyboard_event = self._on_keyboard_event
+            
+            # Enfocar el campo de radicado por defecto
+            if hasattr(self, 'entrada_radicado') and self.entrada_radicado:
+                self.entrada_radicado.focus()
+            
+            # Forzar actualización
+            self.page.update()
+            
+        except Exception:
+            pass  # Si hay error, no interrumpir el flujo
+
     def _toggle_theme(self, e):
         """Alternar entre tema claro y oscuro"""
         # Cambiar el tema
@@ -1813,12 +1829,38 @@ class VentanaPrincipal:
             
             # Aplicar tipo de audiencia
             if datos.get("tipo_audiencia") and self.combo_tipo:
-                # Buscar el tipo en la lista
+                # Buscar el tipo en la lista con mapeo inteligente
                 tipo_encontrado = None
-                for tipo in self.tipos_audiencia:
-                    if datos["tipo_audiencia"].lower() in tipo.lower():
-                        tipo_encontrado = tipo
-                        break
+                tipo_ia = datos["tipo_audiencia"].lower()
+                
+                # Mapeo directo para casos específicos
+                mapeo_tipos = {
+                    "audiencia de alegatos de conclusión": "Alegatos de conclusión",
+                    "alegatos de conclusión": "Alegatos de conclusión",
+                    "control de legalidad": "Audiencia de control de legalidad",
+                    "control de legalidad de captura": "Audiencia de control de legalidad",
+                    "audiencia de control de legalidad": "Audiencia de control de legalidad",
+                    "audiencia concentrada": "Audiencia concentrada",
+                    "audiencia de juicio oral": "Audiencia de juicio oral",
+                    "audiencia preliminar": "Audiencia preliminar",
+                    "audiencia preparatoria": "Audiencia preparatoria",
+                    "audiencia de acusación": "Audiencia de acusación",
+                    "audiencia de conciliación": "Audiencia de conciliación",
+                    "audiencia de preclusión": "Audiencia de preclusión",
+                }
+                
+                # 1. Buscar mapeo directo
+                if tipo_ia in mapeo_tipos:
+                    tipo_encontrado = mapeo_tipos[tipo_ia]
+                
+                # 2. Buscar palabras clave si no hay mapeo directo
+                if not tipo_encontrado:
+                    for tipo in self.tipos_audiencia:
+                        tipo_lower = tipo.lower()
+                        # Buscar bidireccional: IA contiene lista O lista contiene IA
+                        if (tipo_ia in tipo_lower or tipo_lower in tipo_ia) and len(tipo_lower) > 5:
+                            tipo_encontrado = tipo
+                            break
                 
                 if tipo_encontrado:
                     self.combo_tipo.value = tipo_encontrado
@@ -1878,6 +1920,9 @@ class VentanaPrincipal:
             
             # Mostrar mensaje de éxito mejorado
             self._mostrar_mensaje_ia_exitoso()
+            
+            # Restaurar foco y eventos de teclado después del autocompletado
+            self.restaurar_foco_teclado()
             
         except Exception as e:
             print(f"Error aplicando datos de IA: {e}")

@@ -5,16 +5,9 @@
 OPENAI_API_KEY = ""  # Agrega tu API key aquí: sk-proj-...
 OPENAI_MODEL = "gpt-4o-mini"  # Modelo recomendado: preciso y económico
 
-# Configuración de Privacidad y Anonimización
+# Configuración de Privacidad
 USE_FREE_TIER = True  # Usar tier gratuito de OpenAI (requiere compartir datos)
-ANONYMIZE_DATA = True  # Anonimizar datos sensibles antes de enviar a IA
-SHOW_PRIVACY_WARNING = False  # No mostrar advertencia (datos están anonimizados)
-
-# Configuración de Anonimización
-ANONYMIZE_NAMES = True  # Anonimizar nombres de personas
-ANONYMIZE_IDS = True  # Anonimizar números de cédula/documento
-ANONYMIZE_CASE_NUMBERS = True  # Anonimizar números de radicado
-ANONYMIZE_COURTS = False  # Mantener nombres de juzgados (menos sensible)
+SHOW_PRIVACY_WARNING = False  # No mostrar advertencia de privacidad
 
 # Modelos disponibles:
 # - "gpt-3.5-turbo": Más económico (~$0.002/audiencia)  

@@ -17,9 +17,8 @@ except ImportError as e:
 
 # Importar configuración de privacidad
 try:
-    from config.config import ANONYMIZE_DATA, USE_FREE_TIER, SHOW_PRIVACY_WARNING
+    from config.config import USE_FREE_TIER, SHOW_PRIVACY_WARNING
 except ImportError:
-    ANONYMIZE_DATA = False
     USE_FREE_TIER = False
     SHOW_PRIVACY_WARNING = True
 
@@ -247,8 +246,8 @@ class DialogoAutocompletarIA:
                             ],
                             spacing=5,
                         ),
-                        # Información mejorada sobre protección de datos si está activa
-                        self._crear_info_proteccion_completa(colors) if ANONYMIZE_DATA else ft.Container(height=0),
+                        # Espacio reservado para futuras funcionalidades
+                        ft.Container(height=0),
                         self.indicador_carga,  # Añadir el indicador de carga
                     ],
                     tight=True,
@@ -334,6 +333,10 @@ class DialogoAutocompletarIA:
                 # Cerrar diálogo y enviar datos
                 self.dialog.open = False
                 self.page.update()
+                
+                # Restaurar foco y eventos de teclado
+                self._restaurar_foco_principal()
+                
                 self.callback(datos_extraidos)
                 
             except ImportError:
@@ -357,6 +360,23 @@ class DialogoAutocompletarIA:
         """Cancela el procesamiento."""
         self.dialog.open = False
         self.page.update()
+        # Restaurar foco al cerrar
+        self._restaurar_foco_principal()
+    
+    def _restaurar_foco_principal(self):
+        """Restaura el foco a la ventana principal después de un pequeño delay."""
+        import threading
+        import time
+        
+        def delay_focus():
+            time.sleep(0.2)  # Esperar que el diálogo se cierre completamente
+            try:
+                # Forzar actualización y foco de página
+                self.page.update()
+            except:
+                pass
+        
+        threading.Thread(target=delay_focus, daemon=True).start()
     
     def _on_iniciar_grabacion(self, e):
         """Inicia o detiene el reconocimiento de voz."""
@@ -589,7 +609,7 @@ class DialogoAutocompletarIA:
                 controls=[
                     ft.Icon(ft.Icons.INFO_OUTLINE, size=14, color=colors["warning"]),
                     ft.Text(
-                        "🔒 Privacidad: Usando tier gratuito (datos anonimizados antes del envío)",
+                        "🔒 Privacidad: Usando tier gratuito de OpenAI",
                         size=11,
                         color=colors["warning"],
                         italic=True,
@@ -637,28 +657,6 @@ class DialogoAutocompletarIA:
             border=ft.border.all(1, colors["success"]),
             border_radius=8,
             padding=ft.Padding(12, 10, 12, 10),
-            margin=ft.Margin(0, 8, 0, 0),
-        )
-
-    def _crear_info_anonimizacion(self, colors) -> ft.Container:
-        """Crea la información sobre protección de datos sensibles."""
-        return ft.Container(
-            content=ft.Row(
-                controls=[
-                    ft.Icon(ft.Icons.SHIELD, size=16, color=colors["success"]),
-                    ft.Text(
-                        "🛡️ Sus datos están protegidos: La información sensible se anonimiza automáticamente",
-                        size=12,
-                        color=colors["success"],
-                        weight=ft.FontWeight.W_500,
-                    ),
-                ],
-                spacing=8,
-            ),
-            bgcolor=colors["success_light"] if not is_dark_theme() else colors["surface_tertiary"],
-            border=ft.border.all(1, colors["success"]),
-            border_radius=8,
-            padding=ft.Padding(12, 8, 12, 8),
             margin=ft.Margin(0, 8, 0, 0),
         )
 
