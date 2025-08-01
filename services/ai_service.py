@@ -22,7 +22,7 @@ try:
     HAS_CONFIG = True
 except ImportError:
     print("❌ Error: config.py no encontrado. Crea el archivo config/config.py con tu API key.")
-    OPENAI_API_KEY = "***REMOVED***"
+    OPENAI_API_KEY = None
     OPENAI_MODEL = "gpt-4o-mini"
     HAS_CONFIG = False
 
