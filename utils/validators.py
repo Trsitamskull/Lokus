@@ -25,13 +25,12 @@ def validar_campos_obligatorios(datos: dict) -> Tuple[bool, str]:
     return True, ""
 
 def validar_fecha(fecha_str: str) -> Tuple[bool, str]:
-    """Valida el formato de fecha DD/MM/AAAA."""
+    """Valida el formato de fecha DD/MM/AAAA con rango permitido 2018-2050."""
     try:
         fecha = datetime.strptime(fecha_str, "%d/%m/%Y")
-        # Verificar que la fecha no sea muy antigua o muy futura
-        año_actual = datetime.now().year
-        if fecha.year < año_actual - 10 or fecha.year > año_actual + 10:
-            return False, f"La fecha parece incorrecta: {fecha_str}"
+        # Verificar que la fecha esté en el rango permitido (2018-2050)
+        if fecha.year < 2018 or fecha.year > 2050:
+            return False, f"La fecha debe estar entre los años 2018 y 2050: {fecha_str}"
         return True, ""
     except ValueError:
         return False, f"Formato de fecha inválido: {fecha_str}. Use DD/MM/AAAA"

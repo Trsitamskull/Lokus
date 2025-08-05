@@ -1,6 +1,6 @@
 import flet as ft
 import traceback
-from typing import Optional
+from typing import Optional, List, Dict
 from datetime import datetime
 
 from models.audiencia import Audiencia
@@ -961,6 +961,9 @@ class VentanaPrincipal:
                     
                     seccion_observaciones,  # Observaciones ancho completo
                     ft.Container(height=12),  # Espaciado final reducido
+                    
+                    # === CRÉDITOS DEL DESARROLLADOR ===
+                    self._crear_creditos_desarrollador(),
                 ],
                 spacing=0,
                 expand=True,
@@ -1278,6 +1281,27 @@ class VentanaPrincipal:
         )
         return self.entrada_observaciones
 
+    def _crear_creditos_desarrollador(self):
+        """Crea una sección discreta con los créditos del desarrollador."""
+        colors = get_theme_colors()
+        
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Text(
+                        "Desarrollado por José Bustamante",
+                        size=11,
+                        color=colors["text_secondary"],
+                        italic=True,
+                        weight=ft.FontWeight.W_400,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.only(top=8, bottom=4),
+            opacity=0.7,  # Hace el texto más discreto
+        )
+
     def _crear_botones_accion(self):
         """Crea los botones de acción con diseño profesional y colores dinámicos."""
         colors = get_theme_colors()
@@ -1427,11 +1451,11 @@ class VentanaPrincipal:
             tooltip="Abrir archivo existente (Ctrl+O)",
         )
         
-        btn_editar_registro = ft.ElevatedButton(
-            text="✏️ Editar",
-            on_click=self._on_editar_registro,
+        btn_busqueda_avanzada = ft.ElevatedButton(
+            text="🔍 Buscar",
+            on_click=self._on_busqueda_avanzada,
             style=get_action_button_secondary(),
-            tooltip="Editar registro existente (Ctrl+E)",
+            tooltip="Búsqueda avanzada y edición (Ctrl+F)",
         )
         
         # Botón de IA para autocompletar
@@ -1447,6 +1471,21 @@ class VentanaPrincipal:
                 text_style=ft.TextStyle(size=13, weight=ft.FontWeight.W_600),
             ),
             tooltip="Autocompletar con IA (Ctrl+I)",
+        )
+        
+        # Botón de procesamiento masivo
+        btn_procesamiento_masivo = ft.ElevatedButton(
+            text="📄 Masivo",
+            on_click=self._on_procesamiento_masivo,
+            style=ft.ButtonStyle(
+                bgcolor=colors["warning"],
+                color=colors["text_on_primary"],
+                elevation=2,
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding(12, 8, 12, 8),
+                text_style=ft.TextStyle(size=13, weight=ft.FontWeight.W_600),
+            ),
+            tooltip="Procesar documento masivo (Ctrl+M)",
         )
         
         # Botones para modo edición
@@ -1466,8 +1505,16 @@ class VentanaPrincipal:
             visible=False,
         )
         
-        # Separador visual
+        # Separador visual principal
         separador = ft.Container(
+            width=1,
+            height=25,
+            bgcolor=colors["surface_border"],
+            margin=ft.margin.symmetric(horizontal=8),
+        )
+        
+        # Separador visual para IA
+        separador_ia = ft.Container(
             width=1,
             height=25,
             bgcolor=colors["surface_border"],
@@ -1495,7 +1542,7 @@ class VentanaPrincipal:
         self.btn_cancelar_sticky = btn_cancelar_sticky
         self.btn_nuevo_archivo = btn_nuevo_archivo
         self.btn_abrir_archivo = btn_abrir_archivo
-        self.btn_editar_registro = btn_editar_registro
+        self.btn_busqueda_avanzada = btn_busqueda_avanzada
         
         # Contenedor principal de la barra
         barra_acciones = ft.Container(
@@ -1513,13 +1560,23 @@ class VentanaPrincipal:
                     
                     separador,
                     
-                    # Grupo secundario: Gestión de archivos
+                    # Grupo básico: Gestión de archivos básica
                     ft.Row(
                         controls=[
                             btn_nuevo_archivo,
                             btn_abrir_archivo,
-                            btn_editar_registro,
+                            btn_busqueda_avanzada,
+                        ],
+                        spacing=8,
+                    ),
+                    
+                    separador_ia,
+                    
+                    # Grupo IA: Funciones inteligentes
+                    ft.Row(
+                        controls=[
                             btn_ia_autocompletar,
+                            btn_procesamiento_masivo,
                         ],
                         spacing=8,
                     ),
@@ -1946,6 +2003,408 @@ class VentanaPrincipal:
             self.page.overlay.append(snack)
             snack.open = True
             self.page.update()
+    
+    def _on_busqueda_avanzada(self, e):
+        """Abre la ventana de búsqueda avanzada con edición integrada."""
+        try:
+            if not self.excel_manager:
+                self._mostrar_mensaje("No hay archivo seleccionado")
+                return
+            
+            from gui.busqueda_avanzada import VentanaBusquedaAvanzada
+            VentanaBusquedaAvanzada(
+                self.page, 
+                self.excel_manager, 
+                self._on_editar_desde_busqueda
+            )
+            
+        except Exception as ex:
+            self._mostrar_mensaje_error(f"Error abriendo búsqueda: {str(ex)}")
+    
+    def _on_editar_desde_busqueda(self, fila_num: int, datos: List):
+        """Callback para editar un registro desde la búsqueda avanzada."""
+        try:
+            # Entrar en modo edición
+            self.modo_edicion = True
+            self.fila_editando = fila_num
+            
+            # Cargar datos en el formulario
+            self._cargar_datos_para_edicion(datos)
+            
+            # Actualizar interfaz para modo edición
+            self._actualizar_interfaz_modo_edicion()
+            
+            # Mostrar mensaje
+            self._mostrar_mensaje_atajo(f"✏️ Editando registro #{datos[0] if datos[0] else fila_num}")
+            
+        except Exception as ex:
+            self._mostrar_mensaje_error(f"Error cargando datos para edición: {str(ex)}")
+    
+    def _cargar_datos_para_edicion(self, datos: List):
+        """Carga los datos de una fila en el formulario para edición."""
+        try:
+            print(f"=== DEBUG: Cargando datos para edición: {datos[:5]}... ===")
+            
+            # Los datos vienen en el formato de Excel: [N°, Radicado, Tipo, Fecha, Hora, Juzgado, SI, NO, Motivos...]
+            if len(datos) < 6:
+                print("=== DEBUG ERROR: Datos insuficientes para cargar ===")
+                return
+            
+            # Limpiar formulario primero
+            self._limpiar_campos_compatibilidad()
+            
+            # Cargar datos básicos
+            if self.entrada_radicado and datos[1]:  # Radicado (columna B)
+                self.entrada_radicado.value = str(datos[1])
+            
+            if self.combo_tipo and datos[2]:  # Tipo (columna C)
+                self.combo_tipo.value = str(datos[2])
+            
+            # Cargar fecha (columna D) - usar entrada_fecha directamente
+            if datos[3] and self.entrada_fecha:
+                fecha_str = str(datos[3]).strip()
+                # Cargar directamente en el campo de fecha
+                self.entrada_fecha.value = fecha_str
+                print(f"=== DEBUG: Fecha cargada: {fecha_str} ===")
+                
+                # También actualizar campos virtuales para compatibilidad si existen
+                if "/" in fecha_str and len(fecha_str.split("/")) == 3:
+                    partes = fecha_str.split("/")
+                    if hasattr(self, 'combo_dia') and self.combo_dia:
+                        self.combo_dia.value = partes[0]
+                    if hasattr(self, 'combo_mes') and self.combo_mes:
+                        self.combo_mes.value = partes[1]
+                    if hasattr(self, 'combo_anio') and self.combo_anio:
+                        self.combo_anio.value = partes[2]
+            
+            # Cargar hora (columna E)
+            if datos[4]:
+                hora_str = str(datos[4])
+                if ":" in hora_str:
+                    partes = hora_str.split(":")
+                    if len(partes) >= 2:
+                        if self.entrada_hora:
+                            self.entrada_hora.value = partes[0]
+                        if self.entrada_minuto:
+                            self.entrada_minuto.value = partes[1]
+            
+            # Cargar juzgado (columna F)
+            if self.entrada_juzgado and datos[5]:
+                self.entrada_juzgado.value = str(datos[5])
+            
+            # Cargar si se realizó (columnas G=6 y H=7)
+            if self.combo_realizada:
+                if len(datos) > 6 and datos[6] == "SI":
+                    self.combo_realizada.value = "SI"
+                elif len(datos) > 7 and datos[7] == "NO":
+                    self.combo_realizada.value = "NO"
+            
+            # Cargar motivos (columnas I-P = 8-15)
+            if hasattr(self, 'checkboxes_motivos') and self.checkboxes_motivos:
+                for i, checkbox in enumerate(self.checkboxes_motivos):
+                    if len(datos) > 8 + i and datos[8 + i]:
+                        checkbox.value = True
+            
+            # Cargar observaciones (columna Q = 16)
+            if hasattr(self, 'entrada_observaciones') and self.entrada_observaciones and len(datos) > 16:
+                if datos[16]:
+                    self.entrada_observaciones.value = str(datos[16])
+            
+            # Actualizar la página
+            self.page.update()
+            print("=== DEBUG: Datos cargados correctamente ===")
+            
+        except Exception as ex:
+            print(f"=== DEBUG ERROR: Error cargando datos: {str(ex)} ===")
+            self._mostrar_mensaje_error(f"Error cargando datos: {str(ex)}")
+    
+    def _actualizar_interfaz_modo_edicion(self):
+        """Actualiza la interfaz para mostrar que estamos en modo edición."""
+        try:
+            print("=== DEBUG: Actualizando interfaz para modo edición ===")
+            
+            # Activar modo edición en los botones
+            if hasattr(self, 'btn_guardar_sticky'):
+                self.btn_guardar_sticky.visible = False
+            if hasattr(self, 'btn_actualizar_sticky'):
+                self.btn_actualizar_sticky.visible = True
+            if hasattr(self, 'btn_cancelar_sticky'):
+                self.btn_cancelar_sticky.visible = True
+            
+            # Actualizar página
+            self.page.update()
+            print("=== DEBUG: Interfaz actualizada para modo edición ===")
+            
+        except Exception as ex:
+            print(f"=== DEBUG ERROR: Error actualizando interfaz: {str(ex)} ===")
+    
+    def _on_procesamiento_masivo(self, e):
+        """Abre el diálogo de procesamiento masivo de documentos."""
+        try:
+            if not self.excel_manager:
+                self._mostrar_mensaje("Primero debe abrir un archivo Excel para usar el procesamiento masivo.\n\nUse el botón '📂 Abrir Excel' para seleccionar un archivo donde se guardarán las audiencias procesadas.")
+                return
+            
+            from gui.procesador_masivo import DialogoProcesadorMasivo
+            DialogoProcesadorMasivo(self.page, self._on_audiencias_masivas_recibidas)
+            
+        except Exception as ex:
+            self._mostrar_mensaje_error(f"Error abriendo procesador masivo: {str(ex)}")
+    
+    def _on_audiencias_masivas_recibidas(self, audiencias: List[Dict]):
+        """Callback para procesar las audiencias recibidas del procesamiento masivo."""
+        try:
+            if not audiencias:
+                self._mostrar_mensaje("No se recibieron audiencias para procesar")
+                return
+            
+            print(f"=== DEBUG: Procesando {len(audiencias)} audiencias masivamente ===")
+            
+            # Verificar que tenemos un archivo Excel seleccionado
+            if not self.excel_manager:
+                self._mostrar_mensaje_error("No hay archivo Excel seleccionado")
+                return
+            
+            # Preparar lista de objetos Audiencia
+            audiencias_preparadas = []
+            errores_preparacion = []
+            
+            # Procesar cada audiencia y crear objetos Audiencia correctamente
+            for i, audiencia in enumerate(audiencias, 1):
+                try:
+                    print(f"=== DEBUG: Preparando audiencia {i} ===")
+                    
+                    # Formatear hora correctamente
+                    hora_val = audiencia.get('hora', '00') or '00'
+                    minuto_val = audiencia.get('minuto', '00') or '00'
+                    
+                    # Procesar realizada_si/realizada_no según el valor
+                    se_realizo = audiencia.get("se_realizo", "")
+                    realizada_si = "SI" if se_realizo == "SI" else ""
+                    realizada_no = "NO" if se_realizo == "NO" else ""
+                    
+                    # PROCESAMIENTO CORRECTO DE MOTIVOS - Mapeo a lista
+                    motivos_valor = audiencia.get("motivos", "")
+                    motivos_lista = []
+                    
+                    if motivos_valor and se_realizo == "NO":
+                        # Convertir a lista si es string y limpiar
+                        if isinstance(motivos_valor, str):
+                            motivos_lista = [motivos_valor.strip()]
+                        elif isinstance(motivos_valor, list):
+                            motivos_lista = [str(m).strip() for m in motivos_valor if m]
+                    
+                    # Crear objeto Audiencia con los parámetros correctos
+                    from models.audiencia import Audiencia
+                    
+                    nueva_audiencia = Audiencia(
+                        radicado=audiencia.get("radicado", ""),
+                        tipo=audiencia.get("tipo_audiencia", ""),
+                        fecha=audiencia.get("fecha", ""),
+                        hora=f"{hora_val}:{minuto_val}",
+                        juzgado=audiencia.get("juzgado", ""),
+                        realizada_si=realizada_si,
+                        realizada_no=realizada_no,
+                        motivos=motivos_lista,
+                        observaciones=audiencia.get("observaciones", "")
+                    )
+                    
+                    audiencias_preparadas.append(nueva_audiencia)
+                    print(f"=== DEBUG: Audiencia {i} preparada exitosamente ===")
+                    
+                except Exception as ex:
+                    error_msg = f"Audiencia {i}: {str(ex)}"
+                    errores_preparacion.append(error_msg)
+                    print(f"=== DEBUG ERROR PREPARACIÓN: {error_msg} ===")
+                    continue
+            
+            # Guardar todas las audiencias usando el método masivo optimizado
+            if audiencias_preparadas:
+                exitosas, num_errores, errores_guardado = self.excel_manager.guardar_audiencias_masivo(audiencias_preparadas)
+                
+                # 🚀 NUEVO: REORDENAR Y ACTUALIZAR NUMERACIÓN (como en guardado individual)
+                print("📊 Reordenando audiencias por fecha/hora después del procesamiento masivo...")
+                self.excel_manager.reordenar_y_guardar()
+                print("✅ Reordenamiento masivo completado exitosamente")
+                
+                # Combinar errores de preparación y guardado
+                errores_totales = errores_preparacion + errores_guardado
+                
+                # Actualizar interfaz
+                self.actualizar_contador_registros()
+                self.page.update()
+                
+                # Mostrar resumen
+                mensaje = f"✅ Procesamiento masivo completado:\n• {exitosas} audiencias importadas exitosamente"
+                if errores_totales:
+                    mensaje += f"\n• {len(errores_totales)} audiencias con errores"
+                    # Mostrar primeros errores si hay pocos
+                    if len(errores_totales) <= 3:
+                        mensaje += f"\n\nErrores:\n" + "\n".join(f"- {error}" for error in errores_totales[:3])
+                
+                mensaje += f"\n\n📊 TOTALES ACTUALIZADOS AUTOMÁTICAMENTE"
+                
+                # Mostrar retroalimentación mejorada con resumen completo
+                self._mostrar_retroalimentacion_mejorada(
+                    audiencias_procesadas=len(audiencias),
+                    audiencias_exitosas=exitosas,
+                    audiencias_con_errores=len(errores_totales),
+                    datos_resumen={
+                        "mensaje_original": mensaje,
+                        "errores_detalle": errores_totales[:5],  # Primeros 5 errores
+                        "totales_actualizados": True
+                    }
+                )
+            else:
+                self._mostrar_mensaje_error("No se pudo preparar ninguna audiencia para guardar")
+            
+            print(f"=== DEBUG: Procesamiento masivo completado ===")
+            
+        except Exception as ex:
+            error_msg = f"Error en procesamiento masivo: {str(ex)}"
+            print(f"=== DEBUG ERROR: {error_msg} ===")
+            self._mostrar_mensaje_error(error_msg)
+
+    def _mostrar_retroalimentacion_mejorada(
+        self, 
+        audiencias_procesadas: int, 
+        audiencias_exitosas: int, 
+        audiencias_con_errores: int, 
+        datos_resumen: Optional[Dict] = None
+    ):
+        """Muestra el diálogo de retroalimentación mejorado."""
+        try:
+            from gui.dialogo_retroalimentacion_mejorado import mostrar_retroalimentacion_mejorada
+            
+            # Crear el diálogo mejorado
+            dialogo = mostrar_retroalimentacion_mejorada(
+                page=self.page,
+                audiencias_procesadas=audiencias_procesadas,
+                audiencias_exitosas=audiencias_exitosas,
+                audiencias_con_errores=audiencias_con_errores,
+                datos_resumen=datos_resumen or {},
+                callback_feedback=self._on_feedback_mejorado_recibido,
+                callback_cerrar=self._on_dialogo_retroalimentacion_cerrado
+            )
+            
+            print(f"=== DEBUG: Mostrando retroalimentación mejorada - {audiencias_exitosas}/{audiencias_procesadas} exitosas ===")
+            
+        except Exception as ex:
+            print(f"Error mostrando retroalimentación mejorada: {ex}")
+            # Fallback al mensaje simple
+            mensaje = f"✅ Procesamiento completado: {audiencias_exitosas} audiencias guardadas"
+            if audiencias_con_errores > 0:
+                mensaje += f" ({audiencias_con_errores} con errores)"
+            self._mostrar_mensaje(mensaje)
+    
+    def _on_feedback_mejorado_recibido(self, tipo_evaluacion: str, es_exacto: bool):
+        """Callback para procesar el feedback del diálogo mejorado."""
+        try:
+            from services.ai_service import ai_service
+            
+            # Guardar el feedback para mejorar la IA
+            resultado = ai_service.guardar_feedback_evaluacion(
+                tipo_evaluacion=tipo_evaluacion,
+                fue_exacto=es_exacto,
+                contexto="procesamiento_masivo"
+            )
+            
+            # Mostrar mensaje de agradecimiento
+            mensajes_feedback = {
+                "exacta": "¡Gracias! Tu feedback nos ayuda a mantener la precisión de la IA.",
+                "parcial": "Gracias por el feedback. Trabajaremos para mejorar la detección.",
+                "incorrecta": "Gracias por reportar esto. Utilizaremos tu feedback para mejorar significativamente."
+            }
+            
+            mensaje = mensajes_feedback.get(tipo_evaluacion, "¡Gracias por tu feedback!")
+            
+            # Mostrar confirmación en snackbar (más sutil que modal)
+            self._mostrar_snackbar(mensaje, es_exitoso=True)
+            
+            print(f"=== DEBUG: Feedback recibido - {tipo_evaluacion} (exacto: {es_exacto}) ===")
+            
+        except Exception as ex:
+            print(f"Error procesando feedback: {ex}")
+            self._mostrar_snackbar("Tu feedback se guardó localmente. ¡Gracias!", es_exitoso=True)
+    
+    def _on_dialogo_retroalimentacion_cerrado(self):
+        """Callback para cuando se cierra el diálogo de retroalimentación."""
+        print("=== DEBUG: Diálogo de retroalimentación cerrado ===")
+        # Aquí se podría agregar lógica adicional si es necesaria
+    
+    def _mostrar_snackbar(self, mensaje: str, es_exitoso: bool = True):
+        """Muestra un snackbar con el mensaje especificado."""
+        try:
+            colors = get_theme_colors()
+            
+            icono = "✅" if es_exitoso else "⚠️"
+            color = colors["success"] if es_exitoso else colors["warning"]
+            
+            snackbar = ft.SnackBar(
+                content=ft.Row(
+                    controls=[
+                        ft.Text(icono, size=16),
+                        ft.Text(
+                            mensaje,
+                            size=14,
+                            color=colors["text_on_primary"],
+                        ),
+                    ],
+                    spacing=10,
+                ),
+                bgcolor=color,
+                duration=4000,  # 4 segundos
+                behavior=ft.SnackBarBehavior.FLOATING,
+            )
+            
+            self.page.overlay.append(snackbar)
+            snackbar.open = True
+            self.page.update()
+            
+        except Exception as ex:
+            print(f"Error mostrando snackbar: {ex}")
+    
+    def _mostrar_retroalimentacion_opcional(self, texto_original: str, datos_ia: Dict, datos_finales: Dict):
+        """Muestra diálogo de retroalimentación opcional para mejorar la IA."""
+        try:
+            # Solo mostrar retroalimentación en el 30% de los casos para no ser molesto
+            import random
+            if random.random() > 0.3:  # 30% de probabilidad
+                return
+            
+            from gui.dialogo_retroalimentacion import DialogoRetroalimentacionIA
+            DialogoRetroalimentacionIA(
+                self.page,
+                texto_original,
+                datos_ia,
+                self._on_retroalimentacion_recibida
+            )
+            
+        except Exception as ex:
+            print(f"Error mostrando retroalimentación: {ex}")
+    
+    def _on_retroalimentacion_recibida(self, datos_ia: Dict, datos_corregidos: Dict, es_correcto: bool):
+        """Callback para procesar la retroalimentación del usuario."""
+        try:
+            from services.ai_service import ai_service
+            
+            # Solo procesar si hay diferencias significativas o se marcó como incorrecta
+            if not es_correcto or any(datos_ia.get(k) != datos_corregidos.get(k) for k in datos_ia.keys()):
+                # Guardar la corrección en el sistema de entrenamiento
+                resultado = ai_service.guardar_correccion(
+                    "texto_procesado",  # En el futuro podríamos pasar el texto original
+                    datos_ia,
+                    datos_corregidos,
+                    es_correcto
+                )
+                
+                if resultado:
+                    print("✅ Retroalimentación guardada para mejorar la IA")
+                else:
+                    print("⚠️ No se pudo guardar la retroalimentación")
+            
+        except Exception as ex:
+            print(f"Error procesando retroalimentación: {ex}")
 
     def _on_keyboard_event(self, e: ft.KeyboardEvent):
         """Maneja los atajos de teclado globales."""        
@@ -2046,6 +2505,18 @@ class VentanaPrincipal:
             self._on_ia_autocompletar(None)
             self._mostrar_mensaje_atajo("🤖 Abriendo autocompletado con IA")
             return
+            
+        # Ctrl+F - Búsqueda avanzada
+        elif ctrl_pressed and key == "f":
+            self._on_busqueda_avanzada(None)
+            self._mostrar_mensaje_atajo("🔍 Abriendo búsqueda avanzada")
+            return
+            
+        # Ctrl+M - Procesamiento masivo
+        elif ctrl_pressed and key == "m":
+            self._on_procesamiento_masivo(None)
+            self._mostrar_mensaje_atajo("📄 Abriendo procesamiento masivo")
+            return
 
     def _mostrar_mensaje_atajo(self, mensaje: str):
         """Muestra un mensaje temporal cuando se usa un atajo de teclado."""
@@ -2054,6 +2525,17 @@ class VentanaPrincipal:
             ft.Text(mensaje, color=colors["text_on_primary"]),
             bgcolor=colors["primary_light"] if not is_dark_theme() else colors["surface_tertiary"],
             duration=1500,  # 1.5 segundos
+        )
+        self.page.overlay.append(snack)
+        snack.open = True
+
+    def _mostrar_mensaje_error(self, mensaje: str):
+        """Muestra un mensaje de error temporal."""
+        colors = get_theme_colors()
+        snack = ft.SnackBar(
+            ft.Text(mensaje, color=colors["text_on_primary"]),
+            bgcolor=colors["error"],
+            duration=3000,  # 3 segundos
         )
         self.page.overlay.append(snack)
         snack.open = True
@@ -2443,11 +2925,11 @@ class VentanaPrincipal:
 
         # NO establecer fecha por defecto - mantener campo vacío
         
-        # Establecer hora por defecto
+        # NO establecer hora por defecto - mantener campos vacíos
         if self.entrada_hora:
-            self.entrada_hora.value = "00"
+            self.entrada_hora.value = ""
         if self.entrada_minuto:
-            self.entrada_minuto.value = "00"
+            self.entrada_minuto.value = ""
 
         # Forzar actualización específica de los dropdowns
         if hasattr(self, 'combo_tipo') and self.combo_tipo:
@@ -2524,14 +3006,31 @@ class VentanaPrincipal:
         # Usar el nuevo campo de fecha
         fecha = self.entrada_fecha.value or f"01/01/{datetime.now().year}"
 
-        hora_val = self.entrada_hora.value or "00"
-        minuto_val = self.entrada_minuto.value or "00"
-        hora = f"{hora_val.zfill(2)}:{minuto_val.zfill(2)}"
+        # Manejar hora vacía - si ambos campos están vacíos, devolver cadena vacía
+        hora_val = ""
+        minuto_val = ""
+        
+        if self.entrada_hora and self.entrada_hora.value:
+            hora_val = self.entrada_hora.value.strip()
+        if self.entrada_minuto and self.entrada_minuto.value:
+            minuto_val = self.entrada_minuto.value.strip()
+        
+        if not hora_val and not minuto_val:
+            hora = ""  # Hora completamente vacía
+        else:
+            # Si solo uno está vacío, usar "00" como valor por defecto
+            hora_val = hora_val or "00"
+            minuto_val = minuto_val or "00"
+            hora = f"{hora_val.zfill(2)}:{minuto_val.zfill(2)}"
 
-        motivos = [
-            checkbox.label if checkbox.value else ""
-            for checkbox in self.checkboxes_motivos
-        ]
+        motivos = []
+        for checkbox in self.checkboxes_motivos:
+            if checkbox.value:  # Solo agregar si está seleccionado
+                motivos.append(checkbox.label)
+        
+        # Rellenar con cadenas vacías hasta completar 8 posiciones (para limpiar las no usadas)
+        while len(motivos) < 8:
+            motivos.append("")
 
         # Obtener valor de realizada, validando placeholder
         realizada_value = self.combo_realizada.value
@@ -2550,6 +3049,102 @@ class VentanaPrincipal:
             "observaciones": self.entrada_observaciones.value or "",
         }
 
+    def _hora_esta_vacia(self):
+        """Verifica si los campos de hora están vacíos."""
+        hora_val = ""
+        minuto_val = ""
+        
+        if self.entrada_hora and self.entrada_hora.value:
+            hora_val = self.entrada_hora.value.strip()
+        if self.entrada_minuto and self.entrada_minuto.value:
+            minuto_val = self.entrada_minuto.value.strip()
+        
+        return not hora_val and not minuto_val
+
+    def _confirmar_guardar_sin_hora(self, callback_confirmar):
+        """Muestra diálogo de confirmación para guardar sin hora."""
+        colors = get_theme_colors()
+        
+        def on_guardar_sin_hora(e):
+            dlg.open = False
+            self.page.update()
+            callback_confirmar()
+        
+        def on_cancelar(e):
+            dlg.open = False
+            self.page.update()
+        
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.ACCESS_TIME, size=24, color=colors["warning"]),
+                    ft.Text(
+                        "Confirmar guardado sin hora", 
+                        size=18, 
+                        weight=ft.FontWeight.BOLD, 
+                        color=colors["text_primary"]
+                    ),
+                ],
+                spacing=10,
+                alignment=ft.MainAxisAlignment.START,
+            ),
+            content=ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            "⚠️ No ha especificado una hora para esta audiencia.",
+                            size=14,
+                            color=colors["text_primary"],
+                            weight=ft.FontWeight.W_500,
+                        ),
+                        ft.Container(height=8),
+                        ft.Text(
+                            "¿Desea guardar la audiencia sin hora? La hora se guardará como vacía en el registro.",
+                            size=13,
+                            color=colors["text_secondary"],
+                        ),
+                    ],
+                    spacing=5,
+                    tight=True,
+                ),
+                width=400,
+                padding=ft.padding.all(10),
+            ),
+            actions=[
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Cancelar",
+                            on_click=on_cancelar,
+                            style=ft.ButtonStyle(
+                                color=colors["text_secondary"],
+                                padding=ft.Padding(20, 10, 20, 10),
+                            ),
+                        ),
+                        ft.ElevatedButton(
+                            "Guardar sin hora",
+                            on_click=on_guardar_sin_hora,
+                            style=ft.ButtonStyle(
+                                bgcolor=colors["warning"],
+                                color=colors["text_on_primary"],
+                                elevation=2,
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                                padding=ft.Padding(20, 10, 20, 10),
+                            ),
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            bgcolor=colors["surface_card"],
+        )
+        
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
     def guardar_datos(self):
         """Guarda los datos."""
         print("=== DEBUG: Iniciando guardar_datos ===")
@@ -2561,22 +3156,42 @@ class VentanaPrincipal:
 
         print(f"Archivo seleccionado: {self.archivo_excel}")
 
+        # Verificar si la hora está vacía antes de validar
+        if self._hora_esta_vacia():
+            print("=== DEBUG: Hora vacía detectada, mostrando confirmación ===")
+            self._confirmar_guardar_sin_hora(self._ejecutar_guardado_final)
+            return
+        
+        # Si hay hora, proceder con el guardado normal
+        self._ejecutar_guardado_final()
+
+    def _ejecutar_guardado_final(self):
+        """Ejecuta el guardado final de los datos."""
+        print("=== DEBUG: Ejecutando guardado final ===")
+        
         # AGREGAR LA LÓGICA FALTANTE:
         datos = self.obtener_datos_formulario()
         print(f"Datos obtenidos del formulario: {datos}")
         
-        valido, mensaje = validar_todos_los_datos(datos)
+        # Si la hora está vacía, usar validación especial
+        if datos["hora"] == "":
+            valido, mensaje = self._validar_datos_sin_hora(datos)
+        else:
+            valido, mensaje = validar_todos_los_datos(datos)
+        
         print(f"Validación: válido={valido}, mensaje='{mensaje}'")
         
         if not valido:
             # Mostrar validación visual en dropdowns si están en estado inválido
             if datos["tipo"] == "":
-                self.combo_tipo.border_color = "#EF4444"  # Rojo
-                self.combo_tipo.update()
+                if self.combo_tipo:
+                    self.combo_tipo.border_color = "#EF4444"  # Rojo
+                    self.combo_tipo.update()
             
             if datos["realizada_si"] == "" and datos["realizada_no"] == "":
-                self.combo_realizada.border_color = "#EF4444"  # Rojo
-                self.combo_realizada.update()
+                if self.combo_realizada:
+                    self.combo_realizada.border_color = "#EF4444"  # Rojo
+                    self.combo_realizada.update()
             
             self._mostrar_mensaje(f"Error: {mensaje}")
             return
@@ -2603,6 +3218,30 @@ class VentanaPrincipal:
             traceback.print_exc()
             self._mostrar_mensaje(f"Error al guardar: {e}")
 
+    def _validar_datos_sin_hora(self, datos):
+        """Valida los datos cuando no hay hora especificada."""
+        from utils.validators import validar_campos_obligatorios, validar_fecha, validar_motivos_no_realizacion
+        
+        # Validar campos obligatorios
+        valido, mensaje = validar_campos_obligatorios(datos)
+        if not valido:
+            return False, mensaje
+        
+        # Validar fecha
+        valido, mensaje = validar_fecha(datos.get('fecha', ''))
+        if not valido:
+            return False, mensaje
+        
+        # SKIP validación de hora cuando está vacía - esto es lo que queríamos
+        
+        # Validar motivos si NO se realizó
+        realizada = "SI" if datos.get('realizada_si') else "NO"
+        valido, mensaje = validar_motivos_no_realizacion(realizada, datos.get('motivos', []))
+        if not valido:
+            return False, mensaje
+        
+        return True, "Datos válidos (sin hora)"
+
     def actualizar_registro(self):
         """Actualiza un registro existente."""
         if not self.fila_editando:
@@ -2612,23 +3251,50 @@ class VentanaPrincipal:
             self._mostrar_mensaje("No hay archivo seleccionado")
             return
 
+        # Verificar si la hora está vacía antes de validar
+        if self._hora_esta_vacia():
+            print("=== DEBUG: Hora vacía detectada en actualización, mostrando confirmación ===")
+            self._confirmar_guardar_sin_hora(self._ejecutar_actualizacion_final)
+            return
+        
+        # Si hay hora, proceder con la actualización normal
+        self._ejecutar_actualizacion_final()
+
+    def _ejecutar_actualizacion_final(self):
+        """Ejecuta la actualización final del registro."""
+        print("=== DEBUG: Ejecutando actualización final ===")
+        
         datos = self.obtener_datos_formulario()
-        valido, mensaje = validar_todos_los_datos(datos)
+        
+        # Si la hora está vacía, usar validación especial
+        if datos["hora"] == "":
+            valido, mensaje = self._validar_datos_sin_hora(datos)
+        else:
+            valido, mensaje = validar_todos_los_datos(datos)
 
         if not valido:
             self._mostrar_mensaje(f"Error: {mensaje}")
             return
 
         try:
+            print(f"=== DEBUG: Actualizando registro en fila {self.fila_editando} ===")
+            
             audiencia = Audiencia.from_form_data(datos)
+            
+            # Actualizar la audiencia en la fila específica
             self.excel_manager.actualizar_audiencia(self.fila_editando, audiencia)
+            
+            # Reordenar todo el archivo para mantener el orden por fecha
             self.excel_manager.reordenar_y_guardar()
+            
+            print(f"=== DEBUG: Registro actualizado y reordenado correctamente ===")
 
             self._mostrar_mensaje("Registro actualizado correctamente")
             self.desactivar_modo_edicion()
             self.actualizar_contador_registros()
 
         except Exception as e:
+            print(f"=== DEBUG ERROR: Error actualizando registro: {str(e)} ===")
             self._mostrar_mensaje(f"Error al actualizar: {e}")
 
     def cancelar_edicion(self):
@@ -2646,8 +3312,8 @@ class VentanaPrincipal:
             self.btn_nuevo_archivo.visible = False
         if hasattr(self, 'btn_abrir_archivo'):
             self.btn_abrir_archivo.visible = False
-        if hasattr(self, 'btn_editar_registro'):
-            self.btn_editar_registro.visible = False
+        if hasattr(self, 'btn_busqueda_avanzada'):
+            self.btn_busqueda_avanzada.visible = False
             
         # Mostrar botones de modo edición
         if hasattr(self, 'btn_actualizar_sticky'):
@@ -2678,8 +3344,8 @@ class VentanaPrincipal:
             self.btn_nuevo_archivo.visible = True
         if hasattr(self, 'btn_abrir_archivo'):
             self.btn_abrir_archivo.visible = True
-        if hasattr(self, 'btn_editar_registro'):
-            self.btn_editar_registro.visible = True
+        if hasattr(self, 'btn_busqueda_avanzada'):
+            self.btn_busqueda_avanzada.visible = True
             
         # Ocultar botones de modo edición
         if hasattr(self, 'btn_actualizar_sticky'):
