@@ -24,7 +24,6 @@ from datetime import datetime
 # CONFIGURACIÓN DEL BUILD
 # ============================================
 
-
 class BuildConfig:
     """Configuración centralizada del proceso de build"""
 
@@ -43,22 +42,14 @@ class BuildConfig:
     DIST_DIR = "GestorAudiencias_PlugAndPlay"
     ZIP_NAME = f"{APP_NAME}_v{APP_VERSION}_PlugAndPlay.zip"
 
-    # Configuración PyInstaller (OPTIMIZADA EXTREMA)
+    # Configuración PyInstaller
     PYINSTALLER_OPTIONS = [
         "--onedir",  # Carpeta en lugar de archivo único (más compatible)
         "--windowed",  # Sin ventana de consola
         "--clean",
         "--noconfirm",
-        "--optimize=2",  # Optimización máxima bytecode
-        "--strip",  # Remover símbolos de debug
-        "--noupx",  # Deshabilitado por defecto, se agrega después si está disponible
-        "--exclude-module=_bootlocale",  # Optimización de bootloader
-        "--exclude-module=locale",  # Si no se usa internacionalización
-        "--exclude-module=calendar",  # Si no se usa
-        "--upx-exclude=vcruntime140.dll",  # Evitar comprimir DLLs críticas
-        "--upx-exclude=python3.dll",
-        "--collect-submodules=flet_core",  # Asegurar módulos Flet
-        "--collect-submodules=flet",
+        "--optimize=2",  # Optimización máxima
+        "--strip",  # Reducir tamaño
     ]
 
     # Módulos a incluir explícitamente
@@ -83,151 +74,35 @@ class BuildConfig:
         "config.config_template",
     ]
 
-    # Módulos a excluir para reducir tamaño (OPTIMIZACIÓN EXTREMA)
+    # Módulos a excluir para reducir tamaño
     EXCLUDE_MODULES = [
-        # Científicos/Análisis (no usados)
         "matplotlib",
-        "matplotlib.*",
         "scipy",
-        "scipy.*",
         "pandas",
-        "pandas.*",
-        "numpy.tests",  # removed numpy.distutils to avoid conflicts
-        "sklearn",
-        "tensorflow",
-        "torch",
-        # Testing frameworks (no necesarios en producción)
+        "numpy.distutils",
+        "tkinter.test",
         "test",
-        "tests",
-        "*test*",
         "unittest",
-        "unittest.*",
-        "pytest",
-        "pytest.*",
-        "doctest",
-        "doctest.*",
-        "nose",
-        "nose.*",
-        # Desarrollo/Debugging (no necesarios)
         "pdb",
-        "pdb.*",
+        "doctest",
+        "pytest",
         "ipython",
-        "ipython.*",
         "jupyter",
-        "jupyter.*",
         "notebook",
-        "notebook.*",
         "black",
         "flake8",
         "mypy",
         "autopep8",
-        "pylint",
-        "coverage",
-        "tox",
-        # GUI frameworks alternativos
-        "tkinter",
-        "tkinter.*",
-        "wx",
-        "wx.*",
-        "PyQt5",
-        "PyQt6",
-        "PySide2",
-        "PySide6",
-        "kivy",
-        "kivy.*",
-        # Redes/Web (no usados directamente)
-        "tornado",
-        "django",
-        "flask",
-        "fastapi",
-        "requests.packages.urllib3.contrib",
-        "urllib3.contrib",
-        # Multimedia (no usados)
-        "PIL.ImageQt",
-        "PIL.ImageTk",
-        "cv2",
-        "opencv",
-        "pygame",
-        "pygame.*",
-        # Compiladores/Distribución (distutils removed - PyInstaller conflict)
-        "setuptools",
-        "setuptools.*",
-        "wheel",
-        "pip",
-        "pip.*",
-        # Documentación
-        "sphinx",
-        "sphinx.*",
-        "docutils",
-        "docutils.*",
-        # Internacionalización (no usada)
-        "babel",
-        "babel.*",
-        "gettext",
-        "gettext.*",
-        # Compresión avanzada (no usada)
-        "bz2",
-        "lzma",
-        "gzip",
-        # Criptografía avanzada (no usada directamente)
-        "cryptography.hazmat",
-        "Crypto",
-        "Crypto.*",
-        # Bases de datos no usadas
-        "mysql",
-        "postgresql",
-        "oracle",
-        "pymongo",
-        "redis",
-        # XML processing avanzado (no usado)
-        "xml.dom",
-        "xml.sax",
-        "lxml",
-        "lxml.*",
-        # Email (no usado)
-        "email.mime",
-        "smtplib",
-        # Async frameworks (no usados)
-        "asyncio.test",
-        "asyncio.subprocess",
-        "concurrent.futures.thread",
-        # Logging avanzado (no usado)
-        "logging.config",
-        "logging.handlers",
-        # Debugging interno de Python
-        "pydoc",
-        "pydoc.*",
-        "code",
-        "codeop",
-        "trace",
-        "traceback",
-        # Módulos de sistema no críticos
-        "pty",
-        "tty",
-        "termios",
-        "grp",
-        "pwd",
-        "spwd",
-        # Backup/archive (no usado)
-        "tarfile",
-        "zipfile.compression",
     ]
-
-    # NUEVAS OPTIMIZACIONES EXTREMAS
-    UPX_ENABLED = True  # Compresión UPX
-    ICON_OPTIMIZATION = True  # Optimización de iconos
-    BOOTLOADER_OPTIMIZATION = True  # Bootloader optimizado
-
 
 def mostrar_banner():
     """Muestra el banner del proceso de build"""
-    print("🚀" + "=" * 60)
+    print("🚀" + "="*60)
     print(f"   GESTOR DE AUDIENCIAS v{BuildConfig.APP_VERSION} - BUILD PLUG & PLAY")
     print("   Creando ejecutable listo para distribución")
     print(f"   Por {BuildConfig.AUTHOR} - {BuildConfig.YEAR}")
-    print("=" * 62)
+    print("="*62)
     print()
-
 
 def verificar_y_actualizar_pyinstaller():
     """Verifica e instala/actualiza PyInstaller a la última versión"""
@@ -236,15 +111,8 @@ def verificar_y_actualizar_pyinstaller():
 
     try:
         # Verificar si PyInstaller está instalado
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "import PyInstaller; print(PyInstaller.__version__)",
-            ],
-            capture_output=True,
-            text=True,
-        )
+        result = subprocess.run([sys.executable, "-c", "import PyInstaller; print(PyInstaller.__version__)"],
+                              capture_output=True, text=True)
 
         if result.returncode == 0:
             current_version = result.stdout.strip()
@@ -252,29 +120,17 @@ def verificar_y_actualizar_pyinstaller():
 
             # Actualizar a la última versión
             print("🔄 Actualizando a la última versión...")
-            update_result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--upgrade", "pyinstaller"],
-                capture_output=True,
-                text=True,
-            )
+            update_result = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "pyinstaller"],
+                                         capture_output=True, text=True)
 
             if update_result.returncode == 0:
                 # Verificar nueva versión
-                new_result = subprocess.run(
-                    [
-                        sys.executable,
-                        "-c",
-                        "import PyInstaller; print(PyInstaller.__version__)",
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
+                new_result = subprocess.run([sys.executable, "-c", "import PyInstaller; print(PyInstaller.__version__)"],
+                                          capture_output=True, text=True)
                 new_version = new_result.stdout.strip()
 
                 if new_version != current_version:
-                    print(
-                        f"✅ PyInstaller actualizado: {current_version} → {new_version}"
-                    )
+                    print(f"✅ PyInstaller actualizado: {current_version} → {new_version}")
                 else:
                     print(f"✅ PyInstaller ya está actualizado: {new_version}")
                 return True
@@ -285,11 +141,8 @@ def verificar_y_actualizar_pyinstaller():
         else:
             # PyInstaller no está instalado
             print("❌ PyInstaller no encontrado. Instalando...")
-            install_result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "pyinstaller"],
-                capture_output=True,
-                text=True,
-            )
+            install_result = subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"],
+                                          capture_output=True, text=True)
 
             if install_result.returncode == 0:
                 print("✅ PyInstaller instalado exitosamente")
@@ -303,133 +156,14 @@ def verificar_y_actualizar_pyinstaller():
         print(f"❌ Error verificando PyInstaller: {e}")
         return False
 
-
-def verificar_upx():
-    """Verifica si UPX está disponible para compresión extrema"""
-    print("\n[UPX] VERIFICANDO UPX PARA COMPRESION EXTREMA...")
-    print("-" * 45)
-
-    try:
-        result = subprocess.run(["upx", "--version"], capture_output=True, text=True)
-        if result.returncode == 0:
-            version_line = result.stdout.split("\n")[0]
-            print(f"[OK] UPX encontrado: {version_line}")
-            return True
-        else:
-            print("[WARN] UPX no encontrado - compresion deshabilitada")
-            return False
-    except FileNotFoundError:
-        print("[WARN] UPX no esta instalado - compresion deshabilitada")
-        print("[INFO] Para instalar UPX: choco install upx (con Chocolatey)")
-        return False
-    except Exception as e:
-        print(f"[WARN] Error verificando UPX: {e}")
-        return False
-
-
-def optimizar_dependencias():
-    """Analiza y optimiza las dependencias del proyecto"""
-    print("\n[DEPS] ANALIZANDO DEPENDENCIAS PARA OPTIMIZACION...")
-    print("-" * 47)
-
-    # Obtener lista de imports únicos en el proyecto
-    imports_encontrados = set()
-    archivos_python = []
-
-    for root, dirs, files in os.walk("."):
-        # Excluir directorios innecesarios
-        dirs[:] = [
-            d for d in dirs if d not in ["__pycache__", ".git", "venv", "build", "dist"]
-        ]
-
-        for file in files:
-            if file.endswith(".py"):
-                archivos_python.append(os.path.join(root, file))
-
-    print(f"[INFO] Analizando {len(archivos_python)} archivos Python...")
-
-    for archivo in archivos_python:
-        try:
-            with open(archivo, "r", encoding="utf-8") as f:
-                contenido = f.read()
-
-            # Buscar imports básicos
-            import re
-
-            imports = re.findall(r"^(?:from|import)\s+(\w+)", contenido, re.MULTILINE)
-            imports_encontrados.update(imports)
-
-        except Exception as e:
-            continue
-
-    print(f"[INFO] Imports unicos encontrados: {len(imports_encontrados)}")
-
-    # Filtrar imports críticos vs no críticos
-    imports_criticos = {
-        "flet",
-        "openpyxl",
-        "openai",
-        "sqlite3",
-        "json",
-        "os",
-        "sys",
-        "pathlib",
-        "datetime",
-        "typing",
-        "hashlib",
-        "threading",
-    }
-
-    imports_no_criticos = imports_encontrados - imports_criticos
-    print(f"[INFO] Imports criticos: {len(imports_criticos & imports_encontrados)}")
-    print(f"[OPT] Imports potencialmente optimizables: {len(imports_no_criticos)}")
-
-    return imports_encontrados
-
-
-def crear_optimizaciones_avanzadas():
-    """Crea configuraciones avanzadas de optimización"""
-    print("\n[OPT] CONFIGURANDO OPTIMIZACIONES AVANZADAS...")
-    print("-" * 44)
-
-    optimizaciones = []
-
-    # Optimization 1: Bootloader personalizado
-    optimizaciones.extend(
-        [
-            "--bootloader-ignore-signals",  # Ignorar señales del sistema
-        ]
-    )
-
-    # Optimization 2: Exclusiones específicas por plataforma
-    if os.name == "nt":  # Windows
-        optimizaciones.extend(
-            [
-                "--exclude-module=nis",
-                "--exclude-module=unicodedata",  # Si no se usa Unicode avanzado
-                "--exclude-module=ctypes.wintypes",  # Si no se accede a Windows API
-            ]
-        )
-
-    # Optimization 3: Compresión de bytecode
-    optimizaciones.extend(
-        [
-            "--optimize=2",  # Máxima optimización de bytecode
-        ]
-    )
-
-    print(f"[OK] {len(optimizaciones)} optimizaciones avanzadas configuradas")
-    return optimizaciones
-
-
 def limpiar_archivos_temporales():
     """Limpia archivos y directorios temporales de builds anteriores"""
-    print("\n[CLEAN] LIMPIANDO ARCHIVOS TEMPORALES...")
+    print("\n🧹 LIMPIANDO ARCHIVOS TEMPORALES...")
     print("-" * 37)
 
     items_to_clean = {
         "directorios": ["build", "dist", "__pycache__", BuildConfig.DIST_DIR],
-        "archivos": ["*.spec", BuildConfig.ZIP_NAME],
+        "archivos": ["*.spec", BuildConfig.ZIP_NAME]
     }
 
     # Limpiar directorios
@@ -437,20 +171,19 @@ def limpiar_archivos_temporales():
         dir_path = Path(directory)
         if dir_path.exists():
             shutil.rmtree(dir_path)
-            print(f"[DEL] Eliminado directorio: {directory}/")
+            print(f"🗑️  Eliminado directorio: {directory}/")
 
     # Limpiar archivos
     for pattern in items_to_clean["archivos"]:
         for file_path in Path(".").glob(pattern):
             file_path.unlink()
-            print(f"[DEL] Eliminado archivo: {file_path}")
+            print(f"🗑️  Eliminado archivo: {file_path}")
 
-    print("[OK] Limpieza completada")
-
+    print("✅ Limpieza completada")
 
 def detectar_icono():
     """Detecta y valida el archivo de icono disponible"""
-    print("\n[ICON] DETECTANDO ICONO...")
+    print("\n🎨 DETECTANDO ICONO...")
     print("-" * 21)
 
     for icon_name in BuildConfig.ICON_FILES:
@@ -468,7 +201,6 @@ def detectar_icono():
     print("💡 Tip: Coloca un archivo .ico en la raíz del proyecto")
     return None
 
-
 def verificar_dependencias():
     """Verifica que todos los archivos necesarios estén presentes"""
     print("\n🔍 VERIFICANDO DEPENDENCIAS...")
@@ -479,7 +211,7 @@ def verificar_dependencias():
         BuildConfig.TEMPLATE_FILE,
         "requirements.txt",
         "config/config.py",
-        "services/ai_service.py",
+        "services/ai_service.py"
     ]
 
     archivos_faltantes = []
@@ -498,10 +230,9 @@ def verificar_dependencias():
     print("✅ Todas las dependencias están presentes")
     return True
 
-
 def crear_comando_pyinstaller():
     """Crea el comando completo de PyInstaller"""
-    print("\n[BUILD] CONFIGURANDO PYINSTALLER...")
+    print("\n🔧 CONFIGURANDO PYINSTALLER...")
     print("-" * 31)
 
     cmd = ["pyinstaller"] + BuildConfig.PYINSTALLER_OPTIONS
@@ -510,14 +241,10 @@ def crear_comando_pyinstaller():
     cmd.extend(["--name", BuildConfig.APP_NAME])
 
     # Incluir datos
-    cmd.extend(
-        [
-            "--add-data",
-            f"{BuildConfig.TEMPLATE_FILE};templates",
-            "--add-data",
-            "config;config",
-        ]
-    )
+    cmd.extend([
+        "--add-data", f"{BuildConfig.TEMPLATE_FILE};templates",
+        "--add-data", "config;config",
+    ])
 
     # Incluir imports ocultos
     for import_module in BuildConfig.HIDDEN_IMPORTS:
@@ -537,32 +264,12 @@ def crear_comando_pyinstaller():
 
     return cmd
 
-
 def ejecutar_pyinstaller():
     """Ejecuta PyInstaller con la configuración optimizada"""
     print("\n🚀 EJECUTANDO PYINSTALLER...")
     print("-" * 28)
 
-    # Verificar UPX si está disponible
-    upx_disponible = verificar_upx()
-    if upx_disponible:
-        print("✅ UPX disponible para compresión adicional")
-    else:
-        print("⚠️ UPX no disponible - se continuará sin compresión UPX")
-
-    # Optimizar dependencias
-    print("🔧 Optimizando dependencias...")
-    optimizar_dependencias()
-
-    # Crear optimizaciones avanzadas
-    print("⚡ Aplicando optimizaciones avanzadas...")
-    optimizaciones_extra = crear_optimizaciones_avanzadas()
-
     cmd = crear_comando_pyinstaller()
-
-    # Agregar optimizaciones extra al comando
-    if optimizaciones_extra:
-        cmd.extend(optimizaciones_extra)
 
     print(f"🔧 Comando: {' '.join(cmd[:5])}... (y {len(cmd)-5} parámetros más)")
     print("⏳ Esto puede tomar varios minutos...")
@@ -576,22 +283,18 @@ def ejecutar_pyinstaller():
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True,
+            universal_newlines=True
         )
 
         # Mostrar progreso
         output_lines = []
-        if process.stdout:
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    output_lines.append(line)
-                    # Mostrar líneas importantes
-                    if any(
-                        keyword in line.lower()
-                        for keyword in ["info:", "warning:", "error:", "building"]
-                    ):
-                        print(f"  {line}")
+        for line in process.stdout:
+            line = line.strip()
+            if line:
+                output_lines.append(line)
+                # Mostrar líneas importantes
+                if any(keyword in line.lower() for keyword in ['info:', 'warning:', 'error:', 'building']):
+                    print(f"  {line}")
 
         process.wait()
 
@@ -609,7 +312,6 @@ def ejecutar_pyinstaller():
     except Exception as e:
         print(f"\n❌ Error ejecutando PyInstaller: {e}")
         return False
-
 
 def verificar_ejecutable():
     """Verifica que el ejecutable se haya creado correctamente"""
@@ -634,7 +336,6 @@ def verificar_ejecutable():
                 print(f"  {item}")
 
         return False
-
 
 def crear_distribucion_final():
     """Crea la distribución final lista para compartir"""
@@ -668,10 +369,9 @@ def crear_distribucion_final():
 
     return True
 
-
 def crear_launcher_principal(dist_path: Path):
     """Crea un launcher principal fácil de usar"""
-    launcher_content = f"""@echo off
+    launcher_content = f'''@echo off
 title {BuildConfig.APP_NAME} v{BuildConfig.APP_VERSION}
 cls
 echo.
@@ -694,14 +394,13 @@ echo    • Ejecuta {BuildConfig.APP_NAME}.exe
 echo.
 echo ⏳ Esta ventana se cerrará en 3 segundos...
 timeout /t 3 /nobreak >nul
-"""
+'''
 
     launcher_path = dist_path / "🚀 ABRIR_GESTOR_AUDIENCIAS.bat"
     with open(launcher_path, "w", encoding="utf-8") as f:
         f.write(launcher_content)
 
     print("✅ Launcher principal creado")
-
 
 def crear_documentacion(dist_path: Path):
     """Crea documentación completa para el usuario final"""
@@ -852,7 +551,7 @@ Para soporte o sugerencias: ¡Solo contacta! 😊
         f.write(readme_content)
 
     # Crear archivo de troubleshooting
-    troubleshoot_content = """@echo off
+    troubleshoot_content = '''@echo off
 title Solucionador de Problemas - Gestor de Audiencias
 color 0A
 cls
@@ -902,15 +601,12 @@ echo.
 echo 💡 Esta aplicación es 100%% segura y sin virus
 echo.
 pause
-""".format(
-        app_name=BuildConfig.APP_NAME
-    )
+'''.format(app_name=BuildConfig.APP_NAME)
 
     with open(dist_path / "🔧 SOLUCIONAR_PROBLEMAS.bat", "w", encoding="utf-8") as f:
         f.write(troubleshoot_content)
 
     print("✅ Documentación creada")
-
 
 def crear_zip_distribucion(dist_path: Path):
     """Crea el archivo ZIP final para distribución"""
@@ -920,8 +616,8 @@ def crear_zip_distribucion(dist_path: Path):
 
     print(f"📦 Creando {BuildConfig.ZIP_NAME}...")
 
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
-        for file_path in dist_path.rglob("*"):
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
+        for file_path in dist_path.rglob('*'):
             if file_path.is_file():
                 arcname = file_path.relative_to(dist_path.parent)
                 zipf.write(file_path, arcname)
@@ -929,12 +625,11 @@ def crear_zip_distribucion(dist_path: Path):
     zip_size = zip_path.stat().st_size
     print(f"✅ ZIP creado: {zip_size:,} bytes ({zip_size/1024/1024:.1f} MB)")
 
-
 def mostrar_resumen_final():
     """Muestra el resumen final del proceso"""
-    print("\n" + "🎉" + "=" * 58)
+    print("\n" + "🎉" + "="*58)
     print("   BUILD COMPLETADO - EJECUTABLE PLUG & PLAY LISTO")
-    print("=" * 60)
+    print("="*60)
     print()
 
     print("📂 ARCHIVOS GENERADOS:")
@@ -970,7 +665,6 @@ def mostrar_resumen_final():
 
     print(f"💫 ¡Tu aplicación Plug & Play está lista para compartir!")
     print()
-
 
 def main():
     """Función principal del proceso de build"""
@@ -1009,7 +703,6 @@ def main():
 
     return True
 
-
 if __name__ == "__main__":
     try:
         success = main()
@@ -1020,6 +713,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ Error inesperado: {e}")
         import traceback
-
         traceback.print_exc()
         sys.exit(1)
