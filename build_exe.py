@@ -92,8 +92,7 @@ class BuildConfig:
         "scipy.*",
         "pandas",
         "pandas.*",
-        "numpy.distutils",
-        "numpy.tests",
+        "numpy.tests",  # removed numpy.distutils to avoid conflicts
         "sklearn",
         "tensorflow",
         "torch",
@@ -150,9 +149,7 @@ class BuildConfig:
         "opencv",
         "pygame",
         "pygame.*",
-        # Compiladores/Distribución
-        "distutils",
-        "distutils.*",
+        # Compiladores/Distribución (distutils removed - PyInstaller conflict)
         "setuptools",
         "setuptools.*",
         "wheel",
