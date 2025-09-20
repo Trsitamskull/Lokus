@@ -24,13 +24,13 @@ OPENAI_API_KEY_EMBEBIDA = ""  # API Key removida por seguridad - se configura en
 try:
     from config.config import OPENAI_API_KEY, OPENAI_MODEL
     HAS_CONFIG = True
-    print("🔧 Usando configuración externa (config.py)")
+    print("Usando configuracion externa (config.py)")
 except ImportError:
     # Usar configuración embebida en el ejecutable
     OPENAI_API_KEY = OPENAI_API_KEY_EMBEBIDA
     OPENAI_MODEL = "gpt-4o-mini"
     HAS_CONFIG = False
-    print("🔒 Usando configuración embebida (API key oculta)")
+    print("Usando configuracion embebida (API key oculta)")
 
 
 class AIFormFiller:
@@ -254,15 +254,24 @@ class AIFormFiller:
             from services.ai_training_service import training_service
             self.training_service = training_service
             self.training_enabled = True
-            print(f"🤖 OpenAI configurado con auto-entrenamiento - Modelo: {self.model}")
+            print(f"OpenAI configurado con auto-entrenamiento - Modelo: {self.model}")
         except ImportError:
             self.training_service = None
             self.training_enabled = False
-            print(f"🤖 OpenAI configurado sin auto-entrenamiento - Modelo: {self.model}")
+            print(f"OpenAI configurado sin auto-entrenamiento - Modelo: {self.model}")
         
         # Caché para optimización de rendimiento
         self._cache_abreviaciones = {}
         self._cache_resultados = {}
+        
+        # NUEVO: Caché persistente para optimización extrema
+        try:
+            from services.cache_service import get_cache_instance
+            self.persistent_cache = get_cache_instance()
+            print("Cache persistente activado - Optimizacion extrema habilitada")
+        except ImportError as e:
+            self.persistent_cache = None
+            print(f"Cache persistente no disponible: {e}")
     
     def _expandir_abreviaciones(self, texto: str) -> str:
         """Expandir abreviaciones judiciales encontradas en datos reales (con caché)"""
@@ -1124,10 +1133,17 @@ EJEMPLOS DE EXTRACCIÓN CON FORMATEO DE NOMBRES:
 RESPONDE SOLO EL JSON, NADA MÁS.
 """
         
-        # Optimización: verificar caché primero
+        # OPTIMIZACIÓN EXTREMA: Verificar caché persistente primero
+        if self.persistent_cache:
+            cached_result = self.persistent_cache.get("extract_audiencia", texto, self.model)
+            if cached_result:
+                print("Cache hit persistente - Respuesta instantanea")
+                return cached_result
+        
+        # Fallback: caché en memoria (para compatibilidad)
         texto_hash = hash(texto)
         if texto_hash in self._cache_resultados:
-            print("📋 Usando resultado en caché")
+            print("📋 Usando resultado en caché memoria")
             return self._cache_resultados[texto_hash]
         
         try:
@@ -1164,7 +1180,11 @@ RESPONDE SOLO EL JSON, NADA MÁS.
                 if campo not in resultado:
                     resultado[campo] = ""
             
-            # Guardar en caché para futuras consultas
+            # OPTIMIZACIÓN EXTREMA: Guardar en caché persistente
+            if self.persistent_cache:
+                self.persistent_cache.set("extract_audiencia", texto, resultado, self.model)
+            
+            # Guardar en caché memoria (para compatibilidad)
             self._cache_resultados[texto_hash] = resultado
             
             return resultado
@@ -1180,8 +1200,15 @@ RESPONDE SOLO EL JSON, NADA MÁS.
         """
         Divide un texto largo en secciones individuales de audiencias.
         Para procesamiento masivo de documentos.
-        VERSION MEJORADA: Con sanitización y parser robusto.
+        VERSION MEJORADA: Con caché persistente y parser robusto.
         """
+        # OPTIMIZACIÓN EXTREMA: Verificar caché persistente primero
+        if self.persistent_cache:
+            cached_result = self.persistent_cache.get("divide_audiencias", texto, self.model)
+            if cached_result:
+                print("Cache hit persistente para division - Respuesta instantanea")
+                return cached_result.get("secciones", [])
+        
         # MEJORA 1: Sanitizar texto de entrada
         texto_sanitizado = self._sanitizar_texto_para_json(texto)
         
@@ -1231,6 +1258,12 @@ IMPORTANTE:
             secciones = self._parsear_json_robusto(resultado_texto, texto)
             
             if isinstance(secciones, list) and len(secciones) > 0:
+                # OPTIMIZACIÓN EXTREMA: Guardar división exitosa en caché persistente
+                if self.persistent_cache:
+                    cache_data = {"secciones": secciones, "total": len(secciones)}
+                    self.persistent_cache.set("divide_audiencias", texto, cache_data, self.model)
+                    print(f"Division cacheada: {len(secciones)} secciones")
+                
                 return secciones
             else:
                 print("⚠️ No se pudo dividir, devolviendo texto original")
@@ -1682,6 +1715,38 @@ FORMATEO DE NOMBRES CRÍTICO:
         print(f"🚀 Velocidad promedio: {tiempo_total/len(secciones):.2f}s por audiencia")
         
         return resultados_validos
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        NUEVA FUNCIONALIDAD: Obtiene estadísticas del caché persistente
+        
+        Returns:
+            Diccionario con estadísticas de rendimiento del caché
+        """
+        if self.persistent_cache:
+            stats = self.persistent_cache.get_stats()
+            stats['cache_enabled'] = True
+            return stats
+        else:
+            return {
+                'cache_enabled': False,
+                'message': 'Caché persistente no disponible'
+            }
+    
+    def clear_cache(self):
+        """
+        NUEVA FUNCIONALIDAD: Limpia todo el caché persistente
+        """
+        if self.persistent_cache:
+            self.persistent_cache.clear_cache()
+            print("🗑️ Caché persistente limpiado completamente")
+        else:
+            print("⚠️ Caché persistente no disponible")
+        
+        # Limpiar también caché en memoria
+        self._cache_resultados.clear()
+        self._cache_abreviaciones.clear()
+        print("🧹 Caché en memoria limpiado")
 
 
 # Instancia global del servicio
