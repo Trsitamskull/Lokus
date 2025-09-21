@@ -7,8 +7,7 @@ def validar_campos_obligatorios(datos: dict) -> Tuple[bool, str]:
         'radicado': 'Radicado del proceso',
         'tipo': 'Tipo de audiencia',
         'realizada_si': 'Realizada (SI/NO)',
-        'realizada_no': 'Realizada (SI/NO)',
-        'juzgado': 'Juzgado'
+        'realizada_no': 'Realizada (SI/NO)'
     }
     
     # Verificar que se haya seleccionado SI o NO

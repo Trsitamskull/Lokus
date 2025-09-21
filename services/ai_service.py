@@ -17,7 +17,7 @@ try:
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
-    print("❌ Error: OpenAI no está instalado. Ejecuta: pip install openai")
+    print("ERROR: OpenAI no está instalado. Ejecuta: pip install openai")
 
 # CONFIGURACIÓN EMBEBIDA - API KEY OCULTA EN EL EJECUTABLE
 OPENAI_API_KEY_EMBEBIDA = ""  # API Key removida por seguridad - se configura en build
@@ -405,7 +405,7 @@ class AIFormFiller:
         # Si hay tanto causa principal como reacción, priorizar causa principal
         if motivos_causa_principal and motivos_reaccion:
             print(
-                f"🔧 LÓGICA ESPECIAL: Priorizando causa principal {motivos_causa_principal[0]} sobre reacción {motivos_reaccion[0]}"
+                f"LOGICA ESPECIAL: Priorizando causa principal {motivos_causa_principal[0]} sobre reaccion {motivos_reaccion[0]}"
             )
             motivo_dominante = motivos_causa_principal[0]
             # Guardar la reacción como secundaria
@@ -514,7 +514,7 @@ class AIFormFiller:
         # Si hay tanto causa principal como reacción, priorizar causa principal
         if motivos_causa_principal and motivos_reaccion:
             print(
-                f"🔧 LÓGICA ESPECIAL CONTRADICTORIA: Priorizando causa principal {motivos_causa_principal[0]} sobre reacción {motivos_reaccion[0]}"
+                f"LOGICA ESPECIAL CONTRADICTORIA: Priorizando causa principal {motivos_causa_principal[0]} sobre reaccion {motivos_reaccion[0]}"
             )
             motivo_dominante = motivos_causa_principal[0]
             # Guardar la reacción como secundaria
@@ -676,11 +676,11 @@ class AIFormFiller:
             # NUEVO: Post-procesar resultado para mejoras adicionales
             resultado = self._postprocesar_resultado(resultado, texto)
 
-            print("🤖 Procesado con OpenAI mejorado")
+            print("AI: Procesado con OpenAI mejorado")
             return resultado
 
         except Exception as e:
-            print(f"❌ Error OpenAI: {e}")
+            print(f"ERROR OpenAI: {e}")
             # Devolver estructura vacía en caso de error
             return {
                 "radicado": "",
@@ -827,7 +827,7 @@ class AIFormFiller:
             if not motivos_explicitos or dice_ninguna_causa:
                 # Caso claro: dice sí y no hay motivos reales de no realización
                 print(
-                    "🔧 CORRECCIÓN: Audiencia marcada como SÍ realizada sin motivos válidos"
+                    "CORRECCION: Audiencia marcada como SI realizada sin motivos validos"
                 )
                 resultado_mejorado["se_realizo"] = "SI"
                 resultado_mejorado["motivos"] = ""
@@ -836,7 +836,7 @@ class AIFormFiller:
             else:
                 # Caso contradictorio: dice sí pero hay motivos de no realización
                 print(
-                    "🔧 CORRECCIÓN: Detectada contradicción - priorizando hechos sobre declaración"
+                    "CORRECCION: Detectada contradiccion - priorizando hechos sobre declaracion"
                 )
                 resultado_mejorado["se_realizo"] = "NO"
                 audiencia_confirmada_si = False
@@ -853,7 +853,7 @@ class AIFormFiller:
             and self._detectar_defensor_confianza(texto_original.lower())
         ):
             print(
-                "🔧 CORRECCIÓN: Cambiando 'defensor público' a 'defensor confianza' por detección contextual"
+                "CORRECCION: Cambiando 'defensor publico' a 'defensor confianza' por deteccion contextual"
             )
             resultado_mejorado["motivos"] = "defensor confianza"
 
@@ -868,7 +868,7 @@ class AIFormFiller:
                 if motivos_inferidos:
                     resultado_mejorado["motivos"] = motivos_inferidos
                     print(
-                        f"🔧 CORRECCIÓN: Aplicando motivo inferido '{motivos_inferidos}' por información contradictoria"
+                        f"CORRECCION: Aplicando motivo inferido '{motivos_inferidos}' por informacion contradictoria"
                     )
             # Caso normal - solo si no hay motivos
             elif not resultado_mejorado.get("motivos"):
@@ -1080,7 +1080,7 @@ class AIFormFiller:
             bool: True si se guardó correctamente
         """
         if not self.training_enabled or not self.training_service:
-            print("⚠️ Sistema de entrenamiento no disponible")
+            print("ADVERTENCIA: Sistema de entrenamiento no disponible")
             return False
 
         return self.training_service.guardar_correccion(
@@ -1293,7 +1293,7 @@ RESPONDE SOLO EL JSON, NADA MÁS.
         # Fallback: caché en memoria (para compatibilidad)
         texto_hash = hash(texto)
         if texto_hash in self._cache_resultados:
-            print("📋 Usando resultado en caché memoria")
+            print("CACHE: Usando resultado en cache memoria")
             return self._cache_resultados[texto_hash]
 
         try:
@@ -1355,10 +1355,10 @@ RESPONDE SOLO EL JSON, NADA MÁS.
             return resultado
 
         except json.JSONDecodeError as e:
-            print(f"❌ Error parsing JSON de OpenAI: {e}")
+            print(f"ERROR parsing JSON de OpenAI: {e}")
             raise Exception(f"Error en formato JSON: {e}")
         except Exception as e:
-            print(f"❌ Error OpenAI: {e}")
+            print(f"ERROR OpenAI: {e}")
             raise Exception(f"Error de OpenAI: {e}")
 
     def dividir_audiencias_masivo(self, texto: str) -> List[str]:
@@ -1382,7 +1382,7 @@ RESPONDE SOLO EL JSON, NADA MÁS.
         # MEJORA 2: Limitar tamaño para evitar timeouts
         if len(texto_sanitizado) > 8000:  # Límite seguro
             print(
-                f"⚠️ Texto muy largo ({len(texto_sanitizado)} chars), dividiendo en chunks..."
+                f"ADVERTENCIA: Texto muy largo ({len(texto_sanitizado)} chars), dividiendo en chunks..."
             )
             return self._dividir_por_chunks(texto_sanitizado)
 
@@ -1440,11 +1440,11 @@ IMPORTANTE:
 
                 return secciones
             else:
-                print("⚠️ No se pudo dividir, devolviendo texto original")
+                print("ADVERTENCIA: No se pudo dividir, devolviendo texto original")
                 return [texto]  # Fallback si no es array válido
 
         except Exception as e:
-            print(f"❌ Error dividiendo audiencias: {e}")
+            print(f"ERROR dividiendo audiencias: {e}")
             return [texto]  # Fallback a texto original
 
     def _sanitizar_texto_para_json(self, texto: str) -> str:
@@ -1500,7 +1500,7 @@ IMPORTANTE:
                 secciones_chunk = self.dividir_audiencias_masivo(chunk)
                 todas_secciones.extend(secciones_chunk)
             except Exception as e:
-                print(f"  ⚠️ Error en chunk {i+1}: {e}")
+                print(f"  ADVERTENCIA: Error en chunk {i+1}: {e}")
                 todas_secciones.append(chunk)  # Agregar chunk original si falla
 
         return todas_secciones
@@ -1526,7 +1526,7 @@ IMPORTANTE:
                 return secciones
 
         except json.JSONDecodeError as e:
-            print(f"  ⚠️ JSON directo falló: {e}")
+            print(f"  ADVERTENCIA: JSON directo falló: {e}")
 
         # Estrategia 2: Buscar array JSON en el texto
         try:
@@ -1542,7 +1542,7 @@ IMPORTANTE:
                     continue
 
         except Exception as e:
-            print(f"  ⚠️ Búsqueda de array falló: {e}")
+            print(f"  ADVERTENCIA: Búsqueda de array falló: {e}")
 
         # Estrategia 3: Parsing manual de strings entre comillas
         try:
@@ -1556,13 +1556,13 @@ IMPORTANTE:
                     return audiencias
 
         except Exception as e:
-            print(f"  ⚠️ Parsing manual falló: {e}")
+            print(f"  ADVERTENCIA: Parsing manual falló: {e}")
 
         # Estrategia 4: División heurística básica
         try:
             return self._division_heuristica_fallback(texto_original)
         except Exception as e:
-            print(f"  ⚠️ División heurística falló: {e}")
+            print(f"  ADVERTENCIA: División heurística falló: {e}")
 
         # Último recurso: texto original
         return [texto_original]
@@ -1637,7 +1637,7 @@ IMPORTANTE:
                 return [self.extract_audiencia_info(secciones[0])]
             return []
 
-        print(f"🚀 Procesamiento paralelo de {len(secciones)} audiencias...")
+        print(f"PROCESAMIENTO: Paralelo de {len(secciones)} audiencias...")
 
         # Configurar threading
         resultados: List[Dict[str, Any]] = [{}] * len(secciones)
@@ -1690,14 +1690,14 @@ IMPORTANTE:
             for thread in batch_threads:
                 thread.join()
 
-            print(f"  ✅ Batch {i//max_threads + 1} completado")
+            print(f"  OK: Batch {i//max_threads + 1} completado")
 
         fin = time.time()
         tiempo_total = fin - inicio
 
         # Reportar errores si los hay
         if not errores.empty():
-            print("⚠️ Errores en procesamiento paralelo:")
+            print("ADVERTENCIA: Errores en procesamiento paralelo:")
             while not errores.empty():
                 indice, error = errores.get()
                 print(f"  Sección {indice + 1}: {error}")
@@ -1804,7 +1804,7 @@ FORMATEO DE NOMBRES CRÍTICO:
             return datos
 
         except Exception as e:
-            print(f"❌ Error en extracción rápida: {e}")
+            print(f"ERROR en extraccion rapida: {e}")
             return self._estructura_vacia()
 
     def _estructura_vacia(self) -> Dict[str, Any]:
@@ -1837,13 +1837,13 @@ FORMATEO DE NOMBRES CRÍTICO:
         Returns:
             Lista de audiencias procesadas
         """
-        print("🚀 PROCESAMIENTO OPTIMIZADO INICIADO")
+        print("PROCESAMIENTO OPTIMIZADO INICIADO")
         print("=" * 50)
 
         inicio_total = time.time()
 
         # Paso 1: División optimizada
-        print("📄 Paso 1: Dividiendo documento...")
+        print(" Paso 1: Dividiendo documento...")
         inicio_division = time.time()
 
         secciones = self.dividir_audiencias_masivo(texto)
@@ -1852,15 +1852,15 @@ FORMATEO DE NOMBRES CRÍTICO:
         tiempo_division = fin_division - inicio_division
 
         print(
-            f"✅ División completada en {tiempo_division:.2f}s - {len(secciones)} secciones"
+            f"OK: División completada en {tiempo_division:.2f}s - {len(secciones)} secciones"
         )
 
         if len(secciones) == 0:
-            print("❌ No se encontraron secciones")
+            print("ERROR: No se encontraron secciones")
             return []
 
         # Paso 2: Procesamiento optimizado
-        print(f"\n🔄 Paso 2: Procesando {len(secciones)} audiencias...")
+        print(f"\n PASO 2: Procesando {len(secciones)} audiencias...")
         inicio_procesamiento = time.time()
 
         if usar_paralelo and len(secciones) > 1:
@@ -1874,15 +1874,15 @@ FORMATEO DE NOMBRES CRÍTICO:
                 if progreso_callback:
                     progreso_callback(i + 1, len(secciones))
 
-                print(f"  ✅ Audiencia {i+1}/{len(secciones)} procesada")
+                print(f"  OK: Audiencia {i+1}/{len(secciones)} procesada")
 
         fin_procesamiento = time.time()
         tiempo_procesamiento = fin_procesamiento - inicio_procesamiento
 
-        print(f"✅ Procesamiento completado en {tiempo_procesamiento:.2f}s")
+        print(f"OK: Procesamiento completado en {tiempo_procesamiento:.2f}s")
 
         # Paso 3: Validación y limpieza
-        print(f"\n🔍 Paso 3: Validando resultados...")
+        print(f"\n PASO 3: Validando resultados...")
         resultados_validos = []
 
         for i, resultado in enumerate(resultados):
@@ -1893,21 +1893,23 @@ FORMATEO DE NOMBRES CRÍTICO:
 
                 if tiene_radicado or tiene_fecha:
                     resultados_validos.append(resultado)
-                    print(f"  ✅ Audiencia {i+1}: Válida")
+                    print(f"  OK: Audiencia {i+1}: Válida")
                 else:
-                    print(f"  ⚠️ Audiencia {i+1}: Datos insuficientes")
+                    print(f"  ADVERTENCIA: Audiencia {i+1}: Datos insuficientes")
             else:
-                print(f"  ❌ Audiencia {i+1}: Resultado inválido")
+                print(f"  ERROR: Audiencia {i+1}: Resultado inválido")
 
         fin_total = time.time()
         tiempo_total = fin_total - inicio_total
 
         # Resumen final
-        print(f"\n🏆 PROCESAMIENTO COMPLETADO")
-        print(f"⏱️ Tiempo total: {tiempo_total:.2f} segundos")
-        print(f"📊 Audiencias válidas: {len(resultados_validos)}/{len(secciones)}")
+        print(f"\n PROCESAMIENTO COMPLETADO")
+        print(f"TIEMPO: Tiempo total: {tiempo_total:.2f} segundos")
         print(
-            f"🚀 Velocidad promedio: {tiempo_total/len(secciones):.2f}s por audiencia"
+            f"ESTADISTICAS: Audiencias válidas: {len(resultados_validos)}/{len(secciones)}"
+        )
+        print(
+            f"VELOCIDAD: Velocidad promedio: {tiempo_total/len(secciones):.2f}s por audiencia"
         )
 
         return resultados_validos
@@ -1935,14 +1937,14 @@ FORMATEO DE NOMBRES CRÍTICO:
         """
         if self.persistent_cache:
             self.persistent_cache.clear_cache()
-            print("🗑️ Caché persistente limpiado completamente")
+            print("CACHE: Caché persistente limpiado completamente")
         else:
-            print("⚠️ Caché persistente no disponible")
+            print("ADVERTENCIA: Caché persistente no disponible")
 
         # Limpiar también caché en memoria
         self._cache_resultados.clear()
         self._cache_abreviaciones.clear()
-        print("🧹 Caché en memoria limpiado")
+        print(" Caché en memoria limpiado")
 
 
 # Instancia global del servicio

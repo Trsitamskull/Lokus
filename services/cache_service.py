@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-🗄️ SISTEMA DE CACHÉ PERSISTENTE PARA IA
+SISTEMA DE CACHE PERSISTENTE PARA IA
 Autor: Jose David Bustamante Sánchez - 2025
 
-🎯 CARACTERÍSTICAS:
+CARACTERÍSTICAS:
 • Caché persistente con SQLite para llamadas a OpenAI
 • Reducción 80% en consultas repetidas
 • Hash MD5 para identificación única de contenido
@@ -95,7 +95,7 @@ class CachePersistente:
                 conn.commit()
 
         except Exception as e:
-            print(f"⚠️ Error inicializando caché: {e}")
+            print(f"ADVERTENCIA: Error inicializando caché: {e}")
 
     def _generate_hash(self, prompt_type: str, input_text: str, model: str = "") -> str:
         """Genera hash único para el contenido"""
@@ -196,7 +196,7 @@ class CachePersistente:
                     return None
 
         except Exception as e:
-            print(f"⚠️ Error leyendo caché: {e}")
+            print(f"ADVERTENCIA: Error leyendo caché: {e}")
             self.stats["misses"] += 1
             return None
 
@@ -243,7 +243,7 @@ class CachePersistente:
                 self.stats["saves"] += 1
 
         except Exception as e:
-            print(f"⚠️ Error guardando en caché: {e}")
+            print(f"ADVERTENCIA: Error guardando en caché: {e}")
 
     def _cleanup_expired(self):
         """Limpia entradas expiradas del caché"""
@@ -270,7 +270,7 @@ class CachePersistente:
                     )
 
         except Exception as e:
-            print(f"⚠️ Error limpiando caché: {e}")
+            print(f"ADVERTENCIA: Error limpiando caché: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         """Obtiene estadísticas del caché"""
@@ -329,7 +329,7 @@ class CachePersistente:
             print("Cache completamente limpiado")
 
         except Exception as e:
-            print(f"⚠️ Error limpiando caché: {e}")
+            print(f"ADVERTENCIA: Error limpiando caché: {e}")
 
 
 # Instancia global del caché (singleton)

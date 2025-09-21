@@ -11,12 +11,12 @@ class FormularioAudiencia:
         self.fuente = fuente
         self.tipos_audiencia = [
             "Alegatos de conclusión",
-            "Audiencia concentrada", 
-            "Audiencia de acusación",
-            "Audiencia de juicio oral",
-            "Audiencia de preclusion",
-            "Audiencia preliminar",
-            "Audiencia preparatoria",
+            "Concentrada", 
+            "Acusación",
+            "Juicio oral",
+            "Preclusión",
+            "Preliminar",
+            "Preparatoria",
             "Otra",
         ]
         self.motivo_etiquetas = [
