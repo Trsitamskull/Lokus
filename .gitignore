@@ -34,3 +34,14 @@ build/
 dist/
 *.spec
 GestorAudiencias_v2.0/
+
+# Ignorar archivos de Nuitka (compilación nativa)
+GA_Nativo/
+dist_nt/
+*.build/
+*.dist/
+*.onefile-build/
+main.exe
+
+# Ignorar archivos ZIP de distribución
+*.zip
