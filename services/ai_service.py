@@ -691,9 +691,7 @@ class AIFormFiller:
                 "juzgado": "",
                 "se_realizo": "",
                 "motivos": "",
-                "observaciones": f"Error al procesar: {str(e)}",
-                "demandante": "",
-                "demandado": "",
+                "observaciones": f"Error al procesar: {str(e)}"
             }
 
     def _formatear_nombres_inteligente(self, texto: str) -> str:
@@ -754,8 +752,6 @@ class AIFormFiller:
         resultado_formateado = resultado.copy()
 
         # Campos que pueden contener nombres propios
-        campos_nombres = ["demandante", "demandado"]
-
         # Formatear radicado (puede contener nombres)
         if resultado_formateado.get("radicado"):
             radicado = resultado_formateado["radicado"]
@@ -770,13 +766,6 @@ class AIFormFiller:
                     resultado_formateado["radicado"] = (
                         self._formatear_nombres_inteligente(radicado)
                     )
-
-        # Formatear campos de nombres específicos
-        for campo in campos_nombres:
-            if resultado_formateado.get(campo):
-                resultado_formateado[campo] = self._formatear_nombres_inteligente(
-                    resultado_formateado[campo]
-                )
 
         return resultado_formateado
 
@@ -1113,170 +1102,63 @@ class AIFormFiller:
                     ejemplos_aprendidos += f"Resultado correcto: {json.dumps(ejemplo['datos'], ensure_ascii=False)}\n"
 
         prompt = f"""
-Eres un experto en extraer información de documentos judiciales colombianos.
-MEJORADO con patrones identificados en datos reales de defensores.
-{ejemplos_aprendidos}
+Eres un experto en extraer información de audiencias judiciales colombianas.
+Analiza el texto y extrae ÚNICAMENTE la información presente.
 
-TEXTO A ANALIZAR (ya preprocesado con abreviaciones expandidas):
-"{texto}"
+TEXTO A ANALIZAR: "{texto}"
 
-Extrae ÚNICAMENTE la información que encuentres en el texto y responde con JSON válido:
+INSTRUCCIONES ESPECÍFICAS:
 
+1. RADICADO - FORMATO: "NÚMERO - NOMBRES"
+   - Busca números largos (19-21 dígitos) seguidos de nombres
+   - Formato correcto: "20228600119920190026800 - DOSTIN RODRIGUEZ DONADO"
+   - Si hay múltiples nombres: "ROBINSON JAIME TARAZONA Y RIKELVER GONZALEZ VENEZO"
+
+2. TIPO DE AUDIENCIA - Usar términos exactos:
+   - "JUICIO" → "Juicio Oral"
+   - "CONTINUACION JUICIO" → "Continuación de Juicio Oral"
+   - "VERIFICACION DE ALLANAMIENTO" → "Verificación de Allanamiento"
+   - Usar el tipo más específico encontrado
+
+3. JUZGADO - Formato completo:
+   - "Tercero penal del circuito" → "Juzgado Tercero Penal del Circuito"
+   - "Juzgado 002 Promiscuo Municipal de Aguachica" → mantener formato completo
+   - Agregar "Juzgado" al inicio si no está presente
+
+4. FECHA - Formato DD/MM/YYYY usando 2025:
+   - "30 de julio" → "30/07/2025"
+   - "31 julio" → "31/07/2025"
+   - "19 de agosto" → "19/08/2025"
+
+5. HORA - Formato HH:MM:
+   - "9:30 A.M." → "09:30"
+   - "10:30 am" → "10:30"
+
+6. SE REALIZÓ - Análisis del contexto:
+   - Si menciona "fracasa", "solicitud", "aplazamiento" → "NO"
+   - Si describe acciones realizadas sin mencionar problemas → "SI"
+
+7. MOTIVOS (solo si NO se realizó):
+   - "fracasa por solicitud de la fiscalía" → "Fiscalía"
+   - "fiscal no se conectó" → "Fiscalía"
+   - "juez no compareció" → "Juez"
+
+8. OBSERVACIONES - Información relevante:
+   - Extraer detalles importantes sin copiar todo el texto
+   - Fechas de reprogramación si las hay
+   - Decisiones tomadas durante la audiencia
+
+Responde ÚNICAMENTE con JSON válido:
 {{
-    "radicado": "NOMBRE_PERSONA - NÚMERO_RADICADO (si hay ambos) o solo lo que encuentres",
-    "tipo_audiencia": "tipo exacto de audiencia encontrado",
+    "radicado": "NÚMERO - NOMBRES",
+    "tipo_audiencia": "Tipo específico de audiencia",
     "fecha": "DD/MM/YYYY",
-    "hora": "HH",
-    "minuto": "MM",
-    "juzgado": "nombre del juzgado encontrado",
-    "se_realizo": "SI o NO según el texto",
-    "motivos": "motivo principal si NO se realizó",
-    "observaciones": "información adicional relevante",
-    "demandante": "",
-    "demandado": ""
+    "hora": "HH:MM",
+    "juzgado": "Juzgado completo",
+    "se_realizo": "SI o NO",
+    "motivos": "Motivo principal si NO se realizó",
+    "observaciones": "Información adicional relevante"
 }}
-
-REGLAS CRÍTICAS MEJORADAS:
-1. RADICADO:
-   - Busca números largos (19-21 dígitos): "200016001075202255547"
-   - Busca formatos cortos: "2024-00236", "2019-00542"
-   - Nombres complejos: "NELSON MANUEL BOCANEGRA MEJIA", "FERNANDO JULIO CASUIL Y SHARLES DE JESUS LOPEZ JIMENEZ"
-   - Si hay nombre Y radicado: "NOMBRE_COMPLETO - RADICADO"
-   - FORMATEO DE NOMBRES: Respeta el formato original del texto:
-     * Si está en minúsculas: "jose bustamante" → capitalizar cada palabra
-     * Si está en MAYÚSCULAS: "JOSE BUSTAMANTE" → mantener mayúsculas
-     * Si es mixto con mayúsculas: "JOSE bustamante" → convertir todo a mayúsculas
-
-2. FECHAS MEJORADAS - SIEMPRE USAR 2025:
-   - Formato estructurado: "24 de junio de 2025" → "24/06/2025"
-   - Formato compacto: "JUNIO 24" → "24/06/2025"
-   - IMPORTANTE: Si no hay año explícito, SIEMPRE usar 2025
-
-3. TIPOS DE AUDIENCIA (patrones reales):
-   - Estilo estructurado: "AUDIENCIA CONCENTRADA", "AUDIENCIA DE JUICIO ORAL"
-   - Estilo compacto: "INICIA JUICIO" → "AUDIENCIA DE JUICIO ORAL"
-   - "CONTINUA JUICIO" → "CONTINUACIÓN DE JUICIO ORAL"
-   - "ACUSACION" → "AUDIENCIA DE FORMULACIÓN DE ACUSACIÓN"
-   - "PREPARATORIA" → "AUDIENCIA PREPARATORIA"
-
-4. REALIZACIÓN Y MOTIVOS - REGLAS CRÍTICAS:
-
-   FRACASO POR REPROGRAMACIÓN (SIEMPRE "NO"):
-   - "se reprogramó", "será reprogramada", "reprogramación solicitada" → "NO"
-   - "se aplaza", "solicita aplazamiento", "pide reprogramación" → "NO"
-   - "se suspende", "nueva fecha", "se fija" → "NO"
-   - "FRACSA", "FRACASA", "FRCASA" → "NO"
-
-   ÉXITO (SIEMPRE "SI"):
-   - "se realizó con normalidad", "sin novedad", "se efectuó" → "SI"
-   - "se emitió sentido de fallo", "se dio lectura" → "SI"
-
-   MOTIVOS (SOLO USAR ESTOS CÓDIGOS EXACTOS - NUNCA TEXTO DESCRIPTIVO):
-   IMPORTANTE: Cuando detectes múltiples causas, selecciona SOLO la de mayor prioridad:
-
-   CÓDIGOS VÁLIDOS DE MOTIVOS (usar EXACTAMENTE estos códigos):
-
-   REGLA CRÍTICA PARA DEFENSORES PÚBLICOS:
-   Si el texto contiene PRIMERA PERSONA (solicité, pedí, solicito, pido, no pude,
-   no he tenido, me fue imposible, no logré), el motivo DEBE ser "defensor público"
-   independientemente de otras causas mencionadas. Esta aplicación es para defensores
-   públicos que escriben en primera persona.
-
-   1. "juez" - MÁS PRIORITARIO (solo si NO hay primera persona)
-      • "despacho en otra audiencia", "estar el despacho en audiencia"
-      • "juez en vacaciones", "no nombrado titular", "juez ausente"
-      • "fracsa por estar el despacho", "ambos despachos ocupados"
-
-   2. "fiscalía" - Segunda prioridad (solo si NO hay primera persona)
-      • "fiscal no se conectó", "fiscal no compareció"
-      • "fiscal reemplazado", "nuevo fiscal", "no conoce carpeta"
-      • "solicitud de fiscalía", "posible preacuerdo"
-
-   3. "defensor público" - PRIORIDAD ABSOLUTA CON PRIMERA PERSONA
-      • PRIMERA PERSONA (defensores escriben en primera persona):
-        - "solicité reprogramarla", "solicité reprogramación", "pedí reprogramación"
-        - "solicito reprogramar", "pido reprogramación", "soliciré reprogramar"
-        - "no pude contactar", "no he tenido contacto", "no logré comunicarme"
-        - "me fue imposible contactar", "no he logrado contactar"
-        - "no había podido contactar", "no pude establecer"
-      • TERCERA PERSONA:
-        - "defensor público no compareció", "inasistencia defensor público"
-        - "no había tenido contacto con procesado" (típico del defensor)
-
-      IMPORTANTE CRÍTICO: Si detectas palabras en primera persona (solicité, pedí,
-      solicito, no pude, me fue imposible, etc.) junto con cualquier mención de
-      reprogramación o falta de contacto, asigna SIEMPRE "defensor público" como motivo,
-      sin importar qué otras causas se mencionen (fiscal, juez, etc.).
-
-   4. "defensor confianza" - Cuarta prioridad
-      • "abogado no compareció", "defensor de confianza ausente"
-
-   5. "usuario" - Quinta prioridad
-      • "procesado no compareció", "no notificaron al procesado"
-      • "procesado ausente", "usuario no se presentó"
-
-   6. "inpec" - Sexta prioridad
-      • "inpec no trasladó", "problemas de traslado"
-
-   7. "víctima" - Séptima prioridad
-      • "víctima no compareció"
-
-   8. "icbf" - Menor prioridad
-      • "icbf no compareció"
-
-   REGLA CRÍTICA DE PRIORIDAD: Si el texto dice "FRACSA POR ESTAR EL DESPACHO EN OTRA AUDIENCIA Y FISCAL NO SE CONECTÓ",
-   el motivo principal es "juez" (mayor prioridad) y "fiscalía" va a observaciones como causa secundaria.
-
-   IMPORTANTE: El campo "motivos" debe contener ÚNICAMENTE uno de estos códigos:
-   "juez", "fiscalía", "defensor público", "defensor confianza", "usuario", "inpec", "víctima", "icbf"
-   NUNCA uses texto descriptivo como "no había tenido contacto con el procesado" en el campo motivos.
-
-5. OBSERVACIONES MEJORADAS:
-   - Fechas de reprogramación: "Reprogramada para el 31 de julio"
-   - Motivos secundarios: "Causa secundaria: fiscalía"
-   - Cambios: "Fiscal reemplazado", "Nuevo defensor asignado"
-   - Detalles técnicos: "Problemas de conectividad reportados"
-   - Si no hay información adicional: "Sin observaciones adicionales"
-   - NUNCA dejar vacío
-
-6. HORAS:
-   - "09:30 am" → hora:"09", minuto:"30"
-   - "12:30 pm" → hora:"12", minuto:"30"
-   - "03:00 pm" → hora:"15", minuto:"00"
-
-7. JUZGADOS:
-   - "F 17 9 Circuito" → "9 Circuito Penal"
-   - "3 Circuito Juzgado" → "3 Circuito Penal"
-   - "4 Circuito Juzgado" → "4 Circuito Penal"
-   - IMPORTANTE: Para abreviaciones ambiguas como "Cto" (puede ser Circuito o Conocimiento),
-     mantener la abreviación original: "Juzgado 3 Cto Penal" → "Juzgado 3 Cto Penal"
-
-8. AUDIENCIAS REALIZADAS vs NO REALIZADAS - REGLA CRÍTICA:
-
-   PRIORIDAD: Lo que dice el texto/defensor tiene prioridad absoluta.
-
-   SI LA AUDIENCIA SE REALIZÓ ("¿Se realizó?: Sí"):
-   - Marcar "se_realizo": "SI"
-   - NO asignar motivos (dejar vacío "motivos": "")
-   - Aunque mencione que alguien no vino, si dice que SE REALIZÓ → se realizó
-   - Ejemplo: "¿Se realizó?: Sí... la víctima no compareció pero se continuó"
-     → "se_realizo": "SI", "motivos": ""
-
-   SI LA AUDIENCIA NO SE REALIZÓ ("¿Se realizó?: No"):
-   - Marcar "se_realizo": "NO"
-   - Asignar el motivo correspondiente según las reglas de prioridad
-
-IMPORTANTE: El texto puede estar en dos estilos:
-- ESTRUCTURADO: Descriptivo, detallado ("El día 24 de junio de 2025 a las 09:30 am...")
-- COMPACTO: Abreviado, telegráfico ("JUNIO 24.- INICIA JUICIO... FRACSA POR...")
-
-Adapta tu análisis al estilo detectado pero SIEMPRE devuelve el JSON completo.
-
-EJEMPLOS DE EXTRACCIÓN CON FORMATEO DE NOMBRES:
-- "garcía lópez miguel ángel (procesado). Radicado: 11001-123" → radicado: "García López Miguel Ángel - 11001-123"
-- "MARTÍNEZ SILVA, ANA - número 2024-456" → radicado: "MARTÍNEZ SILVA, ANA - 2024-456"
-- "JOSE bustamante vs María RODRIGUEZ" → demandante: "JOSE BUSTAMANTE", demandado: "MARÍA RODRIGUEZ"
-- "28 de febrero de 2025 a las tres y media de la tarde" → fecha: "28/02/2025", hora: "15", minuto: "30"
 
 RESPONDE SOLO EL JSON, NADA MÁS.
 """
@@ -1334,9 +1216,7 @@ RESPONDE SOLO EL JSON, NADA MÁS.
                 "juzgado",
                 "se_realizo",
                 "motivos",
-                "observaciones",
-                "demandante",
-                "demandado",
+                "observaciones"
             ]
 
             for campo in campos_requeridos:
@@ -1663,9 +1543,7 @@ IMPORTANTE:
                     "juzgado": "",
                     "se_realizo": "",
                     "motivos": "",
-                    "observaciones": f"Error en procesamiento paralelo: {str(e)}",
-                    "demandante": "",
-                    "demandado": "",
+                    "observaciones": f"Error en procesamiento paralelo: {str(e)}"
                 }
 
         # Crear y lanzar threads
@@ -1744,8 +1622,6 @@ Responde con este formato JSON:
     "se_realizo": "Si" o "No",
     "motivos": "motivos específicos de la audiencia",
     "observaciones": "observaciones relevantes",
-    "demandante": "nombre completo formateado",
-    "demandado": "nombre completo formateado"
 }}
 
 FORMATEO DE NOMBRES CRÍTICO:
@@ -1789,9 +1665,7 @@ FORMATEO DE NOMBRES CRÍTICO:
                 "juzgado",
                 "se_realizo",
                 "motivos",
-                "observaciones",
-                "demandante",
-                "demandado",
+                "observaciones"
             ]
 
             for campo in campos_requeridos:
@@ -1818,9 +1692,7 @@ FORMATEO DE NOMBRES CRÍTICO:
             "juzgado": "",
             "se_realizo": "",
             "motivos": "",
-            "observaciones": "",
-            "demandante": "",
-            "demandado": "",
+            "observaciones": ""
         }
 
     def procesar_documento_completo_optimizado(

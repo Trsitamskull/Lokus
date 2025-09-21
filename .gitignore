@@ -28,7 +28,6 @@ archivos_creados/
 *.tmp
 *.temp
 ~*
-
 # Ignorar archivos de PyInstaller
 build/
 dist/
