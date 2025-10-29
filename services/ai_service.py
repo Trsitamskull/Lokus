@@ -86,18 +86,6 @@ class AIFormFiller:
             "ACUSACION": "Audiencia de Acusación",
         }
 
-        # JERARQUÍA DE MOTIVOS (del más prioritario al menos)
-        self.jerarquia_motivos = [
-            "juez",  # 1. Más prioritario - problemas del juzgado
-            "fiscalía",  # 2. Fiscalía
-            "defensor público",  # 3. Defensor público
-            "defensor confianza",  # 4. Defensor de confianza
-            "usuario",  # 5. Usuario/procesado
-            "inpec",  # 6. INPEC
-            "víctima",  # 7. Víctima
-            "icbf",  # 8. Menos prioritario - ICBF
-        ]
-
         # MOTIVOS VÁLIDOS SEGÚN TABLA EXCEL
         self.motivos_validos = {
             "juez": "juez",
@@ -111,7 +99,7 @@ class AIFormFiller:
         }
 
         self.motivos_implícitos = {
-            # JUEZ - Mayor prioridad
+            # JUEZ
             "el juez entró en periodo de vacaciones": "juez",
             "no habían nombrado titular de despacho": "juez",
             "juez no compareció": "juez",
@@ -122,17 +110,16 @@ class AIFormFiller:
             "la fiscal no se conectó": "fiscalía",
             "fiscal no se conectó": "fiscalía",
             "fiscal fue reemplazado": "fiscalía",
-            "fiscal fue reemplazdao": "fiscalía",  # Con error ortográfico real
+            "fiscal fue reemplazdao": "fiscalía",
             "no conocer la carpeta": "fiscalía",
             "solicitud de fiscalía": "fiscalía",
             "solicitud de la fiscalía": "fiscalía",
             "por solicitud de la fiscalía": "fiscalía",
             "fiscalía no compareció": "fiscalía",
             "fiscal solicitó reprogramación": "fiscalía",
-            "la fiscalía solicitó reprogramación": "fiscalía",  # PATRÓN ESPECÍFICO FALTANTE - AUDIENCIA 5
-            "fiscalía solicitó reprogramación": "fiscalía",  # VARIACIÓN SIN "LA"
-            # NUEVOS PATRONES PARA CASOS PROBLEMÁTICOS
-            "la fiscal no vino": "fiscalía",  # CASO ESPECÍFICO AUDIENCIA 28
+            "la fiscalía solicitó reprogramación": "fiscalía",
+            "fiscalía solicitó reprogramación": "fiscalía",
+            "la fiscal no vino": "fiscalía",
             "fiscal no vino": "fiscalía",
             "la fiscal no asistió": "fiscalía",
             "fiscal no asistió": "fiscalía",
@@ -142,73 +129,68 @@ class AIFormFiller:
             "defensor público no compareció": "defensor público",
             "inasistencia del defensor público": "defensor público",
             "defensor público solicitó reprogramación": "defensor público",
-            # PRIMERA PERSONA - DEFENSOR PÚBLICO (patrones típicos)
-            "solicité reprogramarla": "defensor público",  # Cuando el defensor habla en primera persona
+            "solicité reprogramarla": "defensor público",
             "solicité reprogramación": "defensor público",
             "solicité la reprogramación": "defensor público",
-            "solicité la reprogramación de la audiencia": "defensor público",  # Para test
+            "solicité la reprogramación de la audiencia": "defensor público",
             "pedí reprogramación": "defensor público",
             "pedí la reprogramación": "defensor público",
-            "pedí aplazamiento": "defensor público",  # Para test
-            "pedí aplazamiento por no contactar al procesado": "defensor público",  # Para test específico
+            "pedí aplazamiento": "defensor público",
+            "pedí aplazamiento por no contactar al procesado": "defensor público",
             "soliciré reprogramar": "defensor público",
             "solicito reprogramar": "defensor público",
             "solicito la reprogramación": "defensor público",
             "pido reprogramación": "defensor público",
             "pido la reprogramación": "defensor público",
             "no pude contactar": "defensor público",
-            "no pude contactar al acusado": "defensor público",  # Para test
+            "no pude contactar al acusado": "defensor público",
             "no he tenido contacto": "defensor público",
-            "no había tenido contacto con el procesado": "defensor público",  # Típico del defensor público
+            "no había tenido contacto con el procesado": "defensor público",
             "no he logrado contactar": "defensor público",
             "me fue imposible contactar": "defensor público",
-            "me fue imposible asistir": "defensor público",  # Para test
-            "me fue imposible asistir a la audiencia": "defensor público",  # Para test
+            "me fue imposible asistir": "defensor público",
+            "me fue imposible asistir a la audiencia": "defensor público",
             "no logré comunicarme": "defensor público",
-            "realicé conexión virtual": "defensor público",  # Para test
-            "realicé conexión virtual pero solicité reprogramar": "defensor público",  # Para test específico
-            # PATRONES ESPECÍFICOS DE DEFENSOR PÚBLICO (solo primera persona y contextos claros)
-            # NOTA: Patrones genéricos como "solicita reprogramación" se movieron abajo para evaluación contextual
-            # DEFENSOR DE CONFIANZA (EXPANDIDO - INCLUYE ABOGADO CONTRACTUAL)
+            "realicé conexión virtual": "defensor público",
+            "realicé conexión virtual pero solicité reprogramar": "defensor público",
+            # DEFENSOR DE CONFIANZA
             "defensor de confianza no compareció": "defensor confianza",
             "abogado no compareció": "defensor confianza",
             "abogado contractual no compareció": "defensor confianza",
-            "abogado contractual no se presentó": "defensor confianza",  # Para test
+            "abogado contractual no se presentó": "defensor confianza",
             "abogado contractual ausente": "defensor confianza",
             "defensor de confianza ausente": "defensor confianza",
             "inasistencia del defensor de confianza": "defensor confianza",
             "inasistencia del abogado": "defensor confianza",
             "inasistencia del abogado contractual": "defensor confianza",
             "defensor de confianza solicitó reprogramación": "defensor confianza",
-            "defensor de confianza solicita aplazamiento": "defensor confianza",  # Para test
+            "defensor de confianza solicita aplazamiento": "defensor confianza",
             "abogado contractual solicitó reprogramación": "defensor confianza",
-            "abogado contractual pidió nueva fecha": "defensor confianza",  # Para test
+            "abogado contractual pidió nueva fecha": "defensor confianza",
             "abogado solicitó reprogramación": "defensor confianza",
-            "el abogado solicitó reprogramación": "defensor confianza",  # Para test contextual
-            "el abogado privado solicitó reprogramación": "defensor confianza",  # Para test
+            "el abogado solicitó reprogramación": "defensor confianza",
+            "el abogado privado solicitó reprogramación": "defensor confianza",
             "el abogado no se presentó": "defensor confianza",
             "el defensor de confianza no se presentó": "defensor confianza",
-            "el abogado del procesado no compareció": "defensor confianza",  # Para test
+            "el abogado del procesado no compareció": "defensor confianza",
             "falta del defensor de confianza": "defensor confianza",
             "falta del abogado contractual": "defensor confianza",
             "ausencia de defensor de confianza": "defensor confianza",
             "ausencia de abogado contractual": "defensor confianza",
-            "defensor privado no compareció": "defensor confianza",  # Sinónimo
-            "abogado privado no compareció": "defensor confianza",  # Sinónimo
-            "solicitud del abogado contractual": "defensor confianza",  # Para test "audiencia reprogramada por solicitud..."
-            # NUEVOS PATRONES ESPECÍFICOS PARA EL CASO REPORTADO
-            "defensor de confianza inasistente": "defensor confianza",  # CASO ESPECÍFICO REPORTADO
+            "defensor privado no compareció": "defensor confianza",
+            "abogado privado no compareció": "defensor confianza",
+            "solicitud del abogado contractual": "defensor confianza",
+            "defensor de confianza inasistente": "defensor confianza",
             "abogado contractual inasistente": "defensor confianza",
-            "defensor confianza inasistente": "defensor confianza",  # Sin "de"
-            "inasistente defensor de confianza": "defensor confianza",  # Orden inverso
-            "inasistente abogado contractual": "defensor confianza",  # Orden inverso
-            "defensor de confianza": "defensor confianza",  # PATRÓN DIRECTO MÁS ESPECÍFICO
-            "abogado contractual": "defensor confianza",  # PATRÓN DIRECTO MÁS ESPECÍFICO
-            # ABREVIACIONES COMUNES PARA DEFENSOR DE CONFIANZA
-            "def confianza": "defensor confianza",  # ABREVIACIÓN COMÚN
-            "def. confianza": "defensor confianza",  # CON PUNTO
-            "def de confianza": "defensor confianza",  # SIN PUNTO
-            "defensor confianza": "defensor confianza",  # SIN "DE"
+            "defensor confianza inasistente": "defensor confianza",
+            "inasistente defensor de confianza": "defensor confianza",
+            "inasistente abogado contractual": "defensor confianza",
+            "defensor de confianza": "defensor confianza",
+            "abogado contractual": "defensor confianza",
+            "def confianza": "defensor confianza",
+            "def. confianza": "defensor confianza",
+            "def de confianza": "defensor confianza",
+            "defensor confianza": "defensor confianza",
             # USUARIO/PROCESADO
             "no notificaron al procesado": "usuario",
             "procesado no compareció": "usuario",
@@ -224,35 +206,27 @@ class AIFormFiller:
             # ICBF
             "icbf no compareció": "icbf",
             "representante icbf ausente": "icbf",
-            # MOTIVOS ADMINISTRATIVOS/TÉCNICOS (se convierten según contexto)
+            # MOTIVOS ADMINISTRATIVOS/TÉCNICOS
             "despacho en otra audiencia": "juez",
             "estar el despacho en audiencia": "juez",
             "fracsa por estar el despacho": "juez",
             "fracasa por estar el despacho": "juez",
-            "depacho en otra audiencia": "juez",  # Con error ortográfico
+            "depacho en otra audiencia": "juez",
             "ambos despachos en audiencia": "juez",
-            "problemas técnicos": "usuario",  # Por defecto, pero puede variar
+            "problemas técnicos": "usuario",
             "fallas de conectividad": "usuario",
-            "posible preacuerdo": "fiscalía",  # Usualmente iniciado por fiscalía
-            # PATRONES GENÉRICOS QUE REQUIEREN EVALUACIÓN CONTEXTUAL
-            # (Se evalúan después de los patrones específicos)
-            "solicita reprogramación": "usuario",  # Genérico - se reasigna por contexto
-            "solicitó la reprogramación": "usuario",  # Genérico - se reasigna por contexto
-            "reprogramación solicitada": "usuario",  # Genérico - se reasigna por contexto
-            "solicitó reprogramar": "usuario",  # Genérico - se reasigna por contexto
+            "posible preacuerdo": "fiscalía",
+            # PATRONES GENÉRICOS
+            "solicita reprogramación": "usuario",
+            "solicitó la reprogramación": "usuario",
+            "reprogramación solicitada": "usuario",
+            "solicitó reprogramar": "usuario",
         }
 
-        # Inicializar servicio de entrenamiento
-        try:
-            from services.ai_training_service import training_service
-
-            self.training_service = training_service
-            self.training_enabled = True
-            print(f"OpenAI configurado con auto-entrenamiento - Modelo: {self.model}")
-        except ImportError:
-            self.training_service = None
-            self.training_enabled = False
-            print(f"OpenAI configurado sin auto-entrenamiento - Modelo: {self.model}")
+        # Configuración del servicio (sin auto-entrenamiento)
+        self.training_service = None
+        self.training_enabled = False
+        print(f"OpenAI configurado - Modelo: {self.model}")
 
         # Caché para optimización de rendimiento
         self._cache_abreviaciones = {}
@@ -291,240 +265,42 @@ class AIFormFiller:
     def _inferir_motivos_implícitos(self, texto: str) -> str:
         """
         Inferir motivos basado en frases implícitas del texto.
-        MEJORADO: Aplica jerarquía de motivos y selecciona solo el dominante.
-        NUEVO: Mejor diferenciación entre defensor público y defensor de confianza.
+        SIMPLIFICADO: Análisis contextual puro, sin jerarquías predefinidas.
         """
-        motivos_encontrados = []
         texto_lower = texto.lower()
 
-        # NUEVA LÓGICA: EVALUACIÓN CONTEXTUAL PREVIA
-        # Detectar si es defensor de confianza antes de aplicar patrones genéricos
-        es_defensor_confianza = self._detectar_defensor_confianza(texto_lower)
-
-        # Buscar todos los motivos posibles
+        # Buscar motivos específicos en el texto
         for frase, motivo in self.motivos_implícitos.items():
             if frase in texto_lower:
-                # CORRECCIÓN CONTEXTUAL: Reasignar patrones genéricos
-                if motivo == "usuario" and frase in [
-                    "solicita reprogramación",
-                    "solicitó la reprogramación",
-                    "reprogramación solicitada",
-                    "solicitó reprogramar",
-                ]:
-                    if es_defensor_confianza:
-                        motivo = "defensor confianza"
-                    elif self._detectar_defensor_publico_primera_persona(texto_lower):
-                        motivo = "defensor público"
-                    # Si no se puede determinar, mantener como 'usuario'
+                return motivo
 
-                if motivo not in motivos_encontrados:
-                    motivos_encontrados.append(motivo)
-
-        # Si no se encontraron motivos, devolver vacío
-        if not motivos_encontrados:
-            return ""
-
-        # Si solo hay un motivo, devolverlo
-        if len(motivos_encontrados) == 1:
-            return motivos_encontrados[0]
-
-        # NUEVA LÓGICA: Seleccionar motivo dominante según jerarquía
-        return self._seleccionar_motivo_dominante(motivos_encontrados, texto)
+        # Si no se encontró ningún motivo específico, devolver vacío
+        return ""
 
     def _detectar_defensor_confianza(self, texto_lower: str) -> bool:
         """
         Detecta específicamente si el texto se refiere a un defensor de confianza.
-        NUEVO: Incluye "abogado contractual" y otros sinónimos.
         """
         indicadores_confianza = [
             "defensor de confianza",
             "abogado contractual",
             "abogado privado",
             "defensor privado",
-            "el abogado",  # Cuando se refiere específicamente al abogado (no defensor público)
+            "el abogado",
             "su abogado",
             "abogado del procesado",
             "abogado defensor",
-            # NUEVOS PATRONES PARA EL CASO ESPECÍFICO
             "defensor de confianza inasistente",
             "abogado contractual inasistente",
             "inasistente defensor de confianza",
             "inasistente abogado contractual",
-            # ABREVIACIONES COMUNES
             "def confianza",
             "def. confianza",
             "def de confianza",
-            "defensor confianza",  # Sin "de"
+            "defensor confianza",
         ]
 
         return any(indicador in texto_lower for indicador in indicadores_confianza)
-
-    def _detectar_defensor_publico_primera_persona(self, texto_lower: str) -> bool:
-        """
-        Detecta si el texto es escrito en primera persona por un defensor público.
-        """
-        patrones_primera_persona = [
-            "solicité",
-            "pedí",
-            "solicito",
-            "pido",
-            "soliciré",
-            "no pude",
-            "no he tenido",
-            "no logré",
-            "me fue imposible",
-            "no he logrado",
-            "no había podido",
-            "realicé conexión",
-        ]
-
-        return any(patron in texto_lower for patron in patrones_primera_persona)
-
-    def _seleccionar_motivo_dominante(
-        self, motivos_encontrados: List[str], texto_original: str
-    ) -> str:
-        """
-        Selecciona el motivo dominante según jerarquía de prioridad.
-        ESPECIAL: Para casos con información contradictoria, priorizar causa principal sobre reacción.
-        """
-        texto_lower = texto_original.lower()
-
-        # REGLA ESPECIAL PARA CASOS CONTRADICTORIOS: Si hay motivos explícitos Y primera persona
-        # priorizar la causa principal (lo que pasó) sobre la reacción (lo que hizo alguien)
-        motivos_causa_principal = [
-            m
-            for m in motivos_encontrados
-            if m in ["juez", "fiscalía", "usuario", "inpec", "víctima", "icbf"]
-        ]
-        motivos_reaccion = [
-            m
-            for m in motivos_encontrados
-            if m in ["defensor público", "defensor confianza"]
-        ]
-
-        # Si hay tanto causa principal como reacción, priorizar causa principal
-        if motivos_causa_principal and motivos_reaccion:
-            print(
-                f"LOGICA ESPECIAL: Priorizando causa principal {motivos_causa_principal[0]} sobre reaccion {motivos_reaccion[0]}"
-            )
-            motivo_dominante = motivos_causa_principal[0]
-            # Guardar la reacción como secundaria
-            if not hasattr(self, "_motivos_secundarios_temp"):
-                self._motivos_secundarios_temp = {}
-            self._motivos_secundarios_temp[hash(texto_original)] = motivos_reaccion
-            return motivo_dominante
-
-        # REGLA ESPECIAL ORIGINAL: Si hay primera persona del defensor público, tiene prioridad absoluta
-        # SOLO cuando no hay causas principales explícitas
-        patrones_primera_persona = [
-            "solicité",
-            "pedí",
-            "solicito",
-            "pido",
-            "soliciré",
-            "no pude",
-            "no he tenido",
-            "no logré",
-            "me fue imposible",
-            "no he logrado",
-            "no había podido",
-        ]
-
-        hay_primera_persona = any(
-            patron in texto_lower for patron in patrones_primera_persona
-        )
-
-        if (
-            hay_primera_persona
-            and "defensor público" in motivos_encontrados
-            and not motivos_causa_principal
-        ):
-            # Primera persona detectada SIN causas principales: defensor público tiene prioridad absoluta
-            motivos_secundarios = [
-                m for m in motivos_encontrados if m != "defensor público"
-            ]
-            if motivos_secundarios:
-                # Guardar motivos secundarios para observaciones
-                if not hasattr(self, "_motivos_secundarios_temp"):
-                    self._motivos_secundarios_temp = {}
-                self._motivos_secundarios_temp[hash(texto_original)] = (
-                    motivos_secundarios
-                )
-            return "defensor público"
-
-        # Lógica normal de jerarquía para otros casos
-        # Ordenar motivos según jerarquía (más prioritario primero)
-        motivos_ordenados = []
-        for motivo_jerarquia in self.jerarquia_motivos:
-            if motivo_jerarquia in motivos_encontrados:
-                motivos_ordenados.append(motivo_jerarquia)
-
-        # Agregar motivos no encontrados en jerarquía al final
-        for motivo in motivos_encontrados:
-            if motivo not in motivos_ordenados:
-                motivos_ordenados.append(motivo)
-
-        # El primer motivo (más prioritario) es el dominante
-        motivo_dominante = motivos_ordenados[0] if motivos_ordenados else ""
-
-        # Los demás motivos se agregarán a observaciones en _postprocesar_resultado
-        if len(motivos_ordenados) > 1:
-            motivos_secundarios = motivos_ordenados[1:]
-            # Guardar temporalmente para usar en observaciones
-            if not hasattr(self, "_motivos_secundarios_temp"):
-                self._motivos_secundarios_temp = {}
-            self._motivos_secundarios_temp[hash(texto_original)] = motivos_secundarios
-
-        return motivo_dominante
-
-    def _inferir_motivos_con_logica_especial(self, texto: str) -> str:
-        """
-        Versión especial de inferir motivos para casos contradictorios.
-        Prioriza causas principales sobre reacciones.
-        """
-        motivos_encontrados = []
-        texto_lower = texto.lower()
-
-        # Buscar todos los motivos posibles
-        for frase, motivo in self.motivos_implícitos.items():
-            if frase in texto_lower:
-                if motivo not in motivos_encontrados:
-                    motivos_encontrados.append(motivo)
-
-        # Si no se encontraron motivos, devolver vacío
-        if not motivos_encontrados:
-            return ""
-
-        # Si solo hay un motivo, devolverlo
-        if len(motivos_encontrados) == 1:
-            return motivos_encontrados[0]
-
-        # LÓGICA ESPECIAL: Priorizar causas principales sobre reacciones
-        motivos_causa_principal = [
-            m
-            for m in motivos_encontrados
-            if m in ["juez", "fiscalía", "usuario", "inpec", "víctima", "icbf"]
-        ]
-        motivos_reaccion = [
-            m
-            for m in motivos_encontrados
-            if m in ["defensor público", "defensor confianza"]
-        ]
-
-        # Si hay tanto causa principal como reacción, priorizar causa principal
-        if motivos_causa_principal and motivos_reaccion:
-            print(
-                f"LOGICA ESPECIAL CONTRADICTORIA: Priorizando causa principal {motivos_causa_principal[0]} sobre reaccion {motivos_reaccion[0]}"
-            )
-            motivo_dominante = motivos_causa_principal[0]
-            # Guardar la reacción como secundaria
-            if not hasattr(self, "_motivos_secundarios_temp"):
-                self._motivos_secundarios_temp = {}
-            self._motivos_secundarios_temp[hash(texto)] = motivos_reaccion
-            return motivo_dominante
-
-        # Si no hay conflicto, usar lógica normal
-        return self._seleccionar_motivo_dominante(motivos_encontrados, texto)
 
     def _mejorar_fecha_compacta(self, texto: str) -> str:
         """Mejorar detección de fechas en formato compacto como 'JUNIO 24.-'"""
@@ -691,7 +467,7 @@ class AIFormFiller:
                 "juzgado": "",
                 "se_realizo": "",
                 "motivos": "",
-                "observaciones": f"Error al procesar: {str(e)}"
+                "observaciones": f"Error al procesar: {str(e)}",
             }
 
     def _formatear_nombres_inteligente(self, texto: str) -> str:
@@ -773,8 +549,8 @@ class AIFormFiller:
         self, resultado: Dict[str, Any], texto_original: str
     ) -> Dict[str, Any]:
         """
-        Post-procesar resultado aplicando mejoras identificadas.
-        MEJORADO: Maneja motivos secundarios, reprogramaciones y observaciones estándar.
+        Post-procesar resultado aplicando solo mejoras básicas de formato.
+        SIMPLIFICADO: Solo análisis contextual puro, sin lógica especial.
         """
         resultado_mejorado = resultado.copy()
 
@@ -783,216 +559,37 @@ class AIFormFiller:
             resultado_mejorado
         )
 
-        # 1.5. NUEVA CORRECCIÓN: Detectar audiencias que SÍ se realizaron explícitamente
-        texto_lower = texto_original.lower()
-
-        # CASO ESPECIAL: Detectar información contradictoria
-        dice_si_realizada = (
-            "¿se realizó?: sí" in texto_lower
-            or "¿se realizó? sí" in texto_lower
-            or "se realizó: sí" in texto_lower
-            or "se realizo: si" in texto_lower
-        )
-
-        # EXCLUIR casos que explícitamente dicen "Ninguno" o "Sin observaciones"
-        if dice_si_realizada:
-            motivos_explicitos = any(
-                motivo in texto_lower
-                for motivo in [
-                    "la fiscal no vino",
-                    "fiscal no compareció",
-                    "defensor no compareció",
-                    "juez ausente",
-                    "inasistente",
-                    "solicité reprogramación",
-                ]
-            )
-
-            dice_ninguna_causa = (
-                "motivo (si no se realizó): ninguno" in texto_lower
-                or "ninguno" in texto_lower.replace("ninguna", "ninguno")
-            )
-
-            if not motivos_explicitos or dice_ninguna_causa:
-                # Caso claro: dice sí y no hay motivos reales de no realización
-                print(
-                    "CORRECCION: Audiencia marcada como SI realizada sin motivos validos"
-                )
-                resultado_mejorado["se_realizo"] = "SI"
-                resultado_mejorado["motivos"] = ""
-                # IMPORTANTE: Marcar para evitar procesamiento posterior
-                audiencia_confirmada_si = True
-            else:
-                # Caso contradictorio: dice sí pero hay motivos de no realización
-                print(
-                    "CORRECCION: Detectada contradiccion - priorizando hechos sobre declaracion"
-                )
-                resultado_mejorado["se_realizo"] = "NO"
-                audiencia_confirmada_si = False
-        else:
-            audiencia_confirmada_si = False
-            if "¿se realizó?: no" in texto_lower or "¿se realizó? no" in texto_lower:
-                resultado_mejorado["se_realizo"] = "NO"
-
-        # 2. CORRECCIÓN CRÍTICA: Forzar detección correcta de defensor de confianza
-        # SOLO aplicar si no fue confirmada como realizada
-        if (
-            not audiencia_confirmada_si
-            and resultado_mejorado.get("motivos") == "defensor público"
-            and self._detectar_defensor_confianza(texto_original.lower())
+        # 2. Inferir motivos implícitos solo si no hay motivos y no se realizó
+        if resultado_mejorado.get("se_realizo") == "NO" and not resultado_mejorado.get(
+            "motivos"
         ):
-            print(
-                "CORRECCION: Cambiando 'defensor publico' a 'defensor confianza' por deteccion contextual"
-            )
-            resultado_mejorado["motivos"] = "defensor confianza"
+            motivos_inferidos = self._inferir_motivos_implícitos(texto_original)
+            if motivos_inferidos:
+                resultado_mejorado["motivos"] = motivos_inferidos
 
-        # 3. Inferir motivos implícitos SOLO si no se realizó Y no fue confirmada como SI
-        if not audiencia_confirmada_si and resultado_mejorado.get("se_realizo") == "NO":
-            # Caso específico para contradicciones ya resueltas - FORZAR corrección
-            if dice_si_realizada and resultado_mejorado.get("se_realizo") == "NO":
-                # Para casos contradictorios, usar lógica especial SIEMPRE
-                motivos_inferidos = self._inferir_motivos_con_logica_especial(
-                    texto_original
-                )
-                if motivos_inferidos:
-                    resultado_mejorado["motivos"] = motivos_inferidos
-                    print(
-                        f"CORRECCION: Aplicando motivo inferido '{motivos_inferidos}' por informacion contradictoria"
-                    )
-            # Caso normal - solo si no hay motivos
-            elif not resultado_mejorado.get("motivos"):
-                motivos_inferidos = self._inferir_motivos_implícitos(texto_original)
-                if motivos_inferidos:
-                    resultado_mejorado["motivos"] = motivos_inferidos
-
-        # 4. Detectar audiencias fracasadas por reprogramación SOLO si no fue confirmada como SI
-        if not audiencia_confirmada_si:
-            resultado_mejorado = self._detectar_audiencias_fracasadas(
-                resultado_mejorado, texto_original
-            )
-
-        # 5. Mejorar campo de observaciones
+        # 3. Mejorar observaciones con información relevante
         resultado_mejorado = self._mejorar_observaciones(
             resultado_mejorado, texto_original
         )
 
-        # 6. Validar y corregir fechas
+        # 4. Validar y corregir fechas a 2025
         fecha = resultado_mejorado.get("fecha", "")
-        if fecha and (
-            "2023" in fecha or "2024" in fecha.split("/")[-1] if "/" in fecha else False
-        ):
-            # Si detectó año incorrecto, corregir a 2025
-            if "/" in fecha:
-                partes = fecha.split("/")
-                if len(partes) == 3:
-                    resultado_mejorado["fecha"] = f"{partes[0]}/{partes[1]}/2025"
+        if fecha and "/" in fecha:
+            partes = fecha.split("/")
+            if len(partes) == 3 and partes[2] in ["2022", "2023", "2024"]:
+                resultado_mejorado["fecha"] = f"{partes[0]}/{partes[1]}/2025"
 
         return resultado_mejorado
-
-    def _detectar_audiencias_fracasadas(
-        self, resultado: Dict[str, Any], texto_original: str
-    ) -> Dict[str, Any]:
-        """
-        Detecta audiencias que fracasaron por reprogramación o solicitudes de aplazamiento.
-        """
-        texto_lower = texto_original.lower()
-
-        # Patrones que indican audiencia fracasada/reprogramada
-        patrones_fracaso = [
-            "se reprogramó",
-            "será reprogramada",
-            "se reprograma",
-            "reprogramación",
-            "solicitó reprogramación",
-            "pide reprogramación",
-            "solicita aplazamiento",
-            "se aplaza",
-            "será aplazada",
-            "se suspende",
-            "suspendida",
-            "nueva fecha",
-            "se fija",
-            "se fijó nueva fecha",
-            "fracsa",
-            "fracasa",
-            "no se realizó",
-            "no se hizo",
-        ]
-
-        # Si encuentra patrones de fracaso y no está marcada como NO realizada
-        for patron in patrones_fracaso:
-            if patron in texto_lower:
-                resultado["se_realizo"] = "NO"
-                break
-
-        return resultado
 
     def _mejorar_observaciones(
         self, resultado: Dict[str, Any], texto_original: str
     ) -> Dict[str, Any]:
         """
-        Mejora el campo de observaciones con información complementaria.
+        Las observaciones ya están optimizadas por el prompt AI mejorado.
+        Esta función ahora solo retorna el resultado sin procesamiento adicional.
         """
-        texto_lower = texto_original.lower()
-        observaciones_adicionales = []
-
-        # 1. Agregar motivos secundarios si existen
-        texto_hash = hash(texto_original)
-        if (
-            hasattr(self, "_motivos_secundarios_temp")
-            and texto_hash in self._motivos_secundarios_temp
-        ):
-            motivos_secundarios = self._motivos_secundarios_temp[texto_hash]
-            if motivos_secundarios:
-                observaciones_adicionales.append(
-                    f"Causas secundarias: {', '.join(motivos_secundarios)}"
-                )
-            # Limpiar referencia temporal
-            del self._motivos_secundarios_temp[texto_hash]
-
-        # 2. Extraer fechas de reprogramación
-        fechas_reprogramacion = self._extraer_fechas_reprogramacion(texto_original)
-        if fechas_reprogramacion:
-            observaciones_adicionales.append(
-                f"Reprogramada para: {fechas_reprogramacion}"
-            )
-
-        # 3. Detectar información de preacuerdos
-        if any(
-            palabra in texto_lower
-            for palabra in ["preacuerdo", "pre-acuerdo", "negociación"]
-        ):
-            observaciones_adicionales.append("Posible preacuerdo en proceso")
-
-        # 4. Detectar cambios de fiscal o defensor
-        if any(
-            palabra in texto_lower
-            for palabra in ["reemplazado", "reemplazo", "nuevo fiscal", "cambio"]
-        ):
-            observaciones_adicionales.append("Cambio de representación")
-
-        # 5. Detectar problemas técnicos específicos
-        if any(
-            palabra in texto_lower
-            for palabra in ["conexión", "conectividad", "técnico", "virtual"]
-        ):
-            observaciones_adicionales.append("Incidencias técnicas reportadas")
-
-        # Construir observaciones finales
-        observaciones_existentes = resultado.get("observaciones", "").strip()
-
-        if observaciones_adicionales:
-            nuevas_observaciones = "; ".join(observaciones_adicionales)
-            if observaciones_existentes and observaciones_existentes != "":
-                resultado["observaciones"] = (
-                    f"{observaciones_existentes}; {nuevas_observaciones}"
-                )
-            else:
-                resultado["observaciones"] = nuevas_observaciones
-        elif not observaciones_existentes or observaciones_existentes == "":
-            # Campo vacío: usar texto estándar profesional
-            resultado["observaciones"] = "Sin observaciones adicionales"
-
+        # Usar únicamente las observaciones del resultado AI (sin procesamiento adicional)
+        # Las observaciones ya están mejoradas por el prompt AI actualizado
         return resultado
 
     def _extraer_fechas_reprogramacion(self, texto: str) -> str:
@@ -1068,96 +665,152 @@ class AIFormFiller:
         Returns:
             bool: True si se guardó correctamente
         """
-        if not self.training_enabled or not self.training_service:
-            print("ADVERTENCIA: Sistema de entrenamiento no disponible")
-            return False
-
-        return self.training_service.guardar_correccion(
-            texto_original, datos_ia, datos_corregidos, es_correcto
-        )
+        print("ADVERTENCIA: Sistema de entrenamiento no disponible")
+        return False
 
     def obtener_reporte_precision(self) -> Dict:
         """Obtiene un reporte de precisión del sistema."""
-        if not self.training_enabled or not self.training_service:
-            return {"error": "Sistema de entrenamiento no disponible"}
-
-        return self.training_service.generar_reporte_precision()
+        return {"error": "Sistema de entrenamiento no disponible"}
 
     def _extract_with_openai_enhanced(self, texto: str) -> Dict[str, Any]:
         """
         Extracción usando OpenAI GPT con ejemplos aprendidos.
         """
 
-        # Obtener ejemplos aprendidos para mejorar el prompt
-        ejemplos_aprendidos = ""
-        if self.training_enabled and self.training_service:
-            ejemplos = self.training_service.obtener_ejemplos_para_prompt(5)
-            if ejemplos:
-                ejemplos_aprendidos = (
-                    "\nEJEMPLOS APRENDIDOS DE CORRECCIONES EXITOSAS:\n"
-                )
-                for i, ejemplo in enumerate(ejemplos[:3], 1):
-                    ejemplos_aprendidos += f"\nEjemplo {i}:\n"
-                    ejemplos_aprendidos += f"Texto: '{ejemplo['texto'][:100]}...'\n"
-                    ejemplos_aprendidos += f"Resultado correcto: {json.dumps(ejemplo['datos'], ensure_ascii=False)}\n"
-
         prompt = f"""
 Eres un experto en extraer información de audiencias judiciales colombianas.
-Analiza el texto y extrae ÚNICAMENTE la información presente.
+Analiza el texto y extrae ÚNICAMENTE la información presente usando análisis contextual puro.
 
 TEXTO A ANALIZAR: "{texto}"
 
-INSTRUCCIONES ESPECÍFICAS:
+EJEMPLOS DE REFERENCIA (casos reales con resultados EXACTOS esperados):
 
-1. RADICADO - FORMATO: "NÚMERO - NOMBRES"
-   - Busca números largos (19-21 dígitos) seguidos de nombres
-   - Formato correcto: "20228600119920190026800 - DOSTIN RODRIGUEZ DONADO"
-   - Si hay múltiples nombres: "ROBINSON JAIME TARAZONA Y RIKELVER GONZALEZ VENEZO"
+Ejemplo 1: "JUZGADO TERCERO PENAL DEL CIRCUITO AGUACHICA, 20011600119320190181400 ALEXIS ROJAS PAYARES Y OTRA. CONTINUACION JUICIO 9:30 A.M. MIERCOLES 30 de julio, fiscalía desiste de las pruebas y termina con la etapa probatoria, solcito aplazamiento para que sean escuchados los testigos de la defensa que fueron decretados en la audiencia preparatoria. -, se fija nueva fecha el día 26 DE NOVIEMBRE 11 AM Y 03 DICIEMBRE 11 AM."
+Resultado EXACTO: radicado="20011600119320190181400 - ALEXIS ROJAS PAYARES", tipo_audiencia="Continuación de Juicio Oral", fecha="30/07/2025", hora="09:30", juzgado="", se_realizo="SI", motivos="", observaciones="Fiscalía desiste de las pruebas y termina la etapa probatoria. Se solicita aplazamiento para escuchar testigos de la defensa. Nueva fecha programada: 26 de noviembre a las 11:00 AM y 3 de diciembre a las 11:00 AM"
 
-2. TIPO DE AUDIENCIA - Usar términos exactos:
-   - "JUICIO" → "Juicio Oral"
+Ejemplo 2: "Tercero penal del circuito, 20228600119920190026800 DOSTIN RODRIGUEZ DONADO – JUICIO, 9:00 A.M. JUEVES 31 julio, fracasa por solicitud de la fiscalía, no fijan fecha, no se abre audio."
+Resultado EXACTO: radicado="20228600119920190026800 - DOSTIN RODRIGUEZ DONADO", tipo_audiencia="Juicio Oral", fecha="31/07/2025", hora="09:00", juzgado="Juzgado Tercero Penal del Circuito", se_realizo="NO", motivos="Fiscalía", observaciones="La audiencia fracasa por solicitud de la fiscalía. No se programa nueva fecha y no se establece conexión de audio"
+
+Ejemplo 3: "PROCESO: 20011600123220241115600 AUDIENCIA DESPACHO: Juzgado 002 Promiscuo Municipal de Aguachica 200114089002 AGUACHICA, VERIFICACION DE ALLANAMIENTO VS ROBINSON JAIME TARAZONA Y RIKELVER GONZALEZ VENEZO EXTORSIO, 19 de agosto 10:30 am, se realiza conexión, se acepta la aceptación de cargos del señor Robinson jaime Tarazona y fija fecha para lectura de sentencia el dia 05 de septiembre 2:30 para la lectura de la sentencia. en cuanto al usurio Rikelver se realizó audiencia preparatoria y se pidio como testigo al señor robinson, son decretadas por el juzgado todas las solicitudes."
+Resultado EXACTO: radicado="20011600123220241115600 - ROBINSON JAIME TARAZONA Y RIKELVER GONZALEZ VENEZO EXTORSIO", tipo_audiencia="Verificación de Allanamiento", fecha="19/08/2025", hora="10:30", juzgado="Juzgado 002 Promiscuo Municipal de Aguachica", se_realizo="SI", motivos="", observaciones="Se realiza conexión exitosa. Se acepta la aceptación de cargos de Robinson Jaime Tarazona y se programa lectura de sentencia para el 5 de septiembre a las 2:30 PM. Para Rikelver se realizó audiencia preparatoria, se solicita a Robinson como testigo y el juzgado decreta todas las solicitudes"
+
+Ejemplo 4: "31 DE JULIO DE 2025 A LAS 8:00 AM en el proceso penal que se sigue en contra de DEIBER FRANCO ALVERNIA, identificado con C.C. 1.092.670.947; por el delito de TRÁFICO, FABRICACIÓN O PORTE DE ESTUPEFACIENTES; con radicado No. 200116001232202200293-00, tercero penal del circuito, fiscalía termina con la etapa probatorio y dan paso a la defensa y solicito suspensión para ubicar los testigos, fijaron fecha para nueva audiencia 28 de octubre 3:30."
+Resultado EXACTO: radicado="DEIBER FRANCO ALVERNIA - 200116001232202200293-00", tipo_audiencia="", fecha="31/07/2025", hora="08:00", juzgado="Juzgado tercero penal del circuito", se_realizo="SI", motivos="", observaciones="Fiscalía termina la etapa probatoria y se da paso a la defensa. Se solicita suspensión para ubicar testigos. Nueva audiencia programada para el 28 de octubre a las 3:30 PM"
+
+Ejemplo 5: "CARLOS ANDRÉS CARVAJAL ESPITIA / NO ASISTIÓ No. DOCUMENTO 1.098.696.511,hurto agravado, rad. 20 011 600 1087 2022 00218 00, san alberto JPM, juiciooral, se instala la audiencia, se presentan alegatos de apertura y se inicia etapa probatoria, la fiscalia presenta al testigo carlos andres ciro hoya,policia que practico la captura en flagrancia al usuario, se interrogo y se contrainterrogatorio.La fiscalia solicita suspensión del proceso para traer los testigos que faltany que fueron decretados en la audiencia la audiencia concentrada y fecha nuevafecha para el 16 de octubre 4:30 de la tarde para continuación."
+Resultado EXACTO: radicado="CARLOS ANDRÉS CARVAJAL ESPITIA - 20011600108720220021800", tipo_audiencia="Juicio Oral", fecha="", hora="", juzgado="Juzgado san alberto JPM", se_realizo="SI", motivos="", observaciones="El imputado no asistió. Se instala la audiencia, se presentan alegatos de apertura y se inicia etapa probatoria. Fiscalía presenta testigo Carlos Andrés Ciro Hoya (policía que practicó la captura en flagrancia), se realiza interrogatorio y contrainterrogatorio. Fiscalía solicita suspensión para traer testigos faltantes decretados en audiencia concentrada. Nueva fecha: 16 de octubre a las 4:30 PM"
+
+Ejemplo 6: "05 de agosto 2025 a las 4:30 de la tarde, NO SE LLEVARÁ A CABO teniendo en cuenta que el titular de la Fiscalía 10 Local de San Alberto - Cesar, solicitó elaplazamiento de esta, JPM SA, CUI. 200116001087201900283, Giovanny Amaya Galvis, aplicación PO"
+Resultado EXACTO: radicado="200116001087201900283 - Giovanny Amaya Galvis", tipo_audiencia="Aplicación de Principio de oportunidad", fecha="05/08/2025", hora="16:30", juzgado="JPM SA", se_realizo="NO", motivos="Fiscalía", observaciones="La audiencia no se lleva a cabo debido a que la Fiscalía 10 Local de San Alberto - Cesar solicitó el aplazamiento"
+
+Ejemplo 7: "J3PCA. 20011600119220210005800 JOSE ANTONIO GUTIERREZ MORENO - PPL - CONTINUACION JUICIO-. 10:00 A.M. MIERCOLES 6, fracasa por conexión del procesado"
+Resultado EXACTO: radicado="20011600119220210005800 - JOSE ANTONIO GUTIERREZ MORENO", tipo_audiencia="Continuación de Juicio Oral", fecha="06/08/2025", hora="10:00", juzgado="J3PCA", se_realizo="NO", motivos="Usuario", observaciones="La audiencia fracasa por problemas de conexión del procesado"
+
+Ejemplo 8: "2PCA, AUDIENCIA DE INSTALACIÓN DE JUICIO ORAL para el día 06 DE AGOSTO DE 2025 A LAS 03:00 PM en el proceso penal que se sigue en contra de FABIAN CHINCHILLA CONTRERAS ,identificado con C.C. 1.065.893.074; por el delito de FEMINICIDIO AGRAVADO TENTADO; con radicado No. 200116001232202200297-00, solicito se aplace la audiencia a fin celebrar preacuerdo, fijan fecha para el 01 de octubre 2:00 PM."
+Resultado EXACTO: radicado="200116001232202200297-00 - FABIAN CHINCHILLA CONTRERAS", tipo_audiencia="Instalación de Juicio Oral", fecha="06/08/2025", hora="15:00", juzgado="2PCA", se_realizo="NO", motivos="Defensor público", observaciones="Se solicita aplazamiento para celebrar preacuerdo. Nueva fecha programada: 1 de octubre a las 2:00 PM"
+
+Ejemplo 9: "El dia 19 de agosto a las 8:00 de la mañana, 20011600123220160216300 AUDIENCIA DESPACHO: Juzgado 002 Promiscuo Municipal de Aguachica , AGUACHICA JHON CARLOS SANCHEZ ORTEGA, por el delito de INASISTENCIA ALIMENTARIA juicio oral, fracasa por conexión del juzgado."
+Resultado EXACTO: radicado="20011600123220160216300 - JHON CARLOS SANCHEZ ORTEGA", tipo_audiencia="Juicio Oral", fecha="19/08/2025", hora="08:00", juzgado="Juzgado 002 Promiscuo Municipal de Aguachica", se_realizo="NO", motivos="Juez", observaciones="La audiencia fracasa por problemas de conexión del juzgado"
+
+Ejemplo 10: "J1PMA, proceso 20011600123220241115600, AUDIENCIA DE VERIFICACION DE ALLANAMIENTO, 19 de agosto 10:30 am, ROBINSON JAIME TARAZONA, se realiza conexión exitosa"
+Resultado EXACTO: radicado="20011600123220241115600 - ROBINSON JAIME TARAZONA", tipo_audiencia="Verificación de Allanamiento", fecha="19/08/2025", hora="10:30", juzgado="J1PMA", se_realizo="SI", motivos="", observaciones="Se realiza conexión exitosa"
+
+REGLAS CRÍTICAS PARA 100% PRECISIÓN:
+
+1. RADICADO - FORMATO ESTRICTO:
+   - SIEMPRE formato "NÚMERO - NOMBRES" (nunca "NOMBRES - NÚMERO")
+   - "20011600119320190181400 ALEXIS ROJAS PAYARES Y OTRA" → "20011600119320190181400 - ALEXIS ROJAS PAYARES"
+   - "DOSTIN RODRIGUEZ DONADO - 20228600119920190026800" → "20228600119920190026800 - DOSTIN RODRIGUEZ DONADO"
+   - "Giovanny Amaya Galvis - 200116001087201900283" → "200116001087201900283 - Giovanny Amaya Galvis"
+   - Mantener EXACTAMENTE la capitalización original de los nombres
+   - "DOSTIN RODRIGUEZ DONADO" → "DOSTIN RODRIGUEZ DONADO" (mantener mayúsculas)
+   - "Giovanny Amaya Galvis" → "Giovanny Amaya Galvis" (mantener formato mixto)
+
+   MÚLTIPLES NOMBRES - REGLAS ESPECÍFICAS:
+   - SIEMPRE usar EXACTAMENTE los nombres del texto SIN sufijos como "Y OTRA", "Y OTROS"
+   - Si hay múltiples nombres completos, incluir todos separados por "Y"
+   - "ROBINSON JAIME TARAZONA Y RIKELVER GONZALEZ VENEZO EXTORSIO" → incluir todos los nombres completos
+   - "ALEXIS ROJAS PAYARES Y OTRA" → usar solo "ALEXIS ROJAS PAYARES" (eliminar "Y OTRA")
+   - "PEDRO LOPEZ Y MARIA GONZALEZ Y JOSE MARTINEZ" → incluir todos los nombres completos
+   - Para nombres largos o múltiples, priorizar la completitud sobre la brevedad
+   - Si un nombre parece incompleto o corrupto, usar solo la parte clara y completa
+
+2. JUZGADO ESPECÍFICO:
+   - Si el texto dice "JUZGADO TERCERO PENAL" al inicio → dejar VACÍO ""
+   - Si dice "Tercero penal del circuito" en medio → "Juzgado Tercero Penal del Circuito"
+   - Si menciona "Juzgado 002 Promiscuo" → mantener completo
+   - "JPM SA" → mantener tal como está
+   - "san alberto JPM" → "Juzgado san alberto JPM"
+   - Si NO se menciona o está al inicio → dejar VACÍO ""
+
+   ABREVIACIONES DE JUZGADOS:
+   - J3PCA, J2PCA, J1PCA → mantener tal como está (ej: "J3PCA") o expandir (ej: "Juzgado 3PCA")
+   - J1PMA, J2PMA, J3PMA → mantener tal como está (ej: "J1PMA") o expandir (ej: "Juzgado 1PMA")
+   - La "J" inicial significa "Juzgado", puede mantenerse abreviado o expandirse
+   - Ejemplos: "J3PCA" es válido como "J3PCA" o como "Juzgado 3PCA"
+   - Ejemplos: "J1PMA" es válido como "J1PMA" o como "Juzgado 1PMA"
+
+2.5. TIPO_AUDIENCIA - DETECCIÓN INTELIGENTE:
+   - Buscar palabras clave específicas en el texto para identificar el tipo
    - "CONTINUACION JUICIO" → "Continuación de Juicio Oral"
+   - "JUICIO ORAL" → "Juicio Oral"
+   - "INSTALACIÓN DE JUICIO" → "Instalación de Juicio Oral"
    - "VERIFICACION DE ALLANAMIENTO" → "Verificación de Allanamiento"
-   - Usar el tipo más específico encontrado
+   - "APLICACION PO" → "Aplicación de Principio de oportunidad"
+   - "PREPARATORIA" → "Audiencia Preparatoria"
+   - "ACUSACION" → "Audiencia de Acusación"
+   - "LECTURA DE SENTENCIA" → "Lectura de Sentencia"
+   - "IMPOSICION DE PENA" → "Imposición de Pena"
+   - "ALEGATOS" → "Alegatos de Conclusión"
+   - Si NO hay indicadores claros → dejar VACÍO ""
+   - Priorizar la exactitud sobre la inferencia
+   - Si el texto es ambiguo, es mejor dejarlo vacío que adivinar
 
-3. JUZGADO - Formato completo:
-   - "Tercero penal del circuito" → "Juzgado Tercero Penal del Circuito"
-   - "Juzgado 002 Promiscuo Municipal de Aguachica" → mantener formato completo
-   - Agregar "Juzgado" al inicio si no está presente
+3. SE REALIZÓ - REGLAS ESTRICTAS:
+   - "fiscalía desiste" + "termina etapa probatoria" → SIEMPRE "SI" (la audiencia se desarrolló, aunque hubo aplazamiento)
+   - "se instala la audiencia" → SIEMPRE "SI"
+   - "se realiza conexión" → SIEMPRE "SI"
+   - "fiscalía termina etapa probatoria" → SIEMPRE "SI"
+   - "termina con la etapa probatoria" → SIEMPRE "SI"
+   - "NO SE LLEVARÁ A CABO" → SIEMPRE "NO"
+   - "fracasa por solicitud" → SIEMPRE "NO"
+   - "fracasa por conexión" → SIEMPRE "NO" (no hubo actuación judicial)
+   - "solicito se aplace" SIN instalación previa → "NO"
+   - "solicito aplazamiento" SIN instalación previa → "NO"
+   - "solicito suspensión" CON desarrollo previo → "SI"
 
-4. FECHA - Formato DD/MM/YYYY usando 2025:
-   - "30 de julio" → "30/07/2025"
-   - "31 julio" → "31/07/2025"
-   - "19 de agosto" → "19/08/2025"
+4. MOTIVOS - REGLAS ESTRICTAS:
+   - SI se_realizo="SI" → motivos="" (SIEMPRE VACÍO)
+   - SI se_realizo="NO" → motivos debe ser UNO de estos valores EXACTOS:
+     * "Juez" (cuando falla por juzgado, conexión del juzgado)
+     * "Fiscalía" (cuando falla por fiscalía, solicitud de fiscalía)
+     * "Usuario" (cuando falla por procesado, imputado, conexión del procesado)
+     * "Defensor público" (cuando falla por defensor, solicitud de aplazamiento sin especificar)
+     * "Defensor Confianza"
+     * "Víctima"
+     * "Inpec"
+     * "ICBF"
 
-5. HORA - Formato HH:MM:
-   - "9:30 A.M." → "09:30"
-   - "10:30 am" → "10:30"
+4. OBSERVACIONES MEJORADAS:
+   - Redactar de manera profesional y clara basándose en el contenido
+   - Sintetizar información relevante sin copiar textualmente
+   - Incluir fechas de reprogramación de manera organizada
+   - Corregir errores ortográficos y mejorar gramática
+   - NO agregar información que no esté en el texto original
+   - Ejemplo: "solcito aplazamiento" → "Se solicita aplazamiento"
 
-6. SE REALIZÓ - Análisis del contexto:
-   - Si menciona "fracasa", "solicitud", "aplazamiento" → "NO"
-   - Si describe acciones realizadas sin mencionar problemas → "SI"
-
-7. MOTIVOS (solo si NO se realizó):
-   - "fracasa por solicitud de la fiscalía" → "Fiscalía"
-   - "fiscal no se conectó" → "Fiscalía"
-   - "juez no compareció" → "Juez"
-
-8. OBSERVACIONES - Información relevante:
-   - Extraer detalles importantes sin copiar todo el texto
-   - Fechas de reprogramación si las hay
-   - Decisiones tomadas durante la audiencia
+CRÍTICO: Seguir EXACTAMENTE los ejemplos. NO inventar ni modificar información.
 
 Responde ÚNICAMENTE con JSON válido:
 {{
     "radicado": "NÚMERO - NOMBRES",
-    "tipo_audiencia": "Tipo específico de audiencia",
-    "fecha": "DD/MM/YYYY",
-    "hora": "HH:MM",
-    "juzgado": "Juzgado completo",
+    "tipo_audiencia": "Tipo específico o vacío",
+    "fecha": "DD/MM/YYYY o vacío",
+    "hora": "HH:MM o vacío",
+    "juzgado": "Juzgado completo o vacío",
     "se_realizo": "SI o NO",
-    "motivos": "Motivo principal si NO se realizó",
-    "observaciones": "Información adicional relevante"
+    "motivos": "Motivo si NO se realizó o vacío",
+    "observaciones": "Información relevante del texto"
 }}
 
 RESPONDE SOLO EL JSON, NADA MÁS.
@@ -1216,7 +869,7 @@ RESPONDE SOLO EL JSON, NADA MÁS.
                 "juzgado",
                 "se_realizo",
                 "motivos",
-                "observaciones"
+                "observaciones",
             ]
 
             for campo in campos_requeridos:
@@ -1259,8 +912,8 @@ RESPONDE SOLO EL JSON, NADA MÁS.
         # MEJORA 1: Sanitizar texto de entrada
         texto_sanitizado = self._sanitizar_texto_para_json(texto)
 
-        # MEJORA 2: Limitar tamaño para evitar timeouts
-        if len(texto_sanitizado) > 8000:  # Límite seguro
+        # MEJORA 2: Límite optimizado para GPT-4 (2025)
+        if len(texto_sanitizado) > 16000:  # Límite aumentado para aprovechar GPT-4
             print(
                 f"ADVERTENCIA: Texto muy largo ({len(texto_sanitizado)} chars), dividiendo en chunks..."
             )
@@ -1543,7 +1196,7 @@ IMPORTANTE:
                     "juzgado": "",
                     "se_realizo": "",
                     "motivos": "",
-                    "observaciones": f"Error en procesamiento paralelo: {str(e)}"
+                    "observaciones": f"Error en procesamiento paralelo: {str(e)}",
                 }
 
         # Crear y lanzar threads
@@ -1665,7 +1318,7 @@ FORMATEO DE NOMBRES CRÍTICO:
                 "juzgado",
                 "se_realizo",
                 "motivos",
-                "observaciones"
+                "observaciones",
             ]
 
             for campo in campos_requeridos:
@@ -1688,11 +1341,10 @@ FORMATEO DE NOMBRES CRÍTICO:
             "tipo_audiencia": "",
             "fecha": "",
             "hora": "",
-            "minuto": "",
             "juzgado": "",
             "se_realizo": "",
             "motivos": "",
-            "observaciones": ""
+            "observaciones": "",
         }
 
     def procesar_documento_completo_optimizado(

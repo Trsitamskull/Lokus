@@ -21,7 +21,7 @@ class Audiencia:
         """Validaciones básicas después de crear el objeto."""
         if not self.radicado:
             raise ValueError("El radicado es obligatorio")
-        if not self.tipo:
+        if not self.tipo or (self.tipo != "(Vacío)" and not self.tipo.strip()):
             raise ValueError("El tipo de audiencia es obligatorio")
 
     @classmethod

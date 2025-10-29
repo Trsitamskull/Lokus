@@ -11,9 +11,6 @@ openai==1.98.0
 # Para generar ejecutable
 pyinstaller==6.3.0
 
-# Dependencia requerida por Flet
-zope.interface==6.1
-
 # Procesamiento de documentos PDF y Word
 PyPDF2>=3.0.0
 python-docx>=1.1.0

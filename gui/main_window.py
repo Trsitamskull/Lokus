@@ -30,6 +30,7 @@ from gui.constants import (
     get_action_button_danger,
 )
 from gui.ia_config_dialog import mostrar_dialogo_configuracion_ia
+from gui.config_dialog_mejorado import mostrar_dialogo_configuracion
 
 
 class DialogoCrearArchivo:
@@ -86,7 +87,12 @@ class DialogoCrearArchivo:
         # Contenido del diálogo
         self.dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Crear Nuevo Archivo", size=18, weight=ft.FontWeight.BOLD, color=colors["text_primary"]),
+            title=ft.Text(
+                "Crear Nuevo Archivo",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=colors["text_primary"],
+            ),
             content=ft.Container(
                 content=ft.Column(
                     controls=[
@@ -161,8 +167,14 @@ class VentanaSeleccionArchivo:
                 content=ft.Row(
                     controls=[
                         ft.Icon(ft.Icons.DESCRIPTION, size=20, color=colors["primary"]),
-                        ft.Text(archivo, size=14, color=colors["text_primary"], expand=True),
-                        ft.Icon(ft.Icons.ARROW_FORWARD_IOS, size=16, color=colors["text_muted"]),
+                        ft.Text(
+                            archivo, size=14, color=colors["text_primary"], expand=True
+                        ),
+                        ft.Icon(
+                            ft.Icons.ARROW_FORWARD_IOS,
+                            size=16,
+                            color=colors["text_muted"],
+                        ),
                     ],
                     spacing=10,
                     alignment=ft.MainAxisAlignment.START,
@@ -203,7 +215,12 @@ class VentanaSeleccionArchivo:
         # Diálogo principal
         self.dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text(self.titulo, size=18, weight=ft.FontWeight.BOLD, color=colors["text_primary"]),
+            title=ft.Text(
+                self.titulo,
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=colors["text_primary"],
+            ),
             content=ft.Container(
                 content=ft.Column(
                     controls=[
@@ -266,11 +283,20 @@ class VentanaSeleccionRegistro:
             btn_registro = ft.Container(
                 content=ft.Row(
                     controls=[
-                        ft.Icon(ft.Icons.EDIT_DOCUMENT, size=20, color=colors["success"]),
-                        ft.Text(info_text, size=13, color=colors["text_primary"], expand=True),
+                        ft.Icon(
+                            ft.Icons.EDIT_DOCUMENT, size=20, color=colors["success"]
+                        ),
+                        ft.Text(
+                            info_text,
+                            size=13,
+                            color=colors["text_primary"],
+                            expand=True,
+                        ),
                         ft.ElevatedButton(
                             text="Editar",
-                            on_click=lambda e, fn=fila_num, d=datos: self._on_editar_item(fn, d),
+                            on_click=lambda e, fn=fila_num, d=datos: self._on_editar_item(
+                                fn, d
+                            ),
                             style=ft.ButtonStyle(
                                 bgcolor=colors["success"],
                                 color=colors["text_on_primary"],
@@ -318,7 +344,12 @@ class VentanaSeleccionRegistro:
         # Diálogo principal
         self.dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Seleccionar Registro para Editar", size=18, weight=ft.FontWeight.BOLD, color=colors["text_primary"]),
+            title=ft.Text(
+                "Seleccionar Registro para Editar",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=colors["text_primary"],
+            ),
             content=ft.Container(
                 content=ft.Column(
                     controls=[
@@ -376,7 +407,9 @@ class DialogoConfirmacion:
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text(titulo, size=18, weight=ft.FontWeight.BOLD, color=colors["text_primary"]),
+            title=ft.Text(
+                titulo, size=18, weight=ft.FontWeight.BOLD, color=colors["text_primary"]
+            ),
             content=ft.Text(mensaje, size=14, color=colors["text_secondary"]),
             actions=[
                 ft.TextButton(
@@ -437,26 +470,31 @@ class VentanaPrincipal:
         self.btn_actualizar = None
         self.btn_cancelar_edicion = None
 
-        # Lista de tipos de audiencia
+        # Lista de tipos de audiencia (ordenada alfabéticamente)
         self.tipos_audiencia = [
             "-- Seleccione tipo --",
-            "Alegatos de conclusión",
-            "Concentrada",
+            "(Vacío)",  # Opción especial para dejar celda en blanco
             "Acusación",
+            "Alegatos de conclusión",
+            "Aplicación de Principio de oportunidad",
+            "Concentrada",
             "Conciliación",
+            "Continuación de Juicio Oral",
             "Control de legalidad",
-            "Individualización de pena",
             "Imputación",
             "Incidente de reparación integral",
+            "Individualización de pena",
+            "Instalación de Juicio Oral",
             "Juicio oral",
             "Medidas de aseguramiento",
             "Nulidad",
             "Preclusión",
-            "Prórroga",
-            "Revisión de medida",
-            "Verificación de cumplimiento",
             "Preliminar",
             "Preparatoria",
+            "Prórroga",
+            "Revisión de medida",
+            "Verificación de Allanamiento",
+            "Verificación de cumplimiento",
             "Otra",
         ]
 
@@ -479,7 +517,7 @@ class VentanaPrincipal:
 
         # Configurar ventana
         try:
-            if hasattr(self.page, 'window'):
+            if hasattr(self.page, "window"):
                 self.page.window.width = 1400
                 self.page.window.height = 900
                 self.page.window.min_width = 1000
@@ -490,7 +528,9 @@ class VentanaPrincipal:
             pass
 
         # Configurar tema basado en el tema actual
-        self.page.theme_mode = ft.ThemeMode.DARK if is_dark_theme() else ft.ThemeMode.LIGHT
+        self.page.theme_mode = (
+            ft.ThemeMode.DARK if is_dark_theme() else ft.ThemeMode.LIGHT
+        )
         self.page.theme = ft.Theme(
             color_scheme=ft.ColorScheme(
                 primary=colors["primary"],
@@ -513,7 +553,7 @@ class VentanaPrincipal:
             self.page.on_keyboard_event = self._on_keyboard_event
 
             # Enfocar el campo de radicado por defecto
-            if hasattr(self, 'entrada_radicado') and self.entrada_radicado:
+            if hasattr(self, "entrada_radicado") and self.entrada_radicado:
                 self.entrada_radicado.focus()
 
             # Forzar actualización
@@ -587,19 +627,23 @@ class VentanaPrincipal:
             "Registros: 0",
             size=14,
             weight=ft.FontWeight.W_600,
-            color=colors["text_primary"]
+            color=colors["text_primary"],
         )
 
         self.archivo_actual_text = ft.Text(
             "Ningún archivo seleccionado",
             size=14,
             weight=ft.FontWeight.W_500,
-            color=colors["text_secondary"]
+            color=colors["text_secondary"],
         )
 
         # Botón de toggle de tema
         theme_icon = ft.Icons.DARK_MODE if not is_dark_theme() else ft.Icons.LIGHT_MODE
-        theme_tooltip = "Activar tema oscuro (Ctrl+T)" if not is_dark_theme() else "Activar tema claro (Ctrl+T)"
+        theme_tooltip = (
+            "Activar tema oscuro (Ctrl+T)"
+            if not is_dark_theme()
+            else "Activar tema claro (Ctrl+T)"
+        )
 
         btn_theme_toggle = ft.IconButton(
             icon=theme_icon,
@@ -611,6 +655,20 @@ class VentanaPrincipal:
                 bgcolor=colors["surface_tertiary"],
                 shape=ft.CircleBorder(),
                 padding=ft.Padding(8, 8, 8, 8),
+            ),
+        )
+
+        # Botón de configuración
+        btn_config = ft.IconButton(
+            icon=ft.Icons.SETTINGS,
+            tooltip="Configuración",
+            on_click=lambda e: self._mostrar_configuracion(),
+            icon_color=colors["text_secondary"],
+            icon_size=20,
+            style=ft.ButtonStyle(
+                bgcolor=colors["surface_primary"],
+                shape=ft.CircleBorder(),
+                padding=ft.Padding(6, 6, 6, 6),
             ),
         )
 
@@ -638,7 +696,7 @@ class VentanaPrincipal:
                                 content=ft.Icon(
                                     ft.Icons.GAVEL,
                                     size=40,
-                                    color=colors["text_on_primary"]
+                                    color=colors["text_on_primary"],
                                 ),
                                 width=60,
                                 height=60,
@@ -652,13 +710,13 @@ class VentanaPrincipal:
                                         "GESTOR DE AUDIENCIAS",
                                         size=24,
                                         weight=ft.FontWeight.BOLD,
-                                        color=colors["text_primary"]
+                                        color=colors["text_primary"],
                                     ),
                                     ft.Text(
                                         "Sistema Judicial Profesional",
                                         size=14,
                                         color=colors["text_secondary"],
-                                        italic=True
+                                        italic=True,
                                     ),
                                 ],
                                 spacing=2,
@@ -668,10 +726,10 @@ class VentanaPrincipal:
                         spacing=15,
                         alignment=ft.MainAxisAlignment.START,
                     ),
-
                     # Sección derecha: Botones de utilidad
                     ft.Row(
                         controls=[
+                            btn_config,
                             btn_atajos,
                             btn_theme_toggle,
                         ],
@@ -705,7 +763,11 @@ class VentanaPrincipal:
                     ft.Container(
                         content=ft.Row(
                             controls=[
-                                ft.Icon(ft.Icons.FOLDER_OUTLINED, size=18, color=colors["primary"]),
+                                ft.Icon(
+                                    ft.Icons.FOLDER_OUTLINED,
+                                    size=18,
+                                    color=colors["primary"],
+                                ),
                                 self.archivo_actual_text,
                             ],
                             spacing=8,
@@ -716,18 +778,25 @@ class VentanaPrincipal:
                         padding=ft.padding.symmetric(horizontal=20, vertical=12),
                         border=ft.border.all(1, colors["surface_border"]),
                     ),
-
                     # Contador de registros (derecha)
                     ft.Container(
                         content=ft.Row(
                             controls=[
-                                ft.Icon(ft.Icons.ANALYTICS_OUTLINED, size=18, color=colors["primary"]),
+                                ft.Icon(
+                                    ft.Icons.ANALYTICS_OUTLINED,
+                                    size=18,
+                                    color=colors["primary"],
+                                ),
                                 self.contador_registros,
                             ],
                             spacing=8,
                             alignment=ft.MainAxisAlignment.CENTER,
                         ),
-                        bgcolor=colors["primary_light"] if not is_dark_theme() else colors["surface_tertiary"],
+                        bgcolor=(
+                            colors["primary_light"]
+                            if not is_dark_theme()
+                            else colors["surface_tertiary"]
+                        ),
                         border_radius=20,
                         padding=ft.padding.symmetric(horizontal=20, vertical=12),
                         border=ft.border.all(1, colors["surface_border"]),
@@ -749,19 +818,22 @@ class VentanaPrincipal:
                             # Encabezado de sección (compacto)
                             ft.Row(
                                 controls=[
-                                    ft.Icon(ft.Icons.FOLDER_OUTLINED, size=18, color=colors["text_primary"]),
+                                    ft.Icon(
+                                        ft.Icons.FOLDER_OUTLINED,
+                                        size=18,
+                                        color=colors["text_primary"],
+                                    ),
                                     ft.Text(
                                         "IDENTIFICACIÓN DEL PROCESO",
                                         size=14,
                                         weight=ft.FontWeight.BOLD,
-                                        color=colors["text_primary"]
+                                        color=colors["text_primary"],
                                     ),
                                 ],
                                 spacing=8,
                                 alignment=ft.MainAxisAlignment.START,
                             ),
                             ft.Container(height=6),  # Espaciado ultra reducido
-
                             # Campos: Radicado y Juzgado (uno debajo del otro)
                             self._crear_campo_radicado(),
                             ft.Container(height=6),
@@ -775,9 +847,7 @@ class VentanaPrincipal:
                     padding=ft.padding.all(12),  # Padding reducido
                     border=ft.border.all(1, colors["surface_border"]),
                 ),
-
                 ft.Container(height=10),  # Espaciado entre secciones reducido
-
                 # SECCIÓN 2: CONFIGURACIÓN DE LA AUDIENCIA
                 ft.Container(
                     content=ft.Column(
@@ -785,19 +855,22 @@ class VentanaPrincipal:
                             # Encabezado de sección (compacto)
                             ft.Row(
                                 controls=[
-                                    ft.Icon(ft.Icons.SETTINGS_OUTLINED, size=18, color=colors["text_primary"]),
+                                    ft.Icon(
+                                        ft.Icons.SETTINGS_OUTLINED,
+                                        size=18,
+                                        color=colors["text_primary"],
+                                    ),
                                     ft.Text(
                                         "CONFIGURACIÓN DE LA AUDIENCIA",
                                         size=14,
                                         weight=ft.FontWeight.BOLD,
-                                        color=colors["text_primary"]
+                                        color=colors["text_primary"],
                                     ),
                                 ],
                                 spacing=8,
                                 alignment=ft.MainAxisAlignment.START,
                             ),
                             ft.Container(height=6),
-
                             # Campos: Tipo de audiencia y ¿Se realizó?
                             self._crear_campo_tipo_audiencia(),
                             ft.Container(height=6),
@@ -827,19 +900,22 @@ class VentanaPrincipal:
                             # Encabezado de sección (compacto)
                             ft.Row(
                                 controls=[
-                                    ft.Icon(ft.Icons.SCHEDULE_OUTLINED, size=18, color=colors["text_primary"]),
+                                    ft.Icon(
+                                        ft.Icons.SCHEDULE_OUTLINED,
+                                        size=18,
+                                        color=colors["text_primary"],
+                                    ),
                                     ft.Text(
                                         "PROGRAMACIÓN",
                                         size=14,
                                         weight=ft.FontWeight.BOLD,
-                                        color=colors["text_primary"]
+                                        color=colors["text_primary"],
                                     ),
                                 ],
                                 spacing=8,
                                 alignment=ft.MainAxisAlignment.START,
                             ),
                             ft.Container(height=6),
-
                             # Campos: Fecha y Hora (uno debajo del otro)
                             self._crear_campo_fecha(),
                             ft.Container(height=6),
@@ -853,9 +929,7 @@ class VentanaPrincipal:
                     border_radius=10,
                     padding=12,  # Padding reducido
                 ),
-
                 ft.Container(height=10),  # Espaciado reducido
-
                 # SECCIÓN 4: MOTIVOS DE NO REALIZACIÓN
                 ft.Container(
                     content=ft.Column(
@@ -863,29 +937,38 @@ class VentanaPrincipal:
                             # Encabezado de sección (compacto)
                             ft.Row(
                                 controls=[
-                                    ft.Icon(ft.Icons.ERROR_OUTLINE, size=18, color=colors["error"]),
+                                    ft.Icon(
+                                        ft.Icons.ERROR_OUTLINE,
+                                        size=18,
+                                        color=colors["error"],
+                                    ),
                                     ft.Text(
                                         "MOTIVOS DE NO REALIZACIÓN",
                                         size=14,
                                         weight=ft.FontWeight.BOLD,
-                                        color=colors["text_primary"]  # Cambiado a texto principal
+                                        color=colors[
+                                            "text_primary"
+                                        ],  # Cambiado a texto principal
                                     ),
                                 ],
                                 spacing=8,
                                 alignment=ft.MainAxisAlignment.START,
                             ),
                             ft.Container(height=6),
-
                             # Campo de motivos (compacto)
                             self._crear_campo_motivos(),
                         ],
                         spacing=3,
                         alignment=ft.MainAxisAlignment.START,
                     ),
-                    bgcolor=colors["surface_tertiary"],  # Mismo fondo gris que las otras secciones
+                    bgcolor=colors[
+                        "surface_tertiary"
+                    ],  # Mismo fondo gris que las otras secciones
                     border_radius=10,
                     padding=ft.padding.all(12),  # Padding reducido
-                    border=ft.border.all(1, colors["surface_border"]),  # Borde gris como las otras secciones
+                    border=ft.border.all(
+                        1, colors["surface_border"]
+                    ),  # Borde gris como las otras secciones
                     shadow=ft.BoxShadow(
                         spread_radius=0,
                         blur_radius=6,  # Blur reducido
@@ -921,18 +1004,21 @@ class VentanaPrincipal:
                             # Encabezado de sección (compacto)
                             ft.Row(
                                 controls=[
-                                    ft.Icon(ft.Icons.NOTES_OUTLINED, size=18, color=colors["text_primary"]),
+                                    ft.Icon(
+                                        ft.Icons.NOTES_OUTLINED,
+                                        size=18,
+                                        color=colors["text_primary"],
+                                    ),
                                     ft.Text(
                                         "OBSERVACIONES ADICIONALES",
                                         size=14,
                                         weight=ft.FontWeight.BOLD,
-                                        color=colors["text_primary"]
+                                        color=colors["text_primary"],
                                     ),
                                 ],
                                 spacing=8,
                             ),
                             ft.Container(height=6),  # Espaciado reducido
-
                             # Campo de observaciones (reducido a 2 líneas)
                             self._crear_campo_observaciones_compacto(),
                         ],
@@ -955,13 +1041,10 @@ class VentanaPrincipal:
                     barra_informacion,
                     ft.Divider(height=1, color=colors["surface_border"]),
                     ft.Container(height=8),  # Espaciado ultra reducido
-
                     row_principal,  # Las dos columnas principales
                     ft.Container(height=8),  # Espaciado ultra reducido
-
                     seccion_observaciones,  # Observaciones ancho completo
                     ft.Container(height=12),  # Espaciado final reducido
-
                     # === CRÉDITOS DEL DESARROLLADOR ===
                     self._crear_creditos_desarrollador(),
                 ],
@@ -1119,7 +1202,7 @@ class VentanaPrincipal:
             width=85,
             max_length=2,
             on_click=_seleccionar_texto_hora,
-            **estilo_hora
+            **estilo_hora,
         )
 
         self.entrada_minuto = ft.TextField(
@@ -1128,15 +1211,22 @@ class VentanaPrincipal:
             width=85,
             max_length=2,
             on_click=_seleccionar_texto_minuto,
-            **estilo_hora
+            **estilo_hora,
         )
 
         return ft.Row(
             controls=[
                 self.entrada_hora,
                 ft.Container(
-                    content=ft.Text(":", size=20, color=colors["text_secondary"], weight=ft.FontWeight.BOLD),
-                    margin=ft.Margin(0, 15, 0, 0),  # Ajustar la posición vertical del separador
+                    content=ft.Text(
+                        ":",
+                        size=20,
+                        color=colors["text_secondary"],
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    margin=ft.Margin(
+                        0, 15, 0, 0
+                    ),  # Ajustar la posición vertical del separador
                 ),
                 self.entrada_minuto,
             ],
@@ -1172,7 +1262,7 @@ class VentanaPrincipal:
             options=[
                 ft.dropdown.Option("-- Seleccione --"),
                 ft.dropdown.Option("SI"),
-                ft.dropdown.Option("NO")
+                ft.dropdown.Option("NO"),
             ],
             on_change=self._on_realizada_change,
             border_radius=10,
@@ -1191,8 +1281,14 @@ class VentanaPrincipal:
         colors = get_theme_colors()
 
         motivos_labels = [
-            "Juez", "Fiscalía", "Usuario", "INPEC",
-            "Víctima", "ICBF", "Defensor Confianza", "Defensor Público",
+            "Juez",
+            "Fiscalía",
+            "Usuario",
+            "INPEC",
+            "Víctima",
+            "ICBF",
+            "Defensor Confianza",
+            "Defensor Público",
         ]
 
         self.checkboxes_motivos = []
@@ -1557,9 +1653,7 @@ class VentanaPrincipal:
                         ],
                         spacing=8,
                     ),
-
                     separador,
-
                     # Grupo básico: Gestión de archivos básica
                     ft.Row(
                         controls=[
@@ -1569,9 +1663,7 @@ class VentanaPrincipal:
                         ],
                         spacing=8,
                     ),
-
                     separador_ia,
-
                     # Grupo IA: Funciones inteligentes
                     ft.Row(
                         controls=[
@@ -1580,10 +1672,8 @@ class VentanaPrincipal:
                         ],
                         spacing=8,
                     ),
-
                     # Espaciador para empujar los botones de peligro hacia la derecha
                     ft.Container(expand=True),
-
                     # Grupo de peligro: Acciones destructivas
                     ft.Row(
                         controls=[
@@ -1682,7 +1772,9 @@ class VentanaPrincipal:
                 controls=[
                     ft.Row(
                         controls=[
-                            ft.Icon(ft.Icons.FOLDER_OPEN, size=24, color=colors["primary"]),
+                            ft.Icon(
+                                ft.Icons.FOLDER_OPEN, size=24, color=colors["primary"]
+                            ),
                             ft.Text(
                                 "GESTIÓN DE ARCHIVOS",
                                 size=18,
@@ -1719,7 +1811,7 @@ class VentanaPrincipal:
             return
 
         # Remover caracteres no numéricos excepto /
-        valor_limpio = ''.join(c for c in valor if c.isdigit())
+        valor_limpio = "".join(c for c in valor if c.isdigit())
 
         # Inicializar fecha_formateada
         fecha_formateada = valor
@@ -1852,16 +1944,20 @@ class VentanaPrincipal:
         else:
             # IA configurada, proceder con autocompletado
             from gui.dialogs import DialogoAutocompletarIA
+
             DialogoAutocompletarIA(self.page, self._on_datos_ia_recibidos)
 
     def _verificar_ia_configurada(self) -> bool:
         """Verifica si la IA está configurada correctamente."""
         try:
             import os
-            config_path = os.path.join(os.path.dirname(__file__), "..", "config", "config.py")
+
+            config_path = os.path.join(
+                os.path.dirname(__file__), "..", "config", "config.py"
+            )
 
             if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     contenido = f.read()
                     return 'OPENAI_API_KEY = "sk-' in contenido
             return False
@@ -1873,7 +1969,9 @@ class VentanaPrincipal:
         # Reiniciar el servicio de IA si existe
         try:
             # Mostrar mensaje de éxito adicional
-            self._mostrar_mensaje_atajo("✨ ¡IA configurada! Ya puedes usarla para autocompletar")
+            self._mostrar_mensaje_atajo(
+                "✨ ¡IA configurada! Ya puedes usarla para autocompletar"
+            )
         except Exception as e:
             print(f"Error al reiniciar servicio de IA: {e}")
 
@@ -1890,20 +1988,46 @@ class VentanaPrincipal:
                 tipo_encontrado = None
                 tipo_ia = datos["tipo_audiencia"].lower()
 
-                # Mapeo directo para casos específicos
+                # Mapeo directo para casos específicos (actualizado alfabéticamente)
                 mapeo_tipos = {
-                    "audiencia de alegatos de conclusión": "Alegatos de conclusión",
                     "alegatos de conclusión": "Alegatos de conclusión",
-                    "control de legalidad": "Audiencia de control de legalidad",
-                    "control de legalidad de captura": "Audiencia de control de legalidad",
-                    "audiencia de control de legalidad": "Audiencia de control de legalidad",
-                    "audiencia concentrada": "Audiencia concentrada",
-                    "audiencia de juicio oral": "Audiencia de juicio oral",
-                    "audiencia preliminar": "Audiencia preliminar",
-                    "audiencia preparatoria": "Audiencia preparatoria",
-                    "audiencia de acusación": "Audiencia de acusación",
-                    "audiencia de conciliación": "Audiencia de conciliación",
-                    "audiencia de preclusión": "Audiencia de preclusión",
+                    "audiencia de alegatos de conclusión": "Alegatos de conclusión",
+                    "aplicación de principio de oportunidad": "Aplicación de Principio de oportunidad",
+                    "aplicación po": "Aplicación de Principio de oportunidad",
+                    "po": "Aplicación de Principio de oportunidad",
+                    "principio de oportunidad": "Aplicación de Principio de oportunidad",
+                    "audiencia de acusación": "Acusación",
+                    "acusación": "Acusación",
+                    "audiencia concentrada": "Concentrada",
+                    "concentrada": "Concentrada",
+                    "audiencia de conciliación": "Conciliación",
+                    "conciliación": "Conciliación",
+                    "continuación de juicio": "Continuación de Juicio Oral",
+                    "continuación de juicio oral": "Continuación de Juicio Oral",
+                    "continuacion juicio": "Continuación de Juicio Oral",
+                    "continuacion": "Continuación de Juicio Oral",
+                    "control de legalidad": "Control de legalidad",
+                    "control de legalidad de captura": "Control de legalidad",
+                    "audiencia de control de legalidad": "Control de legalidad",
+                    "instalación de juicio oral": "Instalación de Juicio Oral",
+                    "audiencia de instalación de juicio oral": "Instalación de Juicio Oral",
+                    "instalacion de juicio oral": "Instalación de Juicio Oral",
+                    "instalación": "Instalación de Juicio Oral",
+                    "audiencia de juicio oral": "Juicio oral",
+                    "juicio oral": "Juicio oral",
+                    "juicio": "Juicio oral",
+                    "audiencia preliminar": "Preliminar",
+                    "preliminar": "Preliminar",
+                    "audiencia preparatoria": "Preparatoria",
+                    "preparatoria": "Preparatoria",
+                    "audiencia de preclusión": "Preclusión",
+                    "preclusión": "Preclusión",
+                    "verificación de allanamiento": "Verificación de Allanamiento",
+                    "verificacion de allanamiento": "Verificación de Allanamiento",
+                    "allanamiento": "Verificación de Allanamiento",
+                    "": "(Vacío)",  # Tipo vacío
+                    "vacio": "(Vacío)",
+                    "vacío": "(Vacío)",
                 }
 
                 # 1. Buscar mapeo directo
@@ -1915,7 +2039,9 @@ class VentanaPrincipal:
                     for tipo in self.tipos_audiencia:
                         tipo_lower = tipo.lower()
                         # Buscar bidireccional: IA contiene lista O lista contiene IA
-                        if (tipo_ia in tipo_lower or tipo_lower in tipo_ia) and len(tipo_lower) > 5:
+                        if (tipo_ia in tipo_lower or tipo_lower in tipo_ia) and len(
+                            tipo_lower
+                        ) > 5:
                             tipo_encontrado = tipo
                             break
 
@@ -1932,10 +2058,33 @@ class VentanaPrincipal:
             if datos.get("fecha") and self.entrada_fecha:
                 self.entrada_fecha.value = datos["fecha"]
 
-            # Aplicar hora
-            if datos.get("hora") and self.entrada_hora:
-                self.entrada_hora.value = datos["hora"]
-            if datos.get("minuto") and self.entrada_minuto:
+            # Aplicar hora - manejar formato HH:MM de la IA
+            if datos.get("hora"):
+                hora_str = datos["hora"].strip()
+                if ":" in hora_str and self.entrada_hora and self.entrada_minuto:
+                    # Dividir HH:MM en hora y minuto separados
+                    partes = hora_str.split(":")
+                    if len(partes) == 2:
+                        hora_parte = partes[0].strip()
+                        minuto_parte = partes[1].strip()
+
+                        # Validar que sean números válidos
+                        if hora_parte.isdigit() and minuto_parte.isdigit():
+                            hora_val = int(hora_parte)
+                            minuto_val = int(minuto_parte)
+
+                            # Validar rangos (hora 0-23, minuto 0-59)
+                            if 0 <= hora_val <= 23 and 0 <= minuto_val <= 59:
+                                self.entrada_hora.value = f"{hora_val:02d}"
+                                self.entrada_minuto.value = f"{minuto_val:02d}"
+                elif hora_str.isdigit() and self.entrada_hora:
+                    # Solo hora sin minutos (para compatibilidad)
+                    self.entrada_hora.value = hora_str
+                    if self.entrada_minuto:
+                        self.entrada_minuto.value = "00"
+
+            # Manejar campos separados (para compatibilidad con versiones anteriores)
+            if datos.get("minuto") and self.entrada_minuto and not datos.get("hora"):
                 self.entrada_minuto.value = datos["minuto"]
 
             # Aplicar juzgado
@@ -1954,8 +2103,14 @@ class VentanaPrincipal:
                     # Marcar SOLO UN motivo encontrado
                     motivo_principal = datos.get("motivos", "").lower()
                     motivos_map = {
-                        "juez": 0, "fiscalía": 1, "usuario": 2, "inpec": 3,
-                        "víctima": 4, "icbf": 5, "defensor confianza": 6, "defensor público": 7
+                        "juez": 0,
+                        "fiscalía": 1,
+                        "usuario": 2,
+                        "inpec": 3,
+                        "víctima": 4,
+                        "icbf": 5,
+                        "defensor confianza": 6,
+                        "defensor público": 7,
                     }
 
                     # Solo marcar el primer motivo encontrado
@@ -1988,10 +2143,12 @@ class VentanaPrincipal:
             snack = ft.SnackBar(
                 content=ft.Row(
                     controls=[
-                        ft.Icon(ft.Icons.ERROR, size=20, color=colors["text_on_primary"]),
+                        ft.Icon(
+                            ft.Icons.ERROR, size=20, color=colors["text_on_primary"]
+                        ),
                         ft.Text(
                             f"Error al aplicar datos de IA: {str(e)}",
-                            color=colors["text_on_primary"]
+                            color=colors["text_on_primary"],
                         ),
                     ],
                     spacing=8,
@@ -2012,10 +2169,9 @@ class VentanaPrincipal:
                 return
 
             from gui.busqueda_avanzada import VentanaBusquedaAvanzada
+
             VentanaBusquedaAvanzada(
-                self.page,
-                self.excel_manager,
-                self._on_editar_desde_busqueda
+                self.page, self.excel_manager, self._on_editar_desde_busqueda
             )
 
         except Exception as ex:
@@ -2035,7 +2191,9 @@ class VentanaPrincipal:
             self._actualizar_interfaz_modo_edicion()
 
             # Mostrar mensaje
-            self._mostrar_mensaje_atajo(f"✏️ Editando registro #{datos[0] if datos[0] else fila_num}")
+            self._mostrar_mensaje_atajo(
+                f"✏️ Editando registro #{datos[0] if datos[0] else fila_num}"
+            )
 
         except Exception as ex:
             self._mostrar_mensaje_error(f"Error cargando datos para edición: {str(ex)}")
@@ -2070,11 +2228,11 @@ class VentanaPrincipal:
                 # También actualizar campos virtuales para compatibilidad si existen
                 if "/" in fecha_str and len(fecha_str.split("/")) == 3:
                     partes = fecha_str.split("/")
-                    if hasattr(self, 'combo_dia') and self.combo_dia:
+                    if hasattr(self, "combo_dia") and self.combo_dia:
                         self.combo_dia.value = partes[0]
-                    if hasattr(self, 'combo_mes') and self.combo_mes:
+                    if hasattr(self, "combo_mes") and self.combo_mes:
                         self.combo_mes.value = partes[1]
-                    if hasattr(self, 'combo_anio') and self.combo_anio:
+                    if hasattr(self, "combo_anio") and self.combo_anio:
                         self.combo_anio.value = partes[2]
 
             # Cargar hora (columna E)
@@ -2100,13 +2258,17 @@ class VentanaPrincipal:
                     self.combo_realizada.value = "NO"
 
             # Cargar motivos (columnas I-P = 8-15)
-            if hasattr(self, 'checkboxes_motivos') and self.checkboxes_motivos:
+            if hasattr(self, "checkboxes_motivos") and self.checkboxes_motivos:
                 for i, checkbox in enumerate(self.checkboxes_motivos):
                     if len(datos) > 8 + i and datos[8 + i]:
                         checkbox.value = True
 
             # Cargar observaciones (columna Q = 16)
-            if hasattr(self, 'entrada_observaciones') and self.entrada_observaciones and len(datos) > 16:
+            if (
+                hasattr(self, "entrada_observaciones")
+                and self.entrada_observaciones
+                and len(datos) > 16
+            ):
                 if datos[16]:
                     self.entrada_observaciones.value = str(datos[16])
 
@@ -2124,11 +2286,11 @@ class VentanaPrincipal:
             print("=== DEBUG: Actualizando interfaz para modo edición ===")
 
             # Activar modo edición en los botones
-            if hasattr(self, 'btn_guardar_sticky'):
+            if hasattr(self, "btn_guardar_sticky"):
                 self.btn_guardar_sticky.visible = False
-            if hasattr(self, 'btn_actualizar_sticky'):
+            if hasattr(self, "btn_actualizar_sticky"):
                 self.btn_actualizar_sticky.visible = True
-            if hasattr(self, 'btn_cancelar_sticky'):
+            if hasattr(self, "btn_cancelar_sticky"):
                 self.btn_cancelar_sticky.visible = True
 
             # Actualizar página
@@ -2142,10 +2304,13 @@ class VentanaPrincipal:
         """Abre el diálogo de procesamiento masivo de documentos."""
         try:
             if not self.excel_manager:
-                self._mostrar_mensaje("Primero debe abrir un archivo Excel para usar el procesamiento masivo.\n\nUse el botón '📂 Abrir Excel' para seleccionar un archivo donde se guardarán las audiencias procesadas.")
+                self._mostrar_mensaje(
+                    "Primero debe abrir un archivo Excel para usar el procesamiento masivo.\n\nUse el botón '📂 Abrir Excel' para seleccionar un archivo donde se guardarán las audiencias procesadas."
+                )
                 return
 
             from gui.procesador_masivo import DialogoProcesadorMasivo
+
             DialogoProcesadorMasivo(self.page, self._on_audiencias_masivas_recibidas)
 
         except Exception as ex:
@@ -2175,8 +2340,8 @@ class VentanaPrincipal:
                     print(f"=== DEBUG: Preparando audiencia {i} ===")
 
                     # Formatear hora correctamente
-                    hora_val = audiencia.get('hora', '00') or '00'
-                    minuto_val = audiencia.get('minuto', '00') or '00'
+                    hora_val = audiencia.get("hora", "00") or "00"
+                    minuto_val = audiencia.get("minuto", "00") or "00"
 
                     # Procesar realizada_si/realizada_no según el valor
                     se_realizo = audiencia.get("se_realizo", "")
@@ -2197,16 +2362,21 @@ class VentanaPrincipal:
                     # Crear objeto Audiencia con los parámetros correctos
                     from models.audiencia import Audiencia
 
+                    # Usar "(Vacío)" cuando no hay tipo de audiencia
+                    tipo_audiencia = audiencia.get("tipo_audiencia", "").strip()
+                    if not tipo_audiencia:
+                        tipo_audiencia = "(Vacío)"
+
                     nueva_audiencia = Audiencia(
                         radicado=audiencia.get("radicado", ""),
-                        tipo=audiencia.get("tipo_audiencia", ""),
+                        tipo=tipo_audiencia,
                         fecha=audiencia.get("fecha", ""),
                         hora=f"{hora_val}:{minuto_val}",
                         juzgado=audiencia.get("juzgado", ""),
                         realizada_si=realizada_si,
                         realizada_no=realizada_no,
                         motivos=motivos_lista,
-                        observaciones=audiencia.get("observaciones", "")
+                        observaciones=audiencia.get("observaciones", ""),
                     )
 
                     audiencias_preparadas.append(nueva_audiencia)
@@ -2220,10 +2390,14 @@ class VentanaPrincipal:
 
             # Guardar todas las audiencias usando el método masivo optimizado
             if audiencias_preparadas:
-                exitosas, num_errores, errores_guardado = self.excel_manager.guardar_audiencias_masivo(audiencias_preparadas)
+                exitosas, num_errores, errores_guardado = (
+                    self.excel_manager.guardar_audiencias_masivo(audiencias_preparadas)
+                )
 
                 # 🚀 NUEVO: REORDENAR Y ACTUALIZAR NUMERACIÓN (como en guardado individual)
-                print("📊 Reordenando audiencias por fecha/hora después del procesamiento masivo...")
+                print(
+                    "📊 Reordenando audiencias por fecha/hora después del procesamiento masivo..."
+                )
                 self.excel_manager.reordenar_y_guardar()
                 print("✅ Reordenamiento masivo completado exitosamente")
 
@@ -2240,7 +2414,9 @@ class VentanaPrincipal:
                     mensaje += f"\n• {len(errores_totales)} audiencias con errores"
                     # Mostrar primeros errores si hay pocos
                     if len(errores_totales) <= 3:
-                        mensaje += f"\n\nErrores:\n" + "\n".join(f"- {error}" for error in errores_totales[:3])
+                        mensaje += f"\n\nErrores:\n" + "\n".join(
+                            f"- {error}" for error in errores_totales[:3]
+                        )
 
                 mensaje += f"\n\n📊 TOTALES ACTUALIZADOS AUTOMÁTICAMENTE"
 
@@ -2252,11 +2428,13 @@ class VentanaPrincipal:
                     datos_resumen={
                         "mensaje_original": mensaje,
                         "errores_detalle": errores_totales[:5],  # Primeros 5 errores
-                        "totales_actualizados": True
-                    }
+                        "totales_actualizados": True,
+                    },
                 )
             else:
-                self._mostrar_mensaje_error("No se pudo preparar ninguna audiencia para guardar")
+                self._mostrar_mensaje_error(
+                    "No se pudo preparar ninguna audiencia para guardar"
+                )
 
             print(f"=== DEBUG: Procesamiento masivo completado ===")
 
@@ -2270,11 +2448,13 @@ class VentanaPrincipal:
         audiencias_procesadas: int,
         audiencias_exitosas: int,
         audiencias_con_errores: int,
-        datos_resumen: Optional[Dict] = None
+        datos_resumen: Optional[Dict] = None,
     ):
         """Muestra el diálogo de retroalimentación mejorado."""
         try:
-            from gui.dialogo_retroalimentacion_mejorado import mostrar_retroalimentacion_mejorada
+            from gui.dialogo_retroalimentacion_mejorado import (
+                mostrar_retroalimentacion_mejorada,
+            )
 
             # Crear el diálogo mejorado
             dialogo = mostrar_retroalimentacion_mejorada(
@@ -2284,10 +2464,12 @@ class VentanaPrincipal:
                 audiencias_con_errores=audiencias_con_errores,
                 datos_resumen=datos_resumen or {},
                 callback_feedback=self._on_feedback_mejorado_recibido,
-                callback_cerrar=self._on_dialogo_retroalimentacion_cerrado
+                callback_cerrar=self._on_dialogo_retroalimentacion_cerrado,
             )
 
-            print(f"=== DEBUG: Mostrando retroalimentación mejorada - {audiencias_exitosas}/{audiencias_procesadas} exitosas ===")
+            print(
+                f"=== DEBUG: Mostrando retroalimentación mejorada - {audiencias_exitosas}/{audiencias_procesadas} exitosas ==="
+            )
 
         except Exception as ex:
             print(f"Error mostrando retroalimentación mejorada: {ex}")
@@ -2306,26 +2488,32 @@ class VentanaPrincipal:
             resultado = ai_service.guardar_feedback_evaluacion(
                 tipo_evaluacion=tipo_evaluacion,
                 fue_exacto=es_exacto,
-                contexto="procesamiento_masivo"
+                contexto="procesamiento_masivo",
             )
 
             # Mostrar mensaje de agradecimiento
             mensajes_feedback = {
                 "exacta": "¡Gracias! Tu feedback nos ayuda a mantener la precisión de la IA.",
                 "parcial": "Gracias por el feedback. Trabajaremos para mejorar la detección.",
-                "incorrecta": "Gracias por reportar esto. Utilizaremos tu feedback para mejorar significativamente."
+                "incorrecta": "Gracias por reportar esto. Utilizaremos tu feedback para mejorar significativamente.",
             }
 
-            mensaje = mensajes_feedback.get(tipo_evaluacion, "¡Gracias por tu feedback!")
+            mensaje = mensajes_feedback.get(
+                tipo_evaluacion, "¡Gracias por tu feedback!"
+            )
 
             # Mostrar confirmación en snackbar (más sutil que modal)
             self._mostrar_snackbar(mensaje, es_exitoso=True)
 
-            print(f"=== DEBUG: Feedback recibido - {tipo_evaluacion} (exacto: {es_exacto}) ===")
+            print(
+                f"=== DEBUG: Feedback recibido - {tipo_evaluacion} (exacto: {es_exacto}) ==="
+            )
 
         except Exception as ex:
             print(f"Error procesando feedback: {ex}")
-            self._mostrar_snackbar("Tu feedback se guardó localmente. ¡Gracias!", es_exitoso=True)
+            self._mostrar_snackbar(
+                "Tu feedback se guardó localmente. ¡Gracias!", es_exitoso=True
+            )
 
     def _on_dialogo_retroalimentacion_cerrado(self):
         """Callback para cuando se cierra el diálogo de retroalimentación."""
@@ -2364,38 +2552,43 @@ class VentanaPrincipal:
         except Exception as ex:
             print(f"Error mostrando snackbar: {ex}")
 
-    def _mostrar_retroalimentacion_opcional(self, texto_original: str, datos_ia: Dict, datos_finales: Dict):
+    def _mostrar_retroalimentacion_opcional(
+        self, texto_original: str, datos_ia: Dict, datos_finales: Dict
+    ):
         """Muestra diálogo de retroalimentación opcional para mejorar la IA."""
         try:
             # Solo mostrar retroalimentación en el 30% de los casos para no ser molesto
             import random
+
             if random.random() > 0.3:  # 30% de probabilidad
                 return
 
             from gui.dialogo_retroalimentacion import DialogoRetroalimentacionIA
+
             DialogoRetroalimentacionIA(
-                self.page,
-                texto_original,
-                datos_ia,
-                self._on_retroalimentacion_recibida
+                self.page, texto_original, datos_ia, self._on_retroalimentacion_recibida
             )
 
         except Exception as ex:
             print(f"Error mostrando retroalimentación: {ex}")
 
-    def _on_retroalimentacion_recibida(self, datos_ia: Dict, datos_corregidos: Dict, es_correcto: bool):
+    def _on_retroalimentacion_recibida(
+        self, datos_ia: Dict, datos_corregidos: Dict, es_correcto: bool
+    ):
         """Callback para procesar la retroalimentación del usuario."""
         try:
             from services.ai_service import ai_service
 
             # Solo procesar si hay diferencias significativas o se marcó como incorrecta
-            if not es_correcto or any(datos_ia.get(k) != datos_corregidos.get(k) for k in datos_ia.keys()):
+            if not es_correcto or any(
+                datos_ia.get(k) != datos_corregidos.get(k) for k in datos_ia.keys()
+            ):
                 # Guardar la corrección en el sistema de entrenamiento
                 resultado = ai_service.guardar_correccion(
                     "texto_procesado",  # En el futuro podríamos pasar el texto original
                     datos_ia,
                     datos_corregidos,
-                    es_correcto
+                    es_correcto,
                 )
 
                 if resultado:
@@ -2523,7 +2716,11 @@ class VentanaPrincipal:
         colors = get_theme_colors()
         snack = ft.SnackBar(
             ft.Text(mensaje, color=colors["text_on_primary"]),
-            bgcolor=colors["primary_light"] if not is_dark_theme() else colors["surface_tertiary"],
+            bgcolor=(
+                colors["primary_light"]
+                if not is_dark_theme()
+                else colors["surface_tertiary"]
+            ),
             duration=1500,  # 1.5 segundos
         )
         self.page.overlay.append(snack)
@@ -2548,14 +2745,18 @@ class VentanaPrincipal:
         snack = ft.SnackBar(
             content=ft.Row(
                 controls=[
-                    ft.Icon(ft.Icons.SMART_TOY, size=20, color=colors["text_on_primary"]),
+                    ft.Icon(
+                        ft.Icons.SMART_TOY, size=20, color=colors["text_on_primary"]
+                    ),
                     ft.Text(
                         "¡Formulario completado exitosamente con IA!",
                         size=15,
                         weight=ft.FontWeight.W_600,
-                        color=colors["text_on_primary"]
+                        color=colors["text_on_primary"],
                     ),
-                    ft.Icon(ft.Icons.CHECK_CIRCLE, size=20, color=colors["text_on_primary"]),
+                    ft.Icon(
+                        ft.Icons.CHECK_CIRCLE, size=20, color=colors["text_on_primary"]
+                    ),
                 ],
                 spacing=8,
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -2579,23 +2780,28 @@ class VentanaPrincipal:
                 ft.Container(
                     content=ft.Row(
                         controls=[
-                            ft.Icon(ft.Icons.KEYBOARD, size=24, color=colors["primary"]),
+                            ft.Icon(
+                                ft.Icons.KEYBOARD, size=24, color=colors["primary"]
+                            ),
                             ft.Text(
                                 "ATAJOS DE TECLADO DISPONIBLES",
                                 size=16,
                                 weight=ft.FontWeight.BOLD,
-                                color=colors["text_primary"]
+                                color=colors["text_primary"],
                             ),
                         ],
                         spacing=10,
                         alignment=ft.MainAxisAlignment.CENTER,
                     ),
-                    bgcolor=colors["primary_light"] if not is_dark_theme() else colors["surface_tertiary"],
+                    bgcolor=(
+                        colors["primary_light"]
+                        if not is_dark_theme()
+                        else colors["surface_tertiary"]
+                    ),
                     border_radius=10,
                     padding=ft.padding.all(15),
                     margin=ft.margin.only(bottom=15),
                 ),
-
                 # Sección 1: Acciones Principales
                 self._crear_seccion_atajos(
                     "� ACCIONES PRINCIPALES",
@@ -2606,9 +2812,8 @@ class VentanaPrincipal:
                         ("Ctrl+E", "Editar registro"),
                         ("F5", "Actualizar/Refrescar"),
                     ],
-                    colors
+                    colors,
                 ),
-
                 # Sección 2: Navegación y Edición
                 self._crear_seccion_atajos(
                     "⚡ NAVEGACIÓN Y EDICIÓN",
@@ -2618,9 +2823,8 @@ class VentanaPrincipal:
                         ("Ctrl+D", "Eliminar archivo"),
                         ("Ctrl+Shift+S", "Descargar archivo"),
                     ],
-                    colors
+                    colors,
                 ),
-
                 # Sección 3: Interfaz
                 self._crear_seccion_atajos(
                     "🎨 INTERFAZ",
@@ -2629,9 +2833,8 @@ class VentanaPrincipal:
                         ("F1", "Mostrar esta ayuda"),
                         ("Tab", "Navegar entre campos"),
                     ],
-                    colors
+                    colors,
                 ),
-
                 # Consejos
                 ft.Container(
                     content=ft.Column(
@@ -2640,7 +2843,7 @@ class VentanaPrincipal:
                                 "💡 CONSEJOS",
                                 size=14,
                                 weight=ft.FontWeight.BOLD,
-                                color=colors["primary"]
+                                color=colors["primary"],
                             ),
                             ft.Text(
                                 "• Los atajos funcionan desde cualquier parte de la aplicación\n"
@@ -2648,7 +2851,7 @@ class VentanaPrincipal:
                                 "• En modo normal, F5 refresca el formulario\n"
                                 "• Este diálogo siempre está disponible con F1",
                                 size=12,
-                                color=colors["text_secondary"]
+                                color=colors["text_secondary"],
                             ),
                         ],
                         spacing=8,
@@ -2668,7 +2871,7 @@ class VentanaPrincipal:
                 "⌨️ Guía de Atajos",
                 size=20,
                 weight=ft.FontWeight.BOLD,
-                color=colors["text_primary"]
+                color=colors["text_primary"],
             ),
             content=ft.Container(
                 content=contenido_principal,
@@ -2684,7 +2887,7 @@ class VentanaPrincipal:
                             on_click=lambda e: self._recordar_atajos(dialog),
                             style=ft.ButtonStyle(
                                 color=colors["text_secondary"],
-                                text_style=ft.TextStyle(size=13)
+                                text_style=ft.TextStyle(size=13),
                             ),
                         ),
                         ft.ElevatedButton(
@@ -2693,7 +2896,7 @@ class VentanaPrincipal:
                             style=ft.ButtonStyle(
                                 bgcolor=colors["primary"],
                                 color=colors["text_on_primary"],
-                                text_style=ft.TextStyle(weight=ft.FontWeight.W_600)
+                                text_style=ft.TextStyle(weight=ft.FontWeight.W_600),
                             ),
                         ),
                     ],
@@ -2722,7 +2925,7 @@ class VentanaPrincipal:
                                 atajo,
                                 size=12,
                                 weight=ft.FontWeight.BOLD,
-                                color=colors["text_on_primary"]
+                                color=colors["text_on_primary"],
                             ),
                             bgcolor=colors["primary"],
                             border_radius=6,
@@ -2748,7 +2951,7 @@ class VentanaPrincipal:
                         titulo,
                         size=14,
                         weight=ft.FontWeight.BOLD,
-                        color=colors["primary"]
+                        color=colors["primary"],
                     ),
                     *items,
                 ],
@@ -2790,7 +2993,7 @@ class VentanaPrincipal:
                         "¡Bienvenido al Gestor de Audiencias!",
                         size=18,
                         weight=ft.FontWeight.BOLD,
-                        color=colors["text_primary"]
+                        color=colors["text_primary"],
                     ),
                 ],
                 spacing=10,
@@ -2806,15 +3009,22 @@ class VentanaPrincipal:
                             weight=ft.FontWeight.W_500,
                         ),
                         ft.Container(height=10),
-
                         # Atajos más importantes
                         ft.Container(
                             content=ft.Column(
                                 controls=[
-                                    self._crear_atajo_info("Ctrl+S", "Guardar audiencia", colors),
-                                    self._crear_atajo_info("Ctrl+N", "Nuevo archivo", colors),
-                                    self._crear_atajo_info("Ctrl+O", "Abrir archivo", colors),
-                                    self._crear_atajo_info("F1", "Ver todos los atajos", colors),
+                                    self._crear_atajo_info(
+                                        "Ctrl+S", "Guardar audiencia", colors
+                                    ),
+                                    self._crear_atajo_info(
+                                        "Ctrl+N", "Nuevo archivo", colors
+                                    ),
+                                    self._crear_atajo_info(
+                                        "Ctrl+O", "Abrir archivo", colors
+                                    ),
+                                    self._crear_atajo_info(
+                                        "F1", "Ver todos los atajos", colors
+                                    ),
                                 ],
                                 spacing=8,
                             ),
@@ -2822,7 +3032,6 @@ class VentanaPrincipal:
                             border_radius=10,
                             padding=ft.padding.all(15),
                         ),
-
                         ft.Container(height=10),
                         ft.Text(
                             "💡 Tip: Presiona F1 en cualquier momento para ver la lista completa de atajos.",
@@ -2845,7 +3054,7 @@ class VentanaPrincipal:
                             on_click=lambda e: self._cambiar_a_ayuda_completa(dialog),
                             style=ft.ButtonStyle(
                                 color=colors["primary"],
-                                text_style=ft.TextStyle(size=13)
+                                text_style=ft.TextStyle(size=13),
                             ),
                         ),
                         ft.ElevatedButton(
@@ -2854,7 +3063,7 @@ class VentanaPrincipal:
                             style=ft.ButtonStyle(
                                 bgcolor=colors["primary"],
                                 color=colors["text_on_primary"],
-                                text_style=ft.TextStyle(weight=ft.FontWeight.W_600)
+                                text_style=ft.TextStyle(weight=ft.FontWeight.W_600),
                             ),
                         ),
                     ],
@@ -2880,7 +3089,7 @@ class VentanaPrincipal:
                         atajo,
                         size=11,
                         weight=ft.FontWeight.BOLD,
-                        color=colors["text_on_primary"]
+                        color=colors["text_on_primary"],
                     ),
                     bgcolor=colors["primary"],
                     border_radius=5,
@@ -2916,6 +3125,10 @@ class VentanaPrincipal:
         dialog.open = False
         self.page.update()
 
+    def _mostrar_configuracion(self):
+        """Muestra el diálogo de configuración completo."""
+        mostrar_dialogo_configuracion(self.page)
+
     # === MÉTODOS DE LÓGICA DE NEGOCIO ===
 
     def _inicializar(self):
@@ -2932,11 +3145,11 @@ class VentanaPrincipal:
             self.entrada_minuto.value = ""
 
         # Forzar actualización específica de los dropdowns
-        if hasattr(self, 'combo_tipo') and self.combo_tipo:
+        if hasattr(self, "combo_tipo") and self.combo_tipo:
             self.combo_tipo.value = "-- Seleccione tipo --"
             self.combo_tipo.update()
 
-        if hasattr(self, 'combo_realizada') and self.combo_realizada:
+        if hasattr(self, "combo_realizada") and self.combo_realizada:
             self.combo_realizada.value = "-- Seleccione --"
             self.combo_realizada.update()
 
@@ -2958,15 +3171,15 @@ class VentanaPrincipal:
             self.entrada_tipo_otra.update()
 
         # Limpiar nuevo campo de fecha
-        if hasattr(self, 'entrada_fecha') and self.entrada_fecha:
+        if hasattr(self, "entrada_fecha") and self.entrada_fecha:
             self.entrada_fecha.value = ""
 
         # Limpiar campos de compatibilidad
-        if hasattr(self, 'combo_dia'):
+        if hasattr(self, "combo_dia"):
             self.combo_dia.value = None
-        if hasattr(self, 'combo_mes'):
+        if hasattr(self, "combo_mes"):
             self.combo_mes.value = None
-        if hasattr(self, 'combo_anio'):
+        if hasattr(self, "combo_anio"):
             self.combo_anio.value = None
 
         if self.entrada_hora:
@@ -3083,7 +3296,7 @@ class VentanaPrincipal:
                         "Confirmar guardado sin hora",
                         size=18,
                         weight=ft.FontWeight.BOLD,
-                        color=colors["text_primary"]
+                        color=colors["text_primary"],
                     ),
                 ],
                 spacing=10,
@@ -3220,7 +3433,11 @@ class VentanaPrincipal:
 
     def _validar_datos_sin_hora(self, datos):
         """Valida los datos cuando no hay hora especificada."""
-        from utils.validators import validar_campos_obligatorios, validar_fecha, validar_motivos_no_realizacion
+        from utils.validators import (
+            validar_campos_obligatorios,
+            validar_fecha,
+            validar_motivos_no_realizacion,
+        )
 
         # Validar campos obligatorios
         valido, mensaje = validar_campos_obligatorios(datos)
@@ -3228,15 +3445,17 @@ class VentanaPrincipal:
             return False, mensaje
 
         # Validar fecha
-        valido, mensaje = validar_fecha(datos.get('fecha', ''))
+        valido, mensaje = validar_fecha(datos.get("fecha", ""))
         if not valido:
             return False, mensaje
 
         # SKIP validación de hora cuando está vacía - esto es lo que queríamos
 
         # Validar motivos si NO se realizó
-        realizada = "SI" if datos.get('realizada_si') else "NO"
-        valido, mensaje = validar_motivos_no_realizacion(realizada, datos.get('motivos', []))
+        realizada = "SI" if datos.get("realizada_si") else "NO"
+        valido, mensaje = validar_motivos_no_realizacion(
+            realizada, datos.get("motivos", [])
+        )
         if not valido:
             return False, mensaje
 
@@ -3253,7 +3472,9 @@ class VentanaPrincipal:
 
         # Verificar si la hora está vacía antes de validar
         if self._hora_esta_vacia():
-            print("=== DEBUG: Hora vacía detectada en actualización, mostrando confirmación ===")
+            print(
+                "=== DEBUG: Hora vacía detectada en actualización, mostrando confirmación ==="
+            )
             self._confirmar_guardar_sin_hora(self._ejecutar_actualizacion_final)
             return
 
@@ -3306,27 +3527,27 @@ class VentanaPrincipal:
         self.modo_edicion = True
 
         # Ocultar botones de modo normal
-        if hasattr(self, 'btn_guardar_sticky'):
+        if hasattr(self, "btn_guardar_sticky"):
             self.btn_guardar_sticky.visible = False
-        if hasattr(self, 'btn_nuevo_archivo'):
+        if hasattr(self, "btn_nuevo_archivo"):
             self.btn_nuevo_archivo.visible = False
-        if hasattr(self, 'btn_abrir_archivo'):
+        if hasattr(self, "btn_abrir_archivo"):
             self.btn_abrir_archivo.visible = False
-        if hasattr(self, 'btn_busqueda_avanzada'):
+        if hasattr(self, "btn_busqueda_avanzada"):
             self.btn_busqueda_avanzada.visible = False
 
         # Mostrar botones de modo edición
-        if hasattr(self, 'btn_actualizar_sticky'):
+        if hasattr(self, "btn_actualizar_sticky"):
             self.btn_actualizar_sticky.visible = True
-        if hasattr(self, 'btn_cancelar_sticky'):
+        if hasattr(self, "btn_cancelar_sticky"):
             self.btn_cancelar_sticky.visible = True
 
         # Mantener compatibilidad con botones antiguos si existen
-        if hasattr(self, 'btn_guardar') and self.btn_guardar:
+        if hasattr(self, "btn_guardar") and self.btn_guardar:
             self.btn_guardar.visible = False
-        if hasattr(self, 'btn_actualizar') and self.btn_actualizar:
+        if hasattr(self, "btn_actualizar") and self.btn_actualizar:
             self.btn_actualizar.visible = True
-        if hasattr(self, 'btn_cancelar_edicion') and self.btn_cancelar_edicion:
+        if hasattr(self, "btn_cancelar_edicion") and self.btn_cancelar_edicion:
             self.btn_cancelar_edicion.visible = True
 
         self.page.title = "🏛️ Gestor de Audiencias - EDITANDO"
@@ -3338,27 +3559,27 @@ class VentanaPrincipal:
         self.fila_editando = None
 
         # Mostrar botones de modo normal
-        if hasattr(self, 'btn_guardar_sticky'):
+        if hasattr(self, "btn_guardar_sticky"):
             self.btn_guardar_sticky.visible = True
-        if hasattr(self, 'btn_nuevo_archivo'):
+        if hasattr(self, "btn_nuevo_archivo"):
             self.btn_nuevo_archivo.visible = True
-        if hasattr(self, 'btn_abrir_archivo'):
+        if hasattr(self, "btn_abrir_archivo"):
             self.btn_abrir_archivo.visible = True
-        if hasattr(self, 'btn_busqueda_avanzada'):
+        if hasattr(self, "btn_busqueda_avanzada"):
             self.btn_busqueda_avanzada.visible = True
 
         # Ocultar botones de modo edición
-        if hasattr(self, 'btn_actualizar_sticky'):
+        if hasattr(self, "btn_actualizar_sticky"):
             self.btn_actualizar_sticky.visible = False
-        if hasattr(self, 'btn_cancelar_sticky'):
+        if hasattr(self, "btn_cancelar_sticky"):
             self.btn_cancelar_sticky.visible = False
 
         # Mantener compatibilidad con botones antiguos si existen
-        if hasattr(self, 'btn_guardar') and self.btn_guardar:
+        if hasattr(self, "btn_guardar") and self.btn_guardar:
             self.btn_guardar.visible = True
-        if hasattr(self, 'btn_actualizar') and self.btn_actualizar:
+        if hasattr(self, "btn_actualizar") and self.btn_actualizar:
             self.btn_actualizar.visible = False
-        if hasattr(self, 'btn_cancelar_edicion') and self.btn_cancelar_edicion:
+        if hasattr(self, "btn_cancelar_edicion") and self.btn_cancelar_edicion:
             self.btn_cancelar_edicion.visible = False
 
         self.page.title = "🏛️ Gestor de Audiencias Judiciales"
@@ -3373,7 +3594,7 @@ class VentanaPrincipal:
             print(f"Callback crear ejecutado con nombre: '{nombre}'")
             try:
                 # Asegurar que tenga la extensión .xlsx
-                if not nombre.lower().endswith('.xlsx'):
+                if not nombre.lower().endswith(".xlsx"):
                     nombre_con_extension = f"{nombre}.xlsx"
                 else:
                     nombre_con_extension = nombre
@@ -3382,13 +3603,16 @@ class VentanaPrincipal:
                 print("Llamando a crear_copia_plantilla...")
                 resultado = crear_copia_plantilla(nombre_con_extension)
                 print(f"Archivo creado exitosamente en: {resultado}")
-                self._mostrar_mensaje(f"Archivo '{nombre_con_extension}' creado correctamente.")
+                self._mostrar_mensaje(
+                    f"Archivo '{nombre_con_extension}' creado correctamente."
+                )
             except FileExistsError:
                 print(f"ERROR: Archivo ya existe: {nombre}")
                 self._mostrar_mensaje("Ya existe un archivo con ese nombre.")
             except Exception as e:
                 print(f"ERROR en crear_copia_plantilla: {e}")
                 import traceback
+
                 traceback.print_exc()
                 self._mostrar_mensaje(f"No se pudo crear el archivo: {e}")
 
@@ -3545,23 +3769,176 @@ class VentanaPrincipal:
             self._mostrar_mensaje(f"No se pudo eliminar el archivo: {e}")
 
     def descargar_archivo_trabajo(self):
-        """Descarga archivo de trabajo."""
+        """Descarga archivo de trabajo permitiendo al usuario elegir destino."""
         archivos = listar_archivos_creados()
         if not archivos:
             self._mostrar_mensaje("No hay archivos para descargar.")
             return
 
         def callback_seleccionar(nombre_archivo):
-            try:
-                destino = descargar_archivo(nombre_archivo)
-                if destino:
-                    self._mostrar_mensaje(f"Archivo guardado en: {destino}")
-            except Exception as e:
-                self._mostrar_mensaje(f"No se pudo descargar el archivo: {e}")
+            # Abrir diálogo para seleccionar destino
+            self._mostrar_dialogo_guardar_archivo(nombre_archivo)
 
         VentanaSeleccionArchivo(
             self.page, "Descargar Archivo", archivos, callback_seleccionar
         )
+
+    def _mostrar_dialogo_guardar_archivo(self, nombre_archivo):
+        """Muestra diálogo para que el usuario elija dónde guardar el archivo."""
+        import os
+        import shutil
+        from pathlib import Path
+
+        # Campo para mostrar/editar la ruta de destino
+        ruta_destino = ft.TextField(
+            label="Ruta de destino",
+            value=os.path.join(os.path.expanduser("~"), "Downloads", nombre_archivo),
+            expand=True,
+            # Usar colores que se adapten al tema
+            bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.ON_SURFACE),
+            border_color=ft.Colors.OUTLINE,
+            focused_border_color=ft.Colors.PRIMARY,
+            label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE_VARIANT),
+            text_style=ft.TextStyle(color=ft.Colors.ON_SURFACE),
+        )
+
+        def examinar_destino(e):
+            """Abre diálogo para seleccionar carpeta de destino."""
+
+            def result(e: ft.FilePickerResultEvent):
+                if e.path:
+                    # Combinar la carpeta seleccionada con el nombre del archivo
+                    nueva_ruta = os.path.join(e.path, nombre_archivo)
+                    ruta_destino.value = nueva_ruta
+                    ruta_destino.update()
+
+            file_picker = ft.FilePicker(on_result=result)
+            self.page.overlay.append(file_picker)
+            self.page.update()
+
+            # Abrir diálogo para seleccionar carpeta
+            file_picker.get_directory_path("Seleccionar carpeta de destino")
+
+        def guardar_archivo(e):
+            """Guarda el archivo en la ubicación seleccionada."""
+            try:
+                destino = ruta_destino.value
+                if not destino or not destino.strip():
+                    self._mostrar_mensaje("Por favor, especifica una ruta de destino.")
+                    return
+
+                destino = destino.strip()
+
+                # Verificar que la carpeta de destino existe
+                carpeta_destino = os.path.dirname(destino)
+                if not os.path.exists(carpeta_destino):
+                    self._mostrar_mensaje("La carpeta de destino no existe.")
+                    return
+
+                # Verificar si el archivo ya existe
+                if os.path.exists(destino):
+                    # Generar nombre único
+                    base_nombre, extension = os.path.splitext(destino)
+                    contador = 1
+                    while os.path.exists(destino):
+                        destino = f"{base_nombre}_{contador}{extension}"
+                        contador += 1
+
+                # Copiar archivo
+                from gestor_archivos import CARPETA_ARCHIVOS
+
+                ruta_origen = os.path.join(CARPETA_ARCHIVOS, nombre_archivo)
+
+                if not os.path.exists(ruta_origen):
+                    self._mostrar_mensaje(f"El archivo origen no existe: {ruta_origen}")
+                    return
+
+                shutil.copy2(ruta_origen, destino)
+
+                # Cerrar diálogo
+                dlg.open = False
+                self.page.update()
+
+                # Mostrar mensaje de éxito
+                self._mostrar_mensaje(f"Archivo guardado en: {destino}")
+
+            except Exception as e:
+                self._mostrar_mensaje(f"Error al guardar el archivo: {e}")
+
+        def cancelar(e):
+            dlg.open = False
+            self.page.update()
+
+        # Crear diálogo
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(
+                f"Guardar '{nombre_archivo}'",
+                color=ft.Colors.ON_SURFACE,
+                weight=ft.FontWeight.BOLD,
+                size=18,
+            ),
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "Selecciona dónde deseas guardar el archivo:",
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                            size=14,
+                        ),
+                        ft.Container(height=10),  # Espaciado
+                        ft.Row(
+                            [
+                                ruta_destino,
+                                ft.IconButton(
+                                    icon=ft.Icons.FOLDER_OPEN,
+                                    tooltip="Examinar",
+                                    on_click=examinar_destino,
+                                    bgcolor=ft.Colors.with_opacity(
+                                        0.12, ft.Colors.PRIMARY
+                                    ),
+                                    icon_color=ft.Colors.PRIMARY,
+                                    hover_color=ft.Colors.with_opacity(
+                                        0.08, ft.Colors.PRIMARY
+                                    ),
+                                ),
+                            ]
+                        ),
+                    ]
+                ),
+                width=500,
+                padding=20,
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cancelar",
+                    on_click=cancelar,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                        overlay_color=ft.Colors.with_opacity(
+                            0.08, ft.Colors.ON_SURFACE
+                        ),
+                    ),
+                ),
+                ft.ElevatedButton(
+                    "Guardar",
+                    on_click=guardar_archivo,
+                    bgcolor=ft.Colors.PRIMARY,
+                    color=ft.Colors.ON_PRIMARY,
+                    style=ft.ButtonStyle(
+                        elevation=2,
+                        shadow_color=ft.Colors.with_opacity(0.3, ft.Colors.SHADOW),
+                    ),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            bgcolor=ft.Colors.SURFACE,
+            surface_tint_color=ft.Colors.SURFACE_TINT,
+        )
+
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
 
     def actualizar_contador_registros(self):
         """Actualiza el contador de registros."""
@@ -3586,13 +3963,27 @@ class VentanaPrincipal:
             self.page.update()
 
         # Determinar si es un mensaje de error para usar colores apropiados
-        es_error = any(palabra in mensaje.lower() for palabra in ["error", "no se pudo", "falta", "obligatorio", "inválido"])
-        es_exito = any(palabra in mensaje.lower() for palabra in ["correctamente", "guardado", "creado", "actualizado", "éxito"])
+        es_error = any(
+            palabra in mensaje.lower()
+            for palabra in ["error", "no se pudo", "falta", "obligatorio", "inválido"]
+        )
+        es_exito = any(
+            palabra in mensaje.lower()
+            for palabra in [
+                "correctamente",
+                "guardado",
+                "creado",
+                "actualizado",
+                "éxito",
+            ]
+        )
 
         # Elegir colores según el tipo de mensaje
         if es_error:
             titulo_color = colors["error"]
-            mensaje_color = colors["text_primary"]  # Usar color principal para mejor contraste
+            mensaje_color = colors[
+                "text_primary"
+            ]  # Usar color principal para mejor contraste
             boton_color = colors["error"]
         elif es_exito:
             titulo_color = colors["success"]
@@ -3605,7 +3996,9 @@ class VentanaPrincipal:
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Información", size=18, weight=ft.FontWeight.BOLD, color=titulo_color),
+            title=ft.Text(
+                "Información", size=18, weight=ft.FontWeight.BOLD, color=titulo_color
+            ),
             content=ft.Text(mensaje, size=14, color=mensaje_color),
             actions=[
                 ft.ElevatedButton(

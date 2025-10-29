@@ -28,11 +28,27 @@ class ExcelManager:
             while ws.cell(row=fila_destino, column=2).value is not None:
                 fila_destino += 1
 
-            # Escribir los datos
-            self._escribir_fila_audiencia(ws, fila_destino, audiencia)
+            # Mapeo de motivos a índices de columna (I=0, J=1, etc.)
+            MOTIVOS_MAP = {
+                "juez": 0,
+                "fiscalía": 1,
+                "usuario": 2,
+                "inpec": 3,
+                "víctima": 4,
+                "icbf": 5,
+                "defensor confianza": 6,
+                "defensor público": 7,
+            }
+
+            # Escribir los datos con mapeo correcto de motivos
+            self._escribir_fila_audiencia_con_mapeo_motivos(
+                ws, fila_destino, audiencia, MOTIVOS_MAP
+            )
 
             # Calcular y escribir totales (incluyendo total de NO en columna Q)
-            num_registros, total_si, total_no, totales_motivos = self._calcular_totales(ws)
+            num_registros, total_si, total_no, totales_motivos = self._calcular_totales(
+                ws
+            )
             self._escribir_totales(ws, total_si, total_no, totales_motivos)
 
             wb.save(self.archivo_path)
@@ -54,19 +70,37 @@ class ExcelManager:
             if ws is None:
                 raise Exception("No se pudo acceder a la hoja de trabajo")
 
-            self._escribir_fila_audiencia(ws, fila, audiencia)
-            
+            # Mapeo de motivos a índices de columna (I=0, J=1, etc.)
+            MOTIVOS_MAP = {
+                "juez": 0,
+                "fiscalía": 1,
+                "usuario": 2,
+                "inpec": 3,
+                "víctima": 4,
+                "icbf": 5,
+                "defensor confianza": 6,
+                "defensor público": 7,
+            }
+
+            self._escribir_fila_audiencia_con_mapeo_motivos(
+                ws, fila, audiencia, MOTIVOS_MAP
+            )
+
             # Calcular y escribir totales (incluyendo total de NO en columna Q)
-            num_registros, total_si, total_no, totales_motivos = self._calcular_totales(ws)
+            num_registros, total_si, total_no, totales_motivos = self._calcular_totales(
+                ws
+            )
             self._escribir_totales(ws, total_si, total_no, totales_motivos)
-            
+
             wb.save(self.archivo_path)
             return True
 
         except Exception as e:
             raise Exception(f"Error al actualizar: {e}")
-    
-    def guardar_audiencias_masivo(self, audiencias: List[Audiencia]) -> Tuple[int, int, List[str]]:
+
+    def guardar_audiencias_masivo(
+        self, audiencias: List[Audiencia]
+    ) -> Tuple[int, int, List[str]]:
         """Guarda múltiples audiencias de forma masiva y actualiza totales automáticamente."""
         try:
             wb = load_workbook(self.archivo_path)
@@ -77,28 +111,42 @@ class ExcelManager:
 
             exitosas = 0
             errores = []
-            
+
             # Mapeo de motivos a índices de columna (I=0, J=1, etc.)
             MOTIVOS_MAP = {
-                "juez": 0, "fiscalía": 1, "usuario": 2, "inpec": 3,
-                "víctima": 4, "icbf": 5, "defensor confianza": 6, "defensor público": 7
+                "juez": 0,
+                "fiscalía": 1,
+                "usuario": 2,
+                "inpec": 3,
+                "víctima": 4,
+                "icbf": 5,
+                "defensor confianza": 6,
+                "defensor público": 7,
             }
 
             for i, audiencia in enumerate(audiencias):
                 try:
                     # Encontrar la primera fila disponible
                     fila_destino = None
-                    for row_num in range(self.FILA_INICIO_DATOS, self.FILA_MAXIMA_DATOS_PARA_LIMPIAR + 1):
-                        if not ws.cell(row=row_num, column=2).value:  # Columna B (radicado)
+                    for row_num in range(
+                        self.FILA_INICIO_DATOS, self.FILA_MAXIMA_DATOS_PARA_LIMPIAR + 1
+                    ):
+                        if not ws.cell(
+                            row=row_num, column=2
+                        ).value:  # Columna B (radicado)
                             fila_destino = row_num
                             break
 
                     if fila_destino is None:
-                        errores.append(f"Audiencia {i+1}: No hay espacio disponible en Excel")
+                        errores.append(
+                            f"Audiencia {i+1}: No hay espacio disponible en Excel"
+                        )
                         continue
 
                     # Escribir datos básicos usando el método existente
-                    self._escribir_fila_audiencia_con_mapeo_motivos(ws, fila_destino, audiencia, MOTIVOS_MAP)
+                    self._escribir_fila_audiencia_con_mapeo_motivos(
+                        ws, fila_destino, audiencia, MOTIVOS_MAP
+                    )
                     exitosas += 1
 
                 except Exception as ex:
@@ -106,20 +154,26 @@ class ExcelManager:
                     continue
 
             # ACTUALIZAR TOTALES AUTOMÁTICAMENTE
-            num_registros, total_si, total_no, totales_motivos = self._calcular_totales(ws)
+            num_registros, total_si, total_no, totales_motivos = self._calcular_totales(
+                ws
+            )
             self._escribir_totales(ws, total_si, total_no, totales_motivos)
 
             wb.save(self.archivo_path)
             return exitosas, len(errores), errores
 
         except PermissionError:
-            raise Exception("No se pudo guardar. Cierre el archivo de Excel si está abierto.")
+            raise Exception(
+                "No se pudo guardar. Cierre el archivo de Excel si está abierto."
+            )
         except Exception as e:
             raise Exception(f"Error en procesamiento masivo: {e}")
-    
-    def _escribir_fila_audiencia_con_mapeo_motivos(self, ws, fila: int, audiencia: Audiencia, motivos_map: Dict):
+
+    def _escribir_fila_audiencia_con_mapeo_motivos(
+        self, ws, fila: int, audiencia: Audiencia, motivos_map: Dict
+    ):
         """Escribe una audiencia con mapeo correcto de motivos a columnas específicas."""
-        
+
         # LIMPIEZA FORZADA Y EXPLÍCITA - Solución para bug de persistencia
         # Limpiar cada celda individualmente con diferentes métodos
         for col in range(1, 18):
@@ -129,17 +183,28 @@ class ExcelManager:
                 ws.cell(row=fila, column=col, value="")
             except Exception:
                 continue
-        
+
         # Escribir datos básicos
-        ws.cell(row=fila, column=1, value=fila - self.FILA_INICIO_DATOS + 1)  # Número consecutivo
+        ws.cell(
+            row=fila, column=1, value=fila - self.FILA_INICIO_DATOS + 1
+        )  # Número consecutivo
         ws.cell(row=fila, column=2, value=audiencia.radicado)
-        ws.cell(row=fila, column=3, value=audiencia.tipo)
-        ws.cell(row=fila, column=4, value=audiencia.fecha)
-        
-        # Escribir HORA como texto en columna E (formato "HH:MM")
-        hora_formateada = audiencia.hora if audiencia.hora and audiencia.hora != ":" else "00:00"
-        ws.cell(row=fila, column=5, value=hora_formateada)
-        
+        # Convertir "(Vacío)" a celda vacía real
+        tipo_valor = None if audiencia.tipo == "(Vacío)" else audiencia.tipo
+        ws.cell(row=fila, column=3, value=tipo_valor)
+
+        # Escribir FECHA en columna D - Si está vacía, dejar celda vacía
+        fecha_valor = (
+            audiencia.fecha if audiencia.fecha and audiencia.fecha.strip() else None
+        )
+        ws.cell(row=fila, column=4, value=fecha_valor)
+
+        # Escribir HORA en columna E - Si está vacía, dejar celda vacía
+        hora_valor = None
+        if audiencia.hora and audiencia.hora.strip() and audiencia.hora != ":":
+            hora_valor = audiencia.hora
+        ws.cell(row=fila, column=5, value=hora_valor)
+
         # Juzgado
         ws.cell(row=fila, column=6, value=audiencia.juzgado)
 
@@ -153,16 +218,16 @@ class ExcelManager:
                 ws.cell(row=fila, column=8, value=None)  # Luego None
             except Exception:
                 continue
-        
+
         # Escribir SOLO el valor necesario para SI/NO
         if audiencia.realizada_si == "SI":
-            ws.cell(row=fila, column=7, value="SI")   # Solo escribir SI
+            ws.cell(row=fila, column=7, value="SI")  # Solo escribir SI
             # Asegurar que NO esté vacío
             ws.cell(row=fila, column=8, value=None)
             ws.cell(row=fila, column=8, value="")
             ws.cell(row=fila, column=8, value=None)
         elif audiencia.realizada_no == "NO":
-            ws.cell(row=fila, column=8, value="NO")   # Solo escribir NO
+            ws.cell(row=fila, column=8, value="NO")  # Solo escribir NO
             # Asegurar que SI esté vacío
             ws.cell(row=fila, column=7, value=None)
             ws.cell(row=fila, column=7, value="")
@@ -181,14 +246,14 @@ class ExcelManager:
         for motivo in audiencia.motivos:
             if motivo and motivo.strip():
                 motivo_lower = motivo.lower().strip()
-                
+
                 # Buscar el motivo en el mapeo
                 columna_idx = None
                 for motivo_key, idx in motivos_map.items():
                     if motivo_key in motivo_lower or motivo_lower in motivo_key:
                         columna_idx = idx
                         break
-                
+
                 # Si se encontró el motivo, escribirlo en la columna correcta
                 if columna_idx is not None:
                     ws.cell(row=fila, column=9 + columna_idx, value=motivo.strip())
@@ -215,28 +280,40 @@ class ExcelManager:
                     ws.cell(row=fila, column=col, value=None)
                 except Exception:
                     pass  # Si no se puede limpiar, continuar
-        
+
         # Escribir datos básicos
-        ws.cell(row=fila, column=1, value=fila - self.FILA_INICIO_DATOS + 1)  # Número consecutivo
+        ws.cell(
+            row=fila, column=1, value=fila - self.FILA_INICIO_DATOS + 1
+        )  # Número consecutivo
         ws.cell(row=fila, column=2, value=audiencia.radicado)
-        ws.cell(row=fila, column=3, value=audiencia.tipo)
-        ws.cell(row=fila, column=4, value=audiencia.fecha)
-        
-        # Escribir HORA como texto en columna E (formato "HH:MM")
-        try:
-            if ":" in str(audiencia.hora):
-                # Ya está en formato correcto
-                ws.cell(row=fila, column=5, value=str(audiencia.hora))
-            else:
-                # Convertir número a formato hora
-                hora_num = int(audiencia.hora) if audiencia.hora else 0
-                ws.cell(row=fila, column=5, value=f"{hora_num:02d}:00")
-        except (ValueError, TypeError):
-            ws.cell(row=fila, column=5, value="00:00")
-        
+        # Convertir "(Vacío)" a celda vacía real
+        tipo_valor = None if audiencia.tipo == "(Vacío)" else audiencia.tipo
+        ws.cell(row=fila, column=3, value=tipo_valor)
+
+        # Escribir FECHA en columna D - Si está vacía, dejar celda vacía
+        fecha_valor = (
+            audiencia.fecha if audiencia.fecha and audiencia.fecha.strip() else None
+        )
+        ws.cell(row=fila, column=4, value=fecha_valor)
+
+        # Escribir HORA en columna E - Si está vacía, dejar celda vacía
+        hora_valor = None
+        if audiencia.hora and audiencia.hora.strip() and audiencia.hora != ":":
+            try:
+                if ":" in str(audiencia.hora):
+                    # Ya está en formato correcto
+                    hora_valor = str(audiencia.hora)
+                else:
+                    # Convertir número a formato hora
+                    hora_num = int(audiencia.hora)
+                    hora_valor = f"{hora_num:02d}:00"
+            except (ValueError, TypeError):
+                hora_valor = None
+        ws.cell(row=fila, column=5, value=hora_valor)
+
         # Escribir JUZGADO en columna F
         ws.cell(row=fila, column=6, value=audiencia.juzgado)
-        
+
         # LIMPIEZA EXPLÍCITA Y FORZADA DE SI/NO - Solución para persistencia
         # Limpiar múltiples veces con diferentes métodos
         for intento in range(3):  # 3 intentos de limpieza
@@ -247,16 +324,16 @@ class ExcelManager:
                 ws.cell(row=fila, column=8, value=None)  # Luego None
             except Exception:
                 continue
-        
+
         # Escribir SOLO el valor necesario para SI/NO
         if audiencia.realizada_si == "SI":
-            ws.cell(row=fila, column=7, value="SI")   # Solo escribir SI
+            ws.cell(row=fila, column=7, value="SI")  # Solo escribir SI
             # Asegurar que NO esté vacío
             ws.cell(row=fila, column=8, value=None)
             ws.cell(row=fila, column=8, value="")
             ws.cell(row=fila, column=8, value=None)
         elif audiencia.realizada_no == "NO":
-            ws.cell(row=fila, column=8, value="NO")   # Solo escribir NO
+            ws.cell(row=fila, column=8, value="NO")  # Solo escribir NO
             # Asegurar que SI esté vacío
             ws.cell(row=fila, column=7, value=None)
             ws.cell(row=fila, column=7, value="")
@@ -273,12 +350,13 @@ class ExcelManager:
 
         # Escribir solo los motivos que tienen contenido real
         for i, motivo in enumerate(audiencia.motivos):
-            if i < 8 and motivo and motivo.strip():  # Solo escribir si hay contenido real
+            if (
+                i < 8 and motivo and motivo.strip()
+            ):  # Solo escribir si hay contenido real
                 ws.cell(row=fila, column=9 + i, value=motivo)
 
         # Escribir observaciones en columna Q (17)
         ws.cell(row=fila, column=17, value=audiencia.observaciones)
-
 
     def leer_registros(self) -> List[Tuple[int, List]]:
         """Lee todos los registros del archivo."""
@@ -317,22 +395,27 @@ class ExcelManager:
                 for col in range(1, 18):  # Columnas A-Q
                     valor = ws.cell(row=row_num, column=col).value
                     fila_datos.append(valor if valor is not None else "")
-                
+
                 # Solo procesar si hay radicado (columna B)
                 if not fila_datos[1]:
                     continue
-                
+
                 try:
                     # Parsear fecha (columna D)
                     fecha_str = str(fila_datos[3]) if fila_datos[3] else ""
                     if not fecha_str:
                         continue
                     fecha_obj = datetime.strptime(fecha_str, "%d/%m/%Y")
-                    
+
                     # Parsear hora (columna E) - puede ser texto "HH:MM" o número
                     hora_str = str(fila_datos[4]) if fila_datos[4] else "00:00"
+
+                    # Limpiar formato de hora para manejar "HH:MM:SS" o "HH:MM"
                     if ":" in hora_str:
-                        hora_obj = datetime.strptime(hora_str, "%H:%M")
+                        # Si tiene formato HH:MM:SS, tomar solo HH:MM
+                        partes_hora = hora_str.split(":")
+                        hora_limpia = f"{partes_hora[0]}:{partes_hora[1]}"
+                        hora_obj = datetime.strptime(hora_limpia, "%H:%M")
                     else:
                         # Si es un número, convertir a formato hora
                         try:
@@ -340,9 +423,9 @@ class ExcelManager:
                             hora_obj = datetime.strptime(f"{hora_num:02d}:00", "%H:%M")
                         except:
                             hora_obj = datetime.strptime("00:00", "%H:%M")
-                    
+
                     datos_tabla.append((fecha_obj, hora_obj, fila_datos))
-                    
+
                 except (ValueError, TypeError) as e:
                     print(f"Error parseando fila {row_num}: {e}")
                     continue
@@ -356,11 +439,11 @@ class ExcelManager:
             # Escribir datos ordenados usando el método correcto
             for idx, (_, _, fila_datos) in enumerate(datos_tabla, start=1):
                 fila_destino = self.FILA_INICIO_DATOS + idx - 1
-                
+
                 # Limpiar fila destino primero
                 for col in range(1, 18):
                     ws.cell(row=fila_destino, column=col, value=None)
-                
+
                 # Escribir datos en posiciones correctas
                 ws.cell(row=fila_destino, column=1, value=idx)  # Número consecutivo
                 ws.cell(row=fila_destino, column=2, value=fila_datos[1])  # Radicado
@@ -370,19 +453,23 @@ class ExcelManager:
                 ws.cell(row=fila_destino, column=6, value=fila_datos[5])  # Juzgado
                 ws.cell(row=fila_destino, column=7, value=fila_datos[6])  # SI
                 ws.cell(row=fila_destino, column=8, value=fila_datos[7])  # NO
-                
+
                 # Escribir motivos (columnas 9-16)
                 for i in range(8):
                     motivo_idx = 8 + i
                     if motivo_idx < len(fila_datos):
-                        ws.cell(row=fila_destino, column=9 + i, value=fila_datos[motivo_idx])
-                
+                        ws.cell(
+                            row=fila_destino, column=9 + i, value=fila_datos[motivo_idx]
+                        )
+
                 # Escribir observaciones (columna 17)
                 if len(fila_datos) > 16:
                     ws.cell(row=fila_destino, column=17, value=fila_datos[16])
 
             # Calcular y escribir totales
-            num_registros, total_si, total_no, totales_motivos = self._calcular_totales(ws)
+            num_registros, total_si, total_no, totales_motivos = self._calcular_totales(
+                ws
+            )
             self._escribir_totales(ws, total_si, total_no, totales_motivos)
 
             wb.save(self.archivo_path)
@@ -420,12 +507,18 @@ class ExcelManager:
 
         return num_registros, total_si, total_no, totales_motivos
 
-    def _escribir_totales(self, ws, total_si: int, total_no: int, totales_motivos: List[int]):
+    def _escribir_totales(
+        self, ws, total_si: int, total_no: int, totales_motivos: List[int]
+    ):
         """Escribe los totales en la hoja."""
         ws.cell(row=self.FILA_TOTALES, column=7, value=total_si)  # Columna G=7 = SI
-        ws.cell(row=self.FILA_TOTALES, column=17, value=total_no)  # Columna Q=17 = NO (total)
+        ws.cell(
+            row=self.FILA_TOTALES, column=17, value=total_no
+        )  # Columna Q=17 = NO (total)
         for i, total in enumerate(totales_motivos):
-            ws.cell(row=self.FILA_TOTALES, column=9 + i, value=total)  # Columnas I-P (9-16) = motivos
+            ws.cell(
+                row=self.FILA_TOTALES, column=9 + i, value=total
+            )  # Columnas I-P (9-16) = motivos
 
     def contar_registros(self) -> int:
         """Cuenta el número de registros en el archivo."""
@@ -448,18 +541,36 @@ class ExcelManager:
 
             # Leer todas las filas desde el inicio de datos
             datos = []
-            
+
             # Agregar fila de encabezados (opcional para compatibilidad)
-            encabezados = ["#", "Radicado", "Tipo", "Fecha", "Hora", "Juzgado", "SI", "NO", "Juez", "Fiscalía", "Usuario", "Inpec", "Víctima", "ICBF", "Def.Confianza", "Def.Público", "Observaciones"]
+            encabezados = [
+                "#",
+                "Radicado",
+                "Tipo",
+                "Fecha",
+                "Hora",
+                "Juzgado",
+                "SI",
+                "NO",
+                "Juez",
+                "Fiscalía",
+                "Usuario",
+                "Inpec",
+                "Víctima",
+                "ICBF",
+                "Def.Confianza",
+                "Def.Público",
+                "Observaciones",
+            ]
             datos.append(encabezados)
-            
+
             # Leer datos reales
             for fila_num in range(self.FILA_INICIO_DATOS, ws.max_row + 1):
                 fila = []
                 for col in range(1, 18):  # Columnas A-Q
                     valor = ws.cell(row=fila_num, column=col).value
                     fila.append(valor if valor is not None else "")
-                
+
                 # Solo incluir filas con radicado
                 if fila[1]:  # Si hay radicado en columna B
                     datos.append(fila)
