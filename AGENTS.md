@@ -42,7 +42,7 @@ Este documento constituye la memoria persistente, la especificación operativa y
    - `lib.rs` y `main.rs`: Registro de comandos IPC (`#[tauri::command]`) y arranque de Tauri v2.
 3. **Plantilla oficial y datos de usuario:**
    - `templates/plantilla_audiencias.xlsx`: Plantilla oficial de la Defensoría del Pueblo (**INMUTABLE**).
-   - `archivos_creados/`: Carpeta local donde se guardan los archivos `.xlsx` generados por el usuario (ignorada en Git).
+   - `archivos_creados/`: Carpeta local de trabajo en desarrollo (en instaladores de producción se ubica en `Documentos/Lokus/archivos_creados/`). Ignorada en Git; incluye `.respaldos/` con hasta 3 versiones previas por planilla.
 4. **Habilidades del proyecto (`.agents/skills/`):**
    - `.agents/skills/lokus-judicial-domain/SKILL.md`: Especificación detallada del formato Excel de la Defensoría del Pueblo y reglas jurídicas de extracción con IA.
 
@@ -56,7 +56,7 @@ Este documento constituye la memoria persistente, la especificación operativa y
    - Prohibido usar `.unwrap()` en rutas de entrada de usuario o lectura de archivos Excel/red; propagar errores con `?` y `.map_err(...)`.
 3. **Zonas restringidas e inmutables:**
    - Prohibido modificar `templates/plantilla_audiencias.xlsx`.
-   - En el motor de Excel (`src-tauri/src/excel.rs`), las filas `11..=110` son exclusivamente para registros, la fila `111` para totales (`G111` = Total SI, `I111..P111` = Totales por motivo, `Q111` = Total NO) y las columnas `I..P` (`9..=16`) corresponden estrictamente en orden a: `[Juez, Fiscalía, Usuario, INPEC, Víctima, ICBF, Defensor Confianza, Defensor Público]`.
+   - En el motor de Excel (`src-tauri/src/excel.rs`), la celda `B8` (`B8:Q8`) puede almacenar `"DEFENSOR PÚBLICO: <NOMBRE>"` sin alterar su estilo; las filas `11..=110` son exclusivamente para registros, la fila `111` para totales (`G111` = Total SI, `I111..P111` = Totales por motivo, `Q111` = Total NO) y las columnas `I..P` (`9..=16`) corresponden estrictamente en orden a: `[Juez, Fiscalía, Usuario, INPEC, Víctima, ICBF, Defensor Confianza, Defensor Público]`.
 4. **Archivos protegidos por pruebas de caracterización:**
    - Ejecutar siempre `cd src-tauri && cargo test` después de cualquier cambio en `src-tauri/src/models.rs`, `src-tauri/src/excel.rs` o `src-tauri/src/ai.rs`.
 

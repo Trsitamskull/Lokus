@@ -21,6 +21,10 @@
     EyeOff,
     X,
     FileSpreadsheet,
+    UserCheck,
+    History,
+    RotateCcw,
+    AlertTriangle,
   } from "@lucide/svelte";
 
   const TIPOS_AUDIENCIA = [
@@ -67,6 +71,8 @@
   let archivoActual = $state(null);
   let archivosDisponibles = $state([]);
   let registros = $state([]);
+  let defensorArchivo = $state("");
+  let defensores = $state([]);
   let totales = $state({
     num_registros: 0,
     total_si: 0,
@@ -90,28 +96,46 @@
   let modoEdicion = $state(false);
   let filaEditando = $state(null);
   let numeroEditando = $state(null);
+  let radicadoEditando = $state("");
 
   // Estado de modales (<dialog>)
-  let modalActivo = $state(null); // "crear" | "ia" | "config_ia" | "atajos" | "confirmar_sin_hora"
+  let modalActivo = $state(null); // "crear" | "ia" | "config_ia" | "atajos" | "confirmar_sin_hora" | "confirmar" | "confirmar_duplicado" | "defensores" | "respaldos"
   let dialogEl = $state(null);
   let nombreNuevoArchivo = $state("");
+  let defensorNuevoArchivo = $state("");
   let errorModalCrear = $state("");
+  let confirmacionPendiente = $state(null);
+  let ejecutandoConfirmacion = $state(false);
+  let duplicadoDetectado = $state(null);
+  let ultimoPermitirHoraVacia = $state(false);
+
+  // Gestión de defensores y respaldos
+  let filtroDefensores = $state("");
+  let nuevoDefensorDirectorio = $state("");
+  let defensorEditando = $state(null);
+  let defensorEditandoValor = $state("");
+  let defensorPlanillaDraft = $state("");
+  let errorDefensores = $state("");
+  let respaldosArchivo = $state([]);
+  let respaldosTarget = $state("");
+  let cargandoRespaldos = $state(false);
+
   let filtroBusqueda = $state("");
   let filtroEstado = $state("TODOS"); // "TODOS" | "SI" | "NO"
   let filtroMotivo = $state(""); // "" o uno de MOTIVOS_LABELS
 
-  // Estado IA y Configuración
+  // Estado IA y Configuración (sin claves en claro en el frontend)
   let textoIa = $state("");
   let procesandoIa = $state(false);
   let errorIa = $state("");
+  let nuevaOpenAiKey = $state("");
+  let nuevaGeminiKey = $state("");
   let mostrarOpenAiKey = $state(false);
   let mostrarGeminiKey = $state(false);
 
   let settings = $state({
     provider: "openai",
-    openai_api_key: "",
     openai_model: "gpt-5-mini",
-    gemini_api_key: "",
     gemini_model: "gemini-2.5-flash",
     theme: "dark",
   });
@@ -134,6 +158,12 @@
     if (modalActivo && dialogEl && !dialogEl.open) {
       dialogEl.showModal();
     }
+  });
+
+  let defensoresFiltrados = $derived.by(() => {
+    const q = filtroDefensores.trim().toLowerCase();
+    if (!q) return defensores;
+    return defensores.filter((d) => d.toLowerCase().includes(q));
   });
 
   // Despachos frecuentes extraídos automáticamente de la planilla activa
@@ -188,16 +218,23 @@
     const nuevo = settings.theme === "dark" ? "light" : "dark";
     aplicarTema(nuevo);
     try {
-      aiStatus = await invoke("cmd_guardar_config", { settings });
+      const res = await invoke("cmd_guardar_tema", { tema: nuevo });
+      aiStatus = res.status;
     } catch (_) {}
   }
 
   async function cargarConfigInicial() {
     try {
       const res = await invoke("cmd_obtener_config");
-      settings = res.settings;
+      settings = {
+        provider: res.provider || "openai",
+        openai_model: res.openai_model || "gpt-5-mini",
+        gemini_model: res.gemini_model || "gemini-2.5-flash",
+        theme: res.theme || "dark",
+      };
+      defensores = res.defensores || [];
       aiStatus = res.status;
-      aplicarTema(settings.theme || "dark");
+      aplicarTema(settings.theme);
     } catch (_) {
       aplicarTema("dark");
     }
@@ -215,6 +252,7 @@
       const res = await invoke("cmd_leer_archivo", { nombre: archivoActual });
       registros = res.registros;
       totales = res.totales;
+      defensorArchivo = res.defensor || "";
     } catch (e) {
       mostrarToast(`Error leyendo archivo: ${e}`, "error");
     }
@@ -238,6 +276,7 @@
     modoEdicion = false;
     filaEditando = null;
     numeroEditando = null;
+    radicadoEditando = "";
     limpiarFormulario();
   }
 
@@ -283,12 +322,13 @@
     };
   }
 
-  async function guardarOActualizar(permitirHoraVacia = false) {
+  async function guardarOActualizar(permitirHoraVacia = false, permitirDuplicado = false) {
     if (!archivoActual) {
       mostrarToast("Selecciona o crea un archivo en el panel izquierdo", "error");
       return;
     }
 
+    ultimoPermitirHoraVacia = permitirHoraVacia;
     const datos = construirPayloadFormulario();
 
     try {
@@ -296,13 +336,17 @@
         totales = await invoke("cmd_actualizar_audiencia", {
           nombreArchivo: archivoActual,
           filaExcel: filaEditando,
+          radicadoEsperado: radicadoEditando,
           datos,
           permitirHoraVacia,
+          permitirDuplicado,
         });
         await recargarArchivoActual();
         modoEdicion = false;
         filaEditando = null;
         numeroEditando = null;
+        radicadoEditando = "";
+        duplicadoDetectado = null;
         limpiarFormulario();
         modalActivo = null;
         mostrarToast("Registro actualizado en Excel", "success");
@@ -311,17 +355,27 @@
           nombreArchivo: archivoActual,
           datos,
           permitirHoraVacia,
+          permitirDuplicado,
         });
         await recargarArchivoActual();
+        duplicadoDetectado = null;
         limpiarFormulario();
         modalActivo = null;
         mostrarToast("Audiencia registrada correctamente", "success");
       }
     } catch (err) {
-      if (String(err).includes("HORA_VACIA_REQUIERE_CONFIRMACION")) {
+      const msg = String(err);
+      if (msg.includes("HORA_VACIA_REQUIERE_CONFIRMACION")) {
         modalActivo = "confirmar_sin_hora";
+      } else if (msg.startsWith("POSIBLE_DUPLICADO:")) {
+        try {
+          duplicadoDetectado = JSON.parse(msg.slice("POSIBLE_DUPLICADO:".length));
+          modalActivo = "confirmar_duplicado";
+        } catch (_) {
+          mostrarToast("Posible registro duplicado detectado en la misma fecha.", "error", 4000);
+        }
       } else {
-        mostrarToast(String(err), "error", 4000);
+        mostrarToast(msg, "error", 4000);
       }
     }
   }
@@ -331,15 +385,24 @@
       errorModalCrear = "Ingresa un nombre para el archivo";
       return;
     }
+    const defensorTrim = defensorNuevoArchivo.trim();
     try {
       const creado = await invoke("cmd_crear_archivo", {
         nombre: nombreNuevoArchivo.trim(),
+        defensor: defensorTrim || null,
       });
+      if (defensorTrim) {
+        try {
+          const cfg = await invoke("cmd_agregar_defensor", { nombre: defensorTrim });
+          defensores = cfg.defensores || [];
+        } catch (_) {}
+      }
       await refrescarListaArchivos();
       archivoActual = creado;
       await recargarArchivoActual();
       modalActivo = null;
       nombreNuevoArchivo = "";
+      defensorNuevoArchivo = "";
       errorModalCrear = "";
       mostrarToast(`Archivo '${creado}' creado`, "success");
     } catch (e) {
@@ -352,29 +415,178 @@
     await recargarArchivoActual();
   }
 
-  async function eliminarArchivo(nombre) {
-    if (!confirm(`¿Eliminar permanentemente '${nombre}'?`)) return;
+  function abrirConfirmacion(titulo, mensaje, textoConfirmar, peligroso, onConfirm) {
+    confirmacionPendiente = { titulo, mensaje, textoConfirmar, peligroso, onConfirm };
+    ejecutandoConfirmacion = false;
+    modalActivo = "confirmar";
+  }
+
+  async function ejecutarConfirmacionModal() {
+    if (!confirmacionPendiente || ejecutandoConfirmacion) return;
+    ejecutandoConfirmacion = true;
     try {
-      await invoke("cmd_eliminar_archivo", { nombre });
-      await refrescarListaArchivos();
-      if (archivoActual === nombre) {
-        archivoActual = archivosDisponibles[0] || null;
-        if (archivoActual) {
-          await recargarArchivoActual();
-        } else {
-          registros = [];
-          totales = {
-            num_registros: 0,
-            total_si: 0,
-            total_no: 0,
-            totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
-          };
+      await confirmacionPendiente.onConfirm();
+      modalActivo = null;
+      confirmacionPendiente = null;
+    } finally {
+      ejecutandoConfirmacion = false;
+    }
+  }
+
+  function eliminarArchivo(nombre) {
+    abrirConfirmacion(
+      "Eliminar planilla Excel",
+      `¿Eliminar permanentemente '${nombre}'? Esta acción no se puede deshacer.`,
+      "Eliminar archivo",
+      true,
+      async () => {
+        try {
+          await invoke("cmd_eliminar_archivo", { nombre });
+          await refrescarListaArchivos();
+          if (archivoActual === nombre) {
+            archivoActual = archivosDisponibles[0] || null;
+            if (archivoActual) {
+              await recargarArchivoActual();
+            } else {
+              registros = [];
+              defensorArchivo = "";
+              totales = {
+                num_registros: 0,
+                total_si: 0,
+                total_no: 0,
+                totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
+              };
+            }
+          }
+          mostrarToast(`Archivo '${nombre}' eliminado`, "info");
+        } catch (e) {
+          mostrarToast(`Error al eliminar: ${e}`, "error");
         }
       }
-      mostrarToast(`Archivo '${nombre}' eliminado`, "info");
+    );
+  }
+
+  function abrirModalDefensores() {
+    defensorPlanillaDraft = defensorArchivo;
+    filtroDefensores = "";
+    nuevoDefensorDirectorio = "";
+    defensorEditando = null;
+    defensorEditandoValor = "";
+    errorDefensores = "";
+    modalActivo = "defensores";
+  }
+
+  async function asignarDefensorAPlanilla(nombreDefensor) {
+    if (!archivoActual) return;
+    const limpio = nombreDefensor.trim();
+    errorDefensores = "";
+    try {
+      const guardado = await invoke("cmd_actualizar_defensor_archivo", {
+        nombreArchivo: archivoActual,
+        defensor: limpio,
+      });
+      defensorArchivo = guardado;
+      defensorPlanillaDraft = guardado;
+      if (limpio) {
+        const cfg = await invoke("cmd_agregar_defensor", { nombre: limpio });
+        defensores = cfg.defensores || [];
+      }
+      mostrarToast(
+        guardado
+          ? `Planilla asignada a ${guardado}`
+          : "Se quitó la asignación de defensor en la planilla",
+        "success"
+      );
     } catch (e) {
-      mostrarToast(`Error al eliminar: ${e}`, "error");
+      errorDefensores = String(e);
     }
+  }
+
+  async function agregarDefensorADirectorio() {
+    errorDefensores = "";
+    try {
+      const cfg = await invoke("cmd_agregar_defensor", {
+        nombre: nuevoDefensorDirectorio,
+      });
+      defensores = cfg.defensores || [];
+      nuevoDefensorDirectorio = "";
+    } catch (e) {
+      errorDefensores = String(e);
+    }
+  }
+
+  async function guardarRenombreDefensor() {
+    if (!defensorEditando) return;
+    errorDefensores = "";
+    try {
+      const cfg = await invoke("cmd_renombrar_defensor", {
+        actual: defensorEditando,
+        nuevo: defensorEditandoValor,
+      });
+      defensores = cfg.defensores || [];
+      defensorEditando = null;
+      defensorEditandoValor = "";
+    } catch (e) {
+      errorDefensores = String(e);
+    }
+  }
+
+  function eliminarDefensorDeDirectorio(nombre) {
+    abrirConfirmacion(
+      "Quitar defensor del directorio",
+      `¿Quitar a '${nombre}' de la lista guardada? Las planillas Excel ya creadas no se modificarán.`,
+      "Quitar de la lista",
+      true,
+      async () => {
+        try {
+          const cfg = await invoke("cmd_eliminar_defensor", { nombre });
+          defensores = cfg.defensores || [];
+          mostrarToast(`'${nombre}' eliminado del directorio`, "info");
+        } catch (e) {
+          mostrarToast(`Error: ${e}`, "error");
+        }
+      }
+    );
+  }
+
+  async function abrirRespaldos(nombre) {
+    respaldosTarget = nombre;
+    respaldosArchivo = [];
+    cargandoRespaldos = true;
+    modalActivo = "respaldos";
+    try {
+      respaldosArchivo = await invoke("cmd_listar_respaldos", {
+        nombreArchivo: nombre,
+      });
+    } catch (e) {
+      mostrarToast(`Error cargando respaldos: ${e}`, "error");
+    } finally {
+      cargandoRespaldos = false;
+    }
+  }
+
+  function solicitarRestaurarRespaldo(respaldo) {
+    const objetivo = respaldosTarget;
+    abrirConfirmacion(
+      "Restaurar versión anterior",
+      `¿Restaurar '${objetivo}' a la copia del ${respaldo.fecha_legible}? Se guardará antes un respaldo del estado actual.`,
+      "Restaurar copia",
+      false,
+      async () => {
+        try {
+          await invoke("cmd_restaurar_respaldo", {
+            nombreArchivo: objetivo,
+            archivoRespaldo: respaldo.archivo,
+          });
+          if (archivoActual === objetivo) {
+            await recargarArchivoActual();
+          }
+          mostrarToast(`Planilla restaurada a ${respaldo.fecha_legible}`, "success", 3800);
+        } catch (e) {
+          mostrarToast(`Error al restaurar: ${e}`, "error", 4000);
+        }
+      }
+    );
   }
 
   async function descargarArchivo(nombre) {
@@ -391,6 +603,7 @@
     modoEdicion = true;
     filaEditando = reg.fila_excel;
     numeroEditando = reg.numero;
+    radicadoEditando = reg.radicado;
 
     radicado = reg.radicado;
     juzgado = reg.juzgado;
@@ -434,24 +647,42 @@
     mostrarToast("Radicado y despacho copiados para nueva sesión", "info", 2200);
   }
 
-  async function eliminarRegistroFila(reg) {
-    if (!confirm(`¿Eliminar el registro #${reg.numero} (${reg.radicado})?`))
-      return;
-    try {
-      totales = await invoke("cmd_eliminar_registro", {
-        nombreArchivo: archivoActual,
-        filaExcel: reg.fila_excel,
-      });
-      await recargarArchivoActual();
-      mostrarToast(`Registro #${reg.numero} eliminado`, "info");
-    } catch (e) {
-      mostrarToast(`Error eliminando registro: ${e}`, "error");
-    }
+  function eliminarRegistroFila(reg) {
+    abrirConfirmacion(
+      "Eliminar registro de audiencia",
+      `¿Eliminar el registro #${reg.numero} (${reg.radicado}) de la planilla?`,
+      "Eliminar registro",
+      true,
+      async () => {
+        try {
+          totales = await invoke("cmd_eliminar_registro", {
+            nombreArchivo: archivoActual,
+            filaExcel: reg.fila_excel,
+            radicadoEsperado: reg.radicado,
+          });
+          await recargarArchivoActual();
+          if (modoEdicion && filaEditando === reg.fila_excel) {
+            cancelarEdicion();
+          }
+          mostrarToast(`Registro #${reg.numero} eliminado`, "info");
+        } catch (e) {
+          mostrarToast(`Error eliminando registro: ${e}`, "error");
+        }
+      }
+    );
+  }
+
+  function abrirConfiguracionIa() {
+    nuevaOpenAiKey = "";
+    nuevaGeminiKey = "";
+    mostrarOpenAiKey = false;
+    mostrarGeminiKey = false;
+    modalActivo = "config_ia";
   }
 
   function abrirAutocompletarIa() {
     if (!aiStatus.configured) {
-      modalActivo = "config_ia";
+      abrirConfiguracionIa();
       return;
     }
     errorIa = "";
@@ -495,7 +726,21 @@
 
   async function guardarConfiguracionIa() {
     try {
-      aiStatus = await invoke("cmd_guardar_config", { settings });
+      const res = await invoke("cmd_guardar_config", {
+        config: {
+          provider: settings.provider,
+          openai_api_key: nuevaOpenAiKey.trim() || null,
+          openai_model: settings.openai_model,
+          gemini_api_key: nuevaGeminiKey.trim() || null,
+          gemini_model: settings.gemini_model,
+          theme: settings.theme,
+        },
+      });
+      aiStatus = res.status;
+      nuevaOpenAiKey = "";
+      nuevaGeminiKey = "";
+      mostrarOpenAiKey = false;
+      mostrarGeminiKey = false;
       modalActivo = null;
       mostrarToast("Configuración guardada", "success");
     } catch (e) {
@@ -552,6 +797,7 @@
     } else if (key === "n") {
       e.preventDefault();
       nombreNuevoArchivo = "";
+      defensorNuevoArchivo = "";
       errorModalCrear = "";
       modalActivo = "crear";
     } else if (key === "f" || key === "e") {
@@ -596,6 +842,7 @@
         class="mini-icon-btn"
         onclick={() => {
           nombreNuevoArchivo = "";
+          defensorNuevoArchivo = "";
           errorModalCrear = "";
           modalActivo = "crear";
         }}
@@ -630,6 +877,15 @@
               <span class="file-name-truncate">{arch.replace(/\.xlsx$/i, "")}</span>
             </button>
             <div class="file-row-actions">
+              <button
+                type="button"
+                class="mini-icon-btn"
+                onclick={() => abrirRespaldos(arch)}
+                title="Historial de respaldos (últimas 3 versiones)"
+                aria-label="Historial de respaldos"
+              >
+                <History size={13} />
+              </button>
               <button
                 type="button"
                 class="mini-icon-btn"
@@ -682,7 +938,7 @@
         <button
           type="button"
           class="ai-config-trigger"
-          onclick={() => (modalActivo = "config_ia")}
+          onclick={abrirConfiguracionIa}
           title="Configurar proveedor de IA"
         >
           <span class="led {aiStatus.configured ? 'on' : 'off'}"></span>
@@ -742,6 +998,20 @@
             <span class="tab-count">{totales.num_registros}</span>
           </button>
         </div>
+
+        <button
+          type="button"
+          class="defensor-pill"
+          onclick={abrirModalDefensores}
+          title="Gestionar directorio de defensores y asignación en celda B8"
+        >
+          <UserCheck size={13} strokeWidth={2} />
+          {#if archivoActual}
+            <span>Defensor: <strong>{defensorArchivo || "Sin asignar"}</strong></span>
+          {:else}
+            <span>Directorio ({defensores.length})</span>
+          {/if}
+        </button>
       </div>
 
       <div class="header-right">
@@ -749,10 +1019,10 @@
           type="button"
           class="btn btn-ai-warm"
           onclick={abrirAutocompletarIa}
-          title="Autocompletar a partir de texto libre (Ctrl+I)"
+          title={aiStatus.configured ? "Autocompletar a partir de texto libre (Ctrl+I)" : "Configurar clave de IA"}
         >
           <Sparkles size={14} strokeWidth={2} />
-          <span>Autocompletar con texto</span>
+          <span>{aiStatus.configured ? "Autocompletar IA · Ctrl+I" : "Configurar IA"}</span>
         </button>
       </div>
     </header>
@@ -773,6 +1043,22 @@
                 Cancelar edición (Esc)
               </button>
             </div>
+          {:else}
+            <button
+              type="button"
+              class="ia-quick-strip {aiStatus.configured ? 'ready' : ''}"
+              onclick={abrirAutocompletarIa}
+            >
+              <span class="ia-quick-strip-left">
+                <Sparkles size={14} strokeWidth={2} />
+                {#if aiStatus.configured}
+                  <span>¿Tienes el acta o nota de la audiencia? Pegar aquí para autocompletar</span>
+                {:else}
+                  <span>Configura tu clave de OpenAI o Gemini para autocompletar audiencias desde texto</span>
+                {/if}
+              </span>
+              <span class="kbd">{aiStatus.configured ? "Ctrl+I" : "Configurar"}</span>
+            </button>
           {/if}
 
           <!-- FILA 1: RADICADO Y DESPACHO -->
@@ -1225,11 +1511,26 @@
 </div>
 
 <!-- MODALES NATIVOS (<dialog>) -->
+<datalist id="defensores-datalist">
+  {#each defensores as d}
+    <option value={d}></option>
+  {/each}
+</datalist>
+
 {#if modalActivo}
   <dialog
     bind:this={dialogEl}
+    class={modalActivo === "defensores" ? "modal-wide" : ""}
     aria-labelledby="dialog-heading"
-    onclose={() => (modalActivo = null)}
+    onclose={() => {
+      modalActivo = null;
+      confirmacionPendiente = null;
+      duplicadoDetectado = null;
+      nuevaOpenAiKey = "";
+      nuevaGeminiKey = "";
+      mostrarOpenAiKey = false;
+      mostrarGeminiKey = false;
+    }}
   >
     {#if modalActivo === "crear"}
       <div class="modal-header">
@@ -1266,6 +1567,27 @@
           {#if errorModalCrear}
             <p style="color: var(--status-no); font-size: 12px">{errorModalCrear}</p>
           {/if}
+        </div>
+
+        <div class="field-group">
+          <div class="field-header">
+            <label class="field-label" for="nuevo-archivo-defensor">
+              Defensor Público asignado (celda B8, opcional)
+            </label>
+          </div>
+          <input
+            id="nuevo-archivo-defensor"
+            type="text"
+            list="defensores-datalist"
+            class="input"
+            bind:value={defensorNuevoArchivo}
+            placeholder={defensores.length > 0
+              ? "Selecciona de tu lista o escribe un nombre nuevo"
+              : "Escribe el nombre y se guardará para próximas planillas"}
+          />
+          <span class="shortcut-hint">
+            Si ingresas un nombre nuevo se guardará en tu directorio de defensores.
+          </span>
         </div>
       </div>
       <div class="modal-footer">
@@ -1314,7 +1636,7 @@
         <button
           type="button"
           class="btn btn-subtle"
-          onclick={() => (modalActivo = "config_ia")}
+          onclick={abrirConfiguracionIa}
           disabled={procesandoIa}
         >
           Ajustes de IA
@@ -1398,18 +1720,19 @@
 
           <div class="field-group">
             <label class="field-label" for="openai-key">
-              Clave API de OpenAI {aiStatus.has_openai_key ? `(${aiStatus.masked_openai_key})` : ""}
+              Clave API de OpenAI {aiStatus.has_openai_key ? `(${aiStatus.masked_openai_key} — guardada)` : ""}
             </label>
             <div class="input-with-icon">
               <input
                 id="openai-key"
                 type={mostrarOpenAiKey ? "text" : "password"}
                 class="input has-trailing"
-                bind:value={settings.openai_api_key}
+                bind:value={nuevaOpenAiKey}
+                autocomplete="new-password"
                 autocorrect="off"
                 autocapitalize="none"
                 spellcheck="false"
-                placeholder="sk-..."
+                placeholder={aiStatus.has_openai_key ? "Deja vacío para conservar la clave actual" : "sk-..."}
               />
               <button
                 type="button"
@@ -1455,18 +1778,19 @@
 
           <div class="field-group">
             <label class="field-label" for="gemini-key">
-              Clave API de Gemini {aiStatus.has_gemini_key ? `(${aiStatus.masked_gemini_key})` : ""}
+              Clave API de Gemini {aiStatus.has_gemini_key ? `(${aiStatus.masked_gemini_key} — guardada)` : ""}
             </label>
             <div class="input-with-icon">
               <input
                 id="gemini-key"
                 type={mostrarGeminiKey ? "text" : "password"}
                 class="input has-trailing"
-                bind:value={settings.gemini_api_key}
+                bind:value={nuevaGeminiKey}
+                autocomplete="new-password"
                 autocorrect="off"
                 autocapitalize="none"
                 spellcheck="false"
-                placeholder="AIza..."
+                placeholder={aiStatus.has_gemini_key ? "Deja vacío para conservar la clave actual" : "AIza..."}
               />
               <button
                 type="button"
@@ -1512,7 +1836,13 @@
         </p>
       </div>
       <div class="modal-footer">
-        <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
+        <!-- svelte-ignore a11y_autofocus -->
+        <button
+          type="button"
+          class="btn btn-subtle"
+          autofocus
+          onclick={() => (modalActivo = null)}
+        >
           Volver
         </button>
         <button
@@ -1521,6 +1851,327 @@
           onclick={() => guardarOActualizar(true)}
         >
           Confirmar y guardar
+        </button>
+      </div>
+
+    {:else if modalActivo === "confirmar" && confirmacionPendiente}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">{confirmacionPendiente.titulo}</h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+          disabled={ejecutandoConfirmacion}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body">
+        <p style="color: var(--text-secondary)">
+          {confirmacionPendiente.mensaje}
+        </p>
+      </div>
+      <div class="modal-footer">
+        <!-- svelte-ignore a11y_autofocus -->
+        <button
+          type="button"
+          class="btn btn-subtle"
+          autofocus
+          onclick={() => (modalActivo = null)}
+          disabled={ejecutandoConfirmacion}
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          class="btn {confirmacionPendiente.peligroso ? 'btn-danger' : 'btn-solid'}"
+          onclick={ejecutarConfirmacionModal}
+          disabled={ejecutandoConfirmacion}
+        >
+          {ejecutandoConfirmacion ? "Procesando..." : confirmacionPendiente.textoConfirmar}
+        </button>
+      </div>
+
+    {:else if modalActivo === "confirmar_duplicado" && duplicadoDetectado}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <AlertTriangle size={15} style="color: var(--accent-warm)" />
+          <span>Posible audiencia duplicada</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body">
+        <p style="color: var(--text-secondary)">
+          Ya existe un registro en esta planilla con el mismo proceso o nombre muy similar en la misma fecha:
+        </p>
+        <div class="duplicado-card">
+          <strong>#{duplicadoDetectado.numero} · {duplicadoDetectado.radicado}</strong>
+          <div class="duplicado-meta">
+            <span>{duplicadoDetectado.fecha} {duplicadoDetectado.hora || "sin hora"}</span>
+            <span>{duplicadoDetectado.tipo}</span>
+            <span>{duplicadoDetectado.juzgado}</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <!-- svelte-ignore a11y_autofocus -->
+        <button
+          type="button"
+          class="btn btn-subtle"
+          autofocus
+          onclick={() => (modalActivo = null)}
+        >
+          Cancelar y revisar
+        </button>
+        <button
+          type="button"
+          class="btn btn-solid"
+          onclick={() => guardarOActualizar(ultimoPermitirHoraVacia, true)}
+        >
+          Guardar de todas formas
+        </button>
+      </div>
+
+    {:else if modalActivo === "defensores"}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <UserCheck size={15} />
+          <span>Defensores Públicos y celda B8</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body">
+        {#if archivoActual}
+          <div class="field-group">
+            <label class="field-label" for="defensor-planilla-input">
+              Asignado en {archivoActual} (celda B8)
+            </label>
+            <div style="display: flex; gap: 8px">
+              <input
+                id="defensor-planilla-input"
+                type="text"
+                list="defensores-datalist"
+                class="input"
+                bind:value={defensorPlanillaDraft}
+                placeholder="Nombre del defensor en este Excel"
+              />
+              <button
+                type="button"
+                class="btn btn-solid"
+                onclick={() => asignarDefensorAPlanilla(defensorPlanillaDraft)}
+              >
+                Asignar
+              </button>
+              {#if defensorArchivo}
+                <button
+                  type="button"
+                  class="btn btn-subtle"
+                  onclick={() => asignarDefensorAPlanilla("")}
+                  title="Dejar celda B8 sin nombre"
+                >
+                  Quitar
+                </button>
+              {/if}
+            </div>
+          </div>
+          <div class="dossier-divider"></div>
+        {/if}
+
+        <div class="field-group">
+          <div class="field-header">
+            <span class="field-label">Directorio guardado ({defensores.length})</span>
+            <span class="shortcut-hint">Selecciona, corrige o elimina</span>
+          </div>
+          <div style="display: flex; gap: 8px">
+            <input
+              type="text"
+              class="input"
+              bind:value={nuevoDefensorDirectorio}
+              placeholder="Agregar nuevo defensor al directorio..."
+              onkeydown={(e) => {
+                if (!e.isComposing && e.key === "Enter") {
+                  e.preventDefault();
+                  agregarDefensorADirectorio();
+                }
+              }}
+            />
+            <button type="button" class="btn btn-subtle" onclick={agregarDefensorADirectorio}>
+              Agregar
+            </button>
+          </div>
+          {#if defensores.length > 6}
+            <input
+              type="search"
+              class="input"
+              bind:value={filtroDefensores}
+              placeholder="Filtrar entre los {defensores.length} defensores..."
+            />
+          {/if}
+          {#if errorDefensores}
+            <p style="color: var(--status-no); font-size: 12px">{errorDefensores}</p>
+          {/if}
+        </div>
+
+        {#if defensores.length === 0}
+          <div class="sidebar-empty" style="margin-top: 0">
+            Tu directorio está vacío. Agrega los nombres que necesites para reutilizarlos con un clic.
+          </div>
+        {:else if defensoresFiltrados.length === 0}
+          <p class="shortcut-hint">No hay defensores que coincidan con "{filtroDefensores}".</p>
+        {:else}
+          <div class="defensores-list">
+            {#each defensoresFiltrados as defName}
+              <div class="defensor-row">
+                {#if defensorEditando === defName}
+                  <input
+                    type="text"
+                    class="input"
+                    style="height: 30px; padding: 4px 8px"
+                    bind:value={defensorEditandoValor}
+                    onkeydown={(e) => {
+                      if (!e.isComposing && e.key === "Enter") {
+                        e.preventDefault();
+                        guardarRenombreDefensor();
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        defensorEditando = null;
+                      }
+                    }}
+                  />
+                  <div style="display: flex; gap: 4px">
+                    <button
+                      type="button"
+                      class="btn btn-solid"
+                      style="padding: 4px 10px"
+                      onclick={guardarRenombreDefensor}
+                    >
+                      Guardar
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-subtle"
+                      style="padding: 4px 8px"
+                      onclick={() => (defensorEditando = null)}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                {:else}
+                  <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                    {defName}
+                  </span>
+                  <div style="display: inline-flex; gap: 4px; flex-shrink: 0">
+                    {#if archivoActual}
+                      <button
+                        type="button"
+                        class="btn btn-subtle"
+                        style="padding: 3px 9px; font-size: 11.5px"
+                        onclick={() => asignarDefensorAPlanilla(defName)}
+                      >
+                        Usar en planilla
+                      </button>
+                    {/if}
+                    <button
+                      type="button"
+                      class="mini-icon-btn"
+                      title="Corregir nombre"
+                      aria-label="Corregir nombre"
+                      onclick={() => {
+                        defensorEditando = defName;
+                        defensorEditandoValor = defName;
+                      }}
+                    >
+                      <Edit3 size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      class="mini-icon-btn danger"
+                      title="Eliminar del directorio"
+                      aria-label="Eliminar del directorio"
+                      onclick={() => eliminarDefensorDeDirectorio(defName)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-solid" onclick={() => (modalActivo = null)}>
+          Listo
+        </button>
+      </div>
+
+    {:else if modalActivo === "respaldos"}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <History size={15} />
+          <span>Respaldos automáticos de {respaldosTarget}</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="shortcut-hint">
+          Lokus guarda automáticamente hasta 3 versiones previas antes de cada cambio en la planilla.
+        </p>
+        {#if cargandoRespaldos}
+          <p class="shortcut-hint">Cargando versiones...</p>
+        {:else if respaldosArchivo.length === 0}
+          <div class="sidebar-empty" style="margin-top: 0">
+            Aún no hay respaldos guardados para esta planilla. Se crearán automáticamente al registrar o editar audiencias.
+          </div>
+        {:else}
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            {#each respaldosArchivo as resp, idx}
+              <div class="respaldo-row">
+                <div>
+                  <div style="font-weight: 600">{resp.fecha_legible}</div>
+                  <div class="shortcut-hint">
+                    {idx === 0 ? "Versión más reciente" : `Copia previa #${idx + 1}`} · {(resp.tamano_bytes / 1024).toFixed(1)} KB
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-subtle"
+                  onclick={() => solicitarRestaurarRespaldo(resp)}
+                >
+                  <RotateCcw size={13} />
+                  <span>Restaurar</span>
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-solid" onclick={() => (modalActivo = null)}>
+          Cerrar
         </button>
       </div>
 

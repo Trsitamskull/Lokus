@@ -68,6 +68,17 @@ pub struct TotalesExcel {
     pub totales_motivos: [u32; 8],
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuplicadoDetectado {
+    pub numero: u32,
+    pub fila_excel: u32,
+    pub radicado: String,
+    pub tipo: String,
+    pub fecha: String,
+    pub hora: String,
+    pub juzgado: String,
+}
+
 /// Mapea cualquier variante del nombre de un motivo a su índice exacto de columna (0..8 -> Columnas I..P)
 pub fn mapear_motivo_a_indice(motivo: &str) -> Option<usize> {
     let m = motivo.trim().to_lowercase();
@@ -93,6 +104,172 @@ pub fn mapear_motivo_a_indice(motivo: &str) -> Option<usize> {
     } else {
         None
     }
+}
+
+pub fn normalizar_texto_sin_tildes(texto: &str) -> String {
+    let mut out = String::with_capacity(texto.len());
+    let mut prev_space = true;
+    for ch in texto.trim().to_lowercase().chars() {
+        let mapped = match ch {
+            'á' | 'à' | 'ä' | 'â' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ñ' => 'n',
+            c if c.is_alphanumeric() => c,
+            _ => ' ',
+        };
+        if mapped == ' ' {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(mapped);
+            prev_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Extrae secuencias numéricas de >= 6 dígitos (ignorando guiones/puntos/barras internos como 11001-60-00000-2025-00001-00).
+pub fn extraer_numeros_radicado(texto: &str) -> Vec<String> {
+    let mut numeros = Vec::new();
+    let mut actual = String::new();
+
+    for ch in texto.chars() {
+        if ch.is_ascii_digit() {
+            actual.push(ch);
+        } else if matches!(ch, '-' | '.' | '/') && !actual.is_empty() {
+            // Mantener dígitos unidos cuando están separados por guion/punto/barra
+            continue;
+        } else {
+            if actual.len() >= 6 && !numeros.contains(&actual) {
+                numeros.push(actual.clone());
+            }
+            actual.clear();
+        }
+    }
+    if actual.len() >= 6 && !numeros.contains(&actual) {
+        numeros.push(actual);
+    }
+
+    numeros
+}
+
+fn similitud_levenshtein(a: &str, b: &str) -> f64 {
+    let va: Vec<char> = a.chars().collect();
+    let vb: Vec<char> = b.chars().collect();
+    let la = va.len();
+    let lb = vb.len();
+    if la == 0 && lb == 0 {
+        return 1.0;
+    }
+    let max_len = la.max(lb);
+    if max_len == 0 {
+        return 1.0;
+    }
+
+    let mut prev: Vec<usize> = (0..=lb).collect();
+    let mut curr = vec![0usize; lb + 1];
+
+    for i in 1..=la {
+        curr[0] = i;
+        for j in 1..=lb {
+            let cost = if va[i - 1] == vb[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    1.0 - (prev[lb] as f64 / max_len as f64)
+}
+
+/// Determina si dos radicados/procesados corresponden al mismo proceso aunque existan errores tipográficos, tildes o espacios.
+pub fn son_radicados_equivalentes(a: &str, b: &str) -> bool {
+    let nums_a = extraer_numeros_radicado(a);
+    let nums_b = extraer_numeros_radicado(b);
+
+    // Si ambos tienen número de radicado (>= 6 dígitos), el número es la clave principal
+    if !nums_a.is_empty() && !nums_b.is_empty() {
+        return nums_a.iter().any(|na| nums_b.contains(na));
+    }
+
+    // Quitar números largos antes de comparar nombres para tolerar un registro con número y otro solo con nombre
+    let limpiar_para_nombre = |s: &str| -> String {
+        let sin_largos: String = s
+            .split_whitespace()
+            .filter(|tok| {
+                let digitos: usize = tok.chars().filter(|c| c.is_ascii_digit()).count();
+                digitos < 6
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        normalizar_texto_sin_tildes(&sin_largos)
+    };
+
+    let na = limpiar_para_nombre(a);
+    let nb = limpiar_para_nombre(b);
+    if na.is_empty() || nb.is_empty() {
+        return false;
+    }
+    if na == nb {
+        return true;
+    }
+
+    if na.chars().count() < 5 || nb.chars().count() < 5 {
+        return false;
+    }
+
+    let sim_total = similitud_levenshtein(&na, &nb);
+    if sim_total < 0.82 {
+        return false;
+    }
+
+    // Si ambos tienen 2+ palabras, evitar falsos positivos con distinto apellido ("carlos perez" vs "carlos gomez")
+    let words_a: Vec<&str> = na.split_whitespace().collect();
+    let words_b: Vec<&str> = nb.split_whitespace().collect();
+    if words_a.len() >= 2 && words_b.len() >= 2 {
+        let last_a = words_a[words_a.len() - 1];
+        let last_b = words_b[words_b.len() - 1];
+        if similitud_levenshtein(last_a, last_b) < 0.70 {
+            return false;
+        }
+    }
+
+    true
+}
+
+pub fn buscar_posible_duplicado(
+    registros: &[RegistroAudiencia],
+    datos: &AudienciaInput,
+    excluir_fila: Option<u32>,
+) -> Option<DuplicadoDetectado> {
+    let fecha_objetivo = datos.fecha.trim();
+    if fecha_objetivo.is_empty() {
+        return None;
+    }
+
+    for r in registros {
+        if excluir_fila == Some(r.fila_excel) {
+            continue;
+        }
+        if r.fecha.trim() == fecha_objetivo && son_radicados_equivalentes(&r.radicado, &datos.radicado)
+        {
+            return Some(DuplicadoDetectado {
+                numero: r.numero,
+                fila_excel: r.fila_excel,
+                radicado: r.radicado.clone(),
+                tipo: r.tipo.clone(),
+                fecha: r.fecha.clone(),
+                hora: r.hora.clone(),
+                juzgado: r.juzgado.clone(),
+            });
+        }
+    }
+
+    None
 }
 
 pub fn validar_audiencia(datos: &AudienciaInput, permitir_hora_vacia: bool) -> Result<(), String> {
@@ -177,5 +354,67 @@ mod tests {
             Err("HORA_VACIA_REQUIERE_CONFIRMACION".into())
         );
         assert!(validar_audiencia(&input, true).is_ok());
+    }
+
+    #[test]
+    fn test_deteccion_duplicados_con_typos_y_radicado_numerico() {
+        // Casos reales reportados por el usuario
+        assert!(son_radicados_equivalentes(
+            "JUAN ramírez - 1000231553000",
+            "JuaN RamIres -   1000231553000   "
+        ));
+        assert!(son_radicados_equivalentes(
+            "JUAN RAmirez - 1212312312312312345231121",
+            "JuiAN RAmíres - 1212312312312312345231121"
+        ));
+        // Radicado con guiones vs compacto
+        assert!(son_radicados_equivalentes(
+            "11001-60-00000-2025-00001-00",
+            "11001600000020250000100"
+        ));
+        // Solo nombres con typo sin número
+        assert!(son_radicados_equivalentes("JUAN RAmirez", "JuiAN RAmíres"));
+
+        // Mismo nombre pero números de radicado distintos -> NO son duplicados
+        assert!(!son_radicados_equivalentes(
+            "JUAN RAMIREZ - 110016000001",
+            "JUAN RAMIREZ - 110016000002"
+        ));
+        // Nombres distintos con mismo primer nombre -> NO son duplicados
+        assert!(!son_radicados_equivalentes("CARLOS PEREZ", "CARLOS GOMEZ"));
+
+        // Solo alerta cuando coincide también la fecha
+        let existente = vec![RegistroAudiencia {
+            fila_excel: 11,
+            numero: 1,
+            radicado: "JUAN RAmirez - 1212312312312312345231121".into(),
+            tipo: "Audiencia concentrada".into(),
+            fecha: "15/08/2025".into(),
+            hora: "09:00".into(),
+            juzgado: "Juzgado 1".into(),
+            realizada: "SI".into(),
+            motivo: "".into(),
+            motivos_flags: [false; 8],
+            observaciones: "".into(),
+        }];
+
+        let mismo_dia = AudienciaInput {
+            radicado: "JuiAN RAmíres - 1212312312312312345231121".into(),
+            tipo: "Audiencia concentrada".into(),
+            fecha: "15/08/2025".into(),
+            hora: "09:00".into(),
+            juzgado: "Juzgado 1".into(),
+            realizada: "SI".into(),
+            motivo: "".into(),
+            observaciones: "".into(),
+        };
+        assert!(buscar_posible_duplicado(&existente, &mismo_dia, None).is_some());
+        assert!(buscar_posible_duplicado(&existente, &mismo_dia, Some(11)).is_none());
+
+        let otro_dia = AudienciaInput {
+            fecha: "20/08/2025".into(),
+            ..mismo_dia
+        };
+        assert!(buscar_posible_duplicado(&existente, &otro_dia, None).is_none());
     }
 }

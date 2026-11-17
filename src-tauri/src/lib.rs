@@ -4,10 +4,14 @@ pub mod excel;
 pub mod models;
 
 use ai::{extraer_datos_audiencia_ia, AiAudienciaOutput};
-use config::{cargar_settings, guardar_settings, obtener_estado_ia, AiStatusResponse, AppSettings};
+use config::{
+    actualizar_config, actualizar_tema, agregar_defensor, cargar_config_publica,
+    eliminar_defensor, renombrar_defensor, ActualizarConfig, ConfigPublica,
+};
 use excel::{
-    actualizar_audiencia_existente, crear_copia_plantilla, descargar_archivo, eliminar_archivo,
-    eliminar_registro_audiencia, guardar_nueva_audiencia, leer_archivo_completo, listar_archivos,
+    actualizar_audiencia_existente, actualizar_defensor_archivo, crear_copia_plantilla,
+    descargar_archivo, eliminar_archivo, eliminar_registro_audiencia, guardar_nueva_audiencia,
+    leer_archivo_completo, listar_archivos, listar_respaldos, restaurar_respaldo, RespaldoInfo,
 };
 use models::{validar_audiencia, AudienciaInput, RegistroAudiencia, TotalesExcel};
 use serde::Serialize;
@@ -16,80 +20,152 @@ use serde::Serialize;
 pub struct DatosArchivoResponse {
     pub registros: Vec<RegistroAudiencia>,
     pub totales: TotalesExcel,
+    pub defensor: String,
 }
 
-#[derive(Serialize)]
-pub struct ConfigCompletaResponse {
-    pub settings: AppSettings,
-    pub status: AiStatusResponse,
+async fn ejecutar_en_hilo_io<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("Error interno al ejecutar operación de archivo: {}", e))?
 }
 
 #[tauri::command]
-fn cmd_listar_archivos() -> Result<Vec<String>, String> {
-    listar_archivos()
+async fn cmd_listar_archivos() -> Result<Vec<String>, String> {
+    ejecutar_en_hilo_io(listar_archivos).await
 }
 
 #[tauri::command]
-fn cmd_crear_archivo(nombre: String) -> Result<String, String> {
+async fn cmd_crear_archivo(nombre: String, defensor: Option<String>) -> Result<String, String> {
     if nombre.trim().is_empty() {
         return Err("El nombre del archivo es obligatorio".to_string());
     }
-    crear_copia_plantilla(nombre.trim())
+    ejecutar_en_hilo_io(move || crear_copia_plantilla(nombre.trim(), defensor.as_deref())).await
 }
 
 #[tauri::command]
-fn cmd_eliminar_archivo(nombre: String) -> Result<(), String> {
-    eliminar_archivo(&nombre)
+async fn cmd_eliminar_archivo(nombre: String) -> Result<(), String> {
+    ejecutar_en_hilo_io(move || eliminar_archivo(&nombre)).await
 }
 
 #[tauri::command]
-fn cmd_descargar_archivo(nombre: String) -> Result<String, String> {
-    descargar_archivo(&nombre)
+async fn cmd_descargar_archivo(nombre: String) -> Result<String, String> {
+    ejecutar_en_hilo_io(move || descargar_archivo(&nombre)).await
 }
 
 #[tauri::command]
-fn cmd_leer_archivo(nombre: String) -> Result<DatosArchivoResponse, String> {
-    let (registros, totales) = leer_archivo_completo(&nombre)?;
-    Ok(DatosArchivoResponse { registros, totales })
+async fn cmd_leer_archivo(nombre: String) -> Result<DatosArchivoResponse, String> {
+    ejecutar_en_hilo_io(move || {
+        let (registros, totales, defensor) = leer_archivo_completo(&nombre)?;
+        Ok(DatosArchivoResponse {
+            registros,
+            totales,
+            defensor,
+        })
+    })
+    .await
 }
 
 #[tauri::command]
-fn cmd_guardar_audiencia(
+async fn cmd_actualizar_defensor_archivo(
+    nombre_archivo: String,
+    defensor: String,
+) -> Result<String, String> {
+    ejecutar_en_hilo_io(move || actualizar_defensor_archivo(&nombre_archivo, &defensor)).await
+}
+
+#[tauri::command]
+async fn cmd_guardar_audiencia(
     nombre_archivo: String,
     datos: AudienciaInput,
     permitir_hora_vacia: bool,
+    permitir_duplicado: bool,
 ) -> Result<TotalesExcel, String> {
     validar_audiencia(&datos, permitir_hora_vacia)?;
-    guardar_nueva_audiencia(&nombre_archivo, &datos)
+    ejecutar_en_hilo_io(move || {
+        guardar_nueva_audiencia(&nombre_archivo, &datos, permitir_duplicado)
+    })
+    .await
 }
 
 #[tauri::command]
-fn cmd_actualizar_audiencia(
+async fn cmd_actualizar_audiencia(
     nombre_archivo: String,
     fila_excel: u32,
+    radicado_esperado: String,
     datos: AudienciaInput,
     permitir_hora_vacia: bool,
+    permitir_duplicado: bool,
 ) -> Result<TotalesExcel, String> {
     validar_audiencia(&datos, permitir_hora_vacia)?;
-    actualizar_audiencia_existente(&nombre_archivo, fila_excel, &datos)
+    ejecutar_en_hilo_io(move || {
+        actualizar_audiencia_existente(
+            &nombre_archivo,
+            fila_excel,
+            &radicado_esperado,
+            &datos,
+            permitir_duplicado,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-fn cmd_eliminar_registro(nombre_archivo: String, fila_excel: u32) -> Result<TotalesExcel, String> {
-    eliminar_registro_audiencia(&nombre_archivo, fila_excel)
+async fn cmd_eliminar_registro(
+    nombre_archivo: String,
+    fila_excel: u32,
+    radicado_esperado: String,
+) -> Result<TotalesExcel, String> {
+    ejecutar_en_hilo_io(move || {
+        eliminar_registro_audiencia(&nombre_archivo, fila_excel, &radicado_esperado)
+    })
+    .await
 }
 
 #[tauri::command]
-fn cmd_obtener_config() -> Result<ConfigCompletaResponse, String> {
-    let settings = cargar_settings();
-    let status = obtener_estado_ia();
-    Ok(ConfigCompletaResponse { settings, status })
+async fn cmd_listar_respaldos(nombre_archivo: String) -> Result<Vec<RespaldoInfo>, String> {
+    ejecutar_en_hilo_io(move || listar_respaldos(&nombre_archivo)).await
 }
 
 #[tauri::command]
-fn cmd_guardar_config(settings: AppSettings) -> Result<AiStatusResponse, String> {
-    guardar_settings(&settings)?;
-    Ok(obtener_estado_ia())
+async fn cmd_restaurar_respaldo(
+    nombre_archivo: String,
+    archivo_respaldo: String,
+) -> Result<(), String> {
+    ejecutar_en_hilo_io(move || restaurar_respaldo(&nombre_archivo, &archivo_respaldo)).await
+}
+
+#[tauri::command]
+fn cmd_obtener_config() -> Result<ConfigPublica, String> {
+    Ok(cargar_config_publica())
+}
+
+#[tauri::command]
+fn cmd_guardar_config(config: ActualizarConfig) -> Result<ConfigPublica, String> {
+    actualizar_config(config)
+}
+
+#[tauri::command]
+fn cmd_guardar_tema(tema: String) -> Result<ConfigPublica, String> {
+    actualizar_tema(&tema)
+}
+
+#[tauri::command]
+fn cmd_agregar_defensor(nombre: String) -> Result<ConfigPublica, String> {
+    agregar_defensor(&nombre)
+}
+
+#[tauri::command]
+fn cmd_renombrar_defensor(actual: String, nuevo: String) -> Result<ConfigPublica, String> {
+    renombrar_defensor(&actual, &nuevo)
+}
+
+#[tauri::command]
+fn cmd_eliminar_defensor(nombre: String) -> Result<ConfigPublica, String> {
+    eliminar_defensor(&nombre)
 }
 
 #[tauri::command]
@@ -106,11 +182,18 @@ pub fn run() {
             cmd_eliminar_archivo,
             cmd_descargar_archivo,
             cmd_leer_archivo,
+            cmd_actualizar_defensor_archivo,
             cmd_guardar_audiencia,
             cmd_actualizar_audiencia,
             cmd_eliminar_registro,
+            cmd_listar_respaldos,
+            cmd_restaurar_respaldo,
             cmd_obtener_config,
             cmd_guardar_config,
+            cmd_guardar_tema,
+            cmd_agregar_defensor,
+            cmd_renombrar_defensor,
+            cmd_eliminar_defensor,
             cmd_autocompletar_ia,
         ])
         .run(tauri::generate_context!())

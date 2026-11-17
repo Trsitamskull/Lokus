@@ -15,9 +15,11 @@ Esta habilidad codifica las reglas propietarias e inmutables del **Gestor de Aud
 
 La plantilla oficial de la Defensoría del Pueblo (`Hoja1`) tiene formato, bordes y encabezados predefinidos:
 
+- **Encabezado editable `B8` (`B8:Q8`):** Contiene `"DEFENSOR PÚBLICO: <NOMBRE>"` (texto alineado a la izquierda, Calibri 11). Lokus puede leer y actualizar `B8` como texto al crear o editar la asignación de la planilla sin alterar `B5`, `B7`, las filas `9..10` ni el logo embebido.
 - **Filas de datos de audiencias:** Filas `11` a `110` inclusive (máximo **100 registros** por archivo).
 - **Fila de totales:** Fila `111`.
 - **Fila de firma:** Fila `112` (**prohibido sobrescribir**).
+- **Respaldos automáticos:** Antes de modificar un `.xlsx`, Lokus conserva hasta **3 copias históricas** en `archivos_creados/.respaldos/<archivo>/`.
 
 ### Mapa de Columnas (1-indexed en `umya-spreadsheet`)
 

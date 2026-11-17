@@ -1,4 +1,7 @@
-use chrono::{Datelike, Local};
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use chrono::{Datelike, Local, NaiveDate};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -18,6 +21,76 @@ pub struct AiAudienciaOutput {
     pub se_realizo: String,
     pub motivo: String,
     pub observaciones: String,
+}
+
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(45))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+fn formatear_error_red(proveedor: &str, err: reqwest::Error) -> String {
+    let sin_url = err.without_url();
+    if sin_url.is_timeout() {
+        format!(
+            "Tiempo de espera agotado al consultar {} (45s). Intente nuevamente.",
+            proveedor
+        )
+    } else if sin_url.is_connect() {
+        format!(
+            "No se pudo conectar con {}. Verifique su conexión a internet.",
+            proveedor
+        )
+    } else {
+        format!("Error de conexión con {}: {}", proveedor, sin_url)
+    }
+}
+
+pub fn normalizar_fecha_ia(raw: &str) -> String {
+    let s = raw.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+
+    // %d y %m en chrono también aceptan 1 dígito ("5/8/2025")
+    for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%y", "%d-%m-%y"] {
+        if let Ok(fecha) = NaiveDate::parse_from_str(s, fmt) {
+            return fecha.format("%d/%m/%Y").to_string();
+        }
+    }
+
+    s.to_string()
+}
+
+fn normalizar_hora_minuto_ia(raw_hora: &str, raw_minuto: &str) -> (String, String) {
+    let h_str = raw_hora.trim();
+    let m_str = raw_minuto.trim();
+    if h_str.is_empty() && m_str.is_empty() {
+        return (String::new(), String::new());
+    }
+
+    let Ok(h) = h_str.parse::<u32>() else {
+        return (String::new(), String::new());
+    };
+    if h > 23 {
+        return (String::new(), String::new());
+    }
+
+    let m = if m_str.is_empty() {
+        0
+    } else {
+        match m_str.parse::<u32>() {
+            Ok(val) if val <= 59 => val,
+            _ => return (String::new(), String::new()),
+        }
+    };
+
+    (format!("{:02}", h), format!("{:02}", m))
 }
 
 fn expandir_abreviaciones_y_compacto(texto: &str, current_year: i32) -> String {
@@ -241,14 +314,26 @@ fn mapear_tipo_audiencia(tipo_ia: &str) -> (String, String) {
         ("conciliación", "Audiencia de conciliación"),
         ("preclusión", "Audiencia de preclusión"),
         ("preclusion", "Audiencia de preclusión"),
-        ("individualización de pena", "Audiencia de individualización de pena"),
+        (
+            "individualización de pena",
+            "Audiencia de individualización de pena",
+        ),
         ("imputación", "Audiencia de imputación"),
-        ("reparación integral", "Audiencia de incidente de reparación integral"),
-        ("medidas de aseguramiento", "Audiencia de medidas de aseguramiento"),
+        (
+            "reparación integral",
+            "Audiencia de incidente de reparación integral",
+        ),
+        (
+            "medidas de aseguramiento",
+            "Audiencia de medidas de aseguramiento",
+        ),
         ("nulidad", "Audiencia de nulidad"),
         ("prórroga", "Audiencia de prórroga"),
         ("revisión de medida", "Audiencia de revisión de medida"),
-        ("verificación de cumplimiento", "Audiencia de verificación de cumplimiento"),
+        (
+            "verificación de cumplimiento",
+            "Audiencia de verificación de cumplimiento",
+        ),
     ];
 
     for (clave, oficial) in mapeo_directo {
@@ -298,7 +383,6 @@ TEXTO A ANALIZAR:
 }
 
 async fn llamar_openai(api_key: &str, model: &str, prompt: &str) -> Result<Value, String> {
-    let client = reqwest::Client::new();
     let mut body = json!({
         "model": model,
         "messages": [
@@ -319,19 +403,19 @@ async fn llamar_openai(api_key: &str, model: &str, prompt: &str) -> Result<Value
         body["temperature"] = json!(0.1);
     }
 
-    let resp = client
+    let resp = http_client()
         .post("https://api.openai.com/v1/chat/completions")
         .bearer_auth(api_key.trim())
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Error de conexión con OpenAI: {}", e))?;
+        .map_err(|e| formatear_error_red("OpenAI", e))?;
 
     let status = resp.status();
     let json_resp: Value = resp
         .json()
         .await
-        .map_err(|e| format!("Respuesta inválida de OpenAI: {}", e))?;
+        .map_err(|e| format!("Respuesta inválida de OpenAI: {}", e.without_url()))?;
 
     if !status.is_success() {
         let msg = json_resp["error"]["message"]
@@ -349,11 +433,9 @@ async fn llamar_openai(api_key: &str, model: &str, prompt: &str) -> Result<Value
 }
 
 async fn llamar_gemini(api_key: &str, model: &str, prompt: &str) -> Result<Value, String> {
-    let client = reqwest::Client::new();
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        model.trim(),
-        api_key.trim()
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        model.trim()
     );
 
     let body = json!({
@@ -370,18 +452,19 @@ async fn llamar_gemini(api_key: &str, model: &str, prompt: &str) -> Result<Value
         }
     });
 
-    let resp = client
+    let resp = http_client()
         .post(&url)
+        .header("x-goog-api-key", api_key.trim())
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Error de conexión con Gemini: {}", e))?;
+        .map_err(|e| formatear_error_red("Gemini", e))?;
 
     let status = resp.status();
     let json_resp: Value = resp
         .json()
         .await
-        .map_err(|e| format!("Respuesta inválida de Gemini: {}", e))?;
+        .map_err(|e| format!("Respuesta inválida de Gemini: {}", e.without_url()))?;
 
     if !status.is_success() {
         let msg = json_resp["error"]["message"]
@@ -432,20 +515,8 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
     let radicado = get_str("radicado");
     let raw_tipo = get_str("tipo_audiencia");
     let (tipo_audiencia, tipo_otra) = mapear_tipo_audiencia(&raw_tipo);
-    let fecha = get_str("fecha");
-
-    let mut hora = get_str("hora");
-    let mut minuto = get_str("minuto");
-    if !hora.is_empty() {
-        if let Ok(h) = hora.parse::<u32>() {
-            hora = format!("{:02}", h);
-        }
-    }
-    if !minuto.is_empty() {
-        if let Ok(m) = minuto.parse::<u32>() {
-            minuto = format!("{:02}", m);
-        }
-    }
+    let fecha = normalizar_fecha_ia(&get_str("fecha"));
+    let (hora, minuto) = normalizar_hora_minuto_ia(&get_str("hora"), &get_str("minuto"));
 
     let juzgado = get_str("juzgado");
     let mut se_realizo = get_str("se_realizo").to_uppercase();
@@ -467,7 +538,9 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
         "fracasa",
         "no se realizó",
     ];
-    if patrones_fracaso.iter().any(|p| texto_lower.contains(p)) && !texto_lower.contains("se realizó: sí") {
+    if patrones_fracaso.iter().any(|p| texto_lower.contains(p))
+        && !texto_lower.contains("se realizó: sí")
+    {
         se_realizo = "NO".to_string();
     }
 
@@ -538,5 +611,22 @@ mod tests {
         assert_eq!(m3, "Fiscalía");
         assert!(sec3.contains(&"Defensor Público".to_string()));
     }
-}
 
+    #[test]
+    fn test_normalizar_fecha_ia() {
+        assert_eq!(normalizar_fecha_ia("5/8/2025"), "05/08/2025");
+        assert_eq!(normalizar_fecha_ia("2025-08-05"), "05/08/2025");
+        assert_eq!(normalizar_fecha_ia("5-8-2025"), "05/08/2025");
+        assert_eq!(normalizar_fecha_ia("15/08/2025"), "15/08/2025");
+        assert_eq!(normalizar_fecha_ia(""), "");
+    }
+
+    #[test]
+    fn test_normalizar_hora_minuto_ia() {
+        assert_eq!(normalizar_hora_minuto_ia("8", "5"), ("08".into(), "05".into()));
+        assert_eq!(normalizar_hora_minuto_ia("14", ""), ("14".into(), "00".into()));
+        assert_eq!(normalizar_hora_minuto_ia("", ""), ("".into(), "".into()));
+        assert_eq!(normalizar_hora_minuto_ia("25", "10"), ("".into(), "".into()));
+        assert_eq!(normalizar_hora_minuto_ia("10", "75"), ("".into(), "".into()));
+    }
+}

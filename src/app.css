@@ -528,6 +528,17 @@ button,
   filter: brightness(1.1);
 }
 
+.btn-danger {
+  background: var(--status-no-bg);
+  color: var(--status-no);
+  border-color: var(--status-no-border);
+  font-weight: 600;
+}
+
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
 /* CUERPO DEL FORMULARIO TIPO EXPEDIENTE */
 .workspace-scroll {
   flex: 1;
@@ -1253,4 +1264,120 @@ dialog::backdrop {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+/* PASTILLA DISCRETA DE DEFENSOR EN HEADER */
+.defensor-pill {
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  cursor: pointer;
+}
+
+.defensor-pill:hover {
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+  background: var(--bg-hover);
+}
+
+.defensor-pill strong {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* FRANJA ERGONÓMICA DE IA EN EL FORMULARIO */
+.ia-quick-strip {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 13px;
+  border-radius: 7px;
+  border: 1px solid var(--accent-warm-border);
+  background: var(--accent-warm-soft);
+  color: var(--accent-warm);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ia-quick-strip:hover {
+  border-color: var(--border-focus);
+  filter: brightness(1.06);
+}
+
+.ia-quick-strip-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+dialog.modal-wide {
+  width: min(580px, 94vw);
+}
+
+/* DIRECTORIO DE DEFENSORES Y RESPALDOS */
+.defensores-list {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg-input);
+  display: flex;
+  flex-direction: column;
+}
+
+.defensor-row,
+.respaldo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--border-hairline);
+  font-size: 13px;
+}
+
+.defensor-row:last-child,
+.respaldo-row:last-child {
+  border-bottom: none;
+}
+
+.respaldo-row {
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg-input);
+}
+
+.duplicado-card {
+  background: var(--bg-input);
+  border: 1px solid var(--accent-warm-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.duplicado-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
