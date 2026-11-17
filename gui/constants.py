@@ -201,7 +201,7 @@ def get_container_style():
     return {
         "bgcolor": colors["surface_card"],
         "border_radius": 12,
-        "border": ft.border.all(1, colors["surface_border"]),
+        "border": ft.Border.all(1, colors["surface_border"]),
         "shadow": ft.BoxShadow(
             spread_radius=0,
             blur_radius=8,
@@ -216,8 +216,8 @@ def get_action_bar_style():
     return {
         "bgcolor": colors["surface_card"],
         "border_radius": 12,
-        "border": ft.border.all(1, colors["surface_border"]),
-        "padding": ft.padding.symmetric(horizontal=20, vertical=12),
+        "border": ft.Border.all(1, colors["surface_border"]),
+        "padding": ft.Padding.symmetric(horizontal=20, vertical=12),
         "shadow": ft.BoxShadow(
             spread_radius=0,
             blur_radius=6,

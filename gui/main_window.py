@@ -62,8 +62,8 @@ class DialogoCrearArchivo:
         )
         
         # Botones
-        btn_crear = ft.ElevatedButton(
-            text="Crear",
+        btn_crear = ft.Button(
+            content="Crear",
             on_click=self._on_crear,
             style=ft.ButtonStyle(
                 bgcolor=colors["primary"],
@@ -75,7 +75,7 @@ class DialogoCrearArchivo:
         )
         
         btn_cancelar = ft.TextButton(
-            text="Cancelar",
+            content="Cancelar",
             on_click=self._on_cancelar,
             style=ft.ButtonStyle(
                 color=colors["text_secondary"],
@@ -123,7 +123,7 @@ class DialogoCrearArchivo:
         
         if not nombre:
             # Mostrar error si no hay nombre
-            self.campo_nombre.error_text = "El nombre es obligatorio"
+            self.campo_nombre.error = "El nombre es obligatorio"
             self.page.update()
             return
         
@@ -168,7 +168,7 @@ class VentanaSeleccionArchivo:
                     alignment=ft.MainAxisAlignment.START,
                 ),
                 bgcolor=colors["surface_tertiary"],
-                border=ft.border.all(1, colors["surface_border"]),
+                border=ft.Border.all(1, colors["surface_border"]),
                 border_radius=8,
                 padding=ft.Padding(15, 12, 15, 12),
                 on_click=lambda e, arch=archivo: self._on_seleccionar(arch),
@@ -178,7 +178,7 @@ class VentanaSeleccionArchivo:
         
         # Botón cancelar
         btn_cancelar = ft.TextButton(
-            text="Cancelar",
+            content="Cancelar",
             on_click=self._on_cancelar,
             style=ft.ButtonStyle(
                 color=colors["text_secondary"],
@@ -268,8 +268,8 @@ class VentanaSeleccionRegistro:
                     controls=[
                         ft.Icon(ft.Icons.EDIT_DOCUMENT, size=20, color=colors["success"]),
                         ft.Text(info_text, size=13, color=colors["text_primary"], expand=True),
-                        ft.ElevatedButton(
-                            text="Editar",
+                        ft.Button(
+                            content="Editar",
                             on_click=lambda e, fn=fila_num, d=datos: self._on_editar_item(fn, d),
                             style=ft.ButtonStyle(
                                 bgcolor=colors["success"],
@@ -285,7 +285,7 @@ class VentanaSeleccionRegistro:
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 bgcolor=colors["surface_tertiary"],
-                border=ft.border.all(1, colors["surface_border"]),
+                border=ft.Border.all(1, colors["surface_border"]),
                 border_radius=8,
                 padding=ft.Padding(15, 12, 15, 12),
             )
@@ -293,7 +293,7 @@ class VentanaSeleccionRegistro:
         
         # Botón cancelar
         btn_cancelar = ft.TextButton(
-            text="Cancelar",
+            content="Cancelar",
             on_click=self._on_cancelar,
             style=ft.ButtonStyle(
                 color=colors["text_secondary"],
@@ -387,7 +387,7 @@ class DialogoConfirmacion:
                         padding=ft.Padding(20, 10, 20, 10),
                     ),
                 ),
-                ft.ElevatedButton(
+                ft.Button(
                     "Confirmar",
                     on_click=confirmar_accion,
                     style=ft.ButtonStyle(
@@ -514,7 +514,7 @@ class VentanaPrincipal:
             
             # Enfocar el campo de radicado por defecto
             if hasattr(self, 'entrada_radicado') and self.entrada_radicado:
-                self.entrada_radicado.focus()
+                self.page.run_task(self.entrada_radicado.focus)
             
             # Forzar actualización
             self.page.update()
@@ -571,7 +571,7 @@ class VentanaPrincipal:
                 spacing=0,
                 scroll=ft.ScrollMode.HIDDEN,  # Sin auto-scroll, solo scroll manual cuando sea necesario
             ),
-            padding=ft.padding.all(25),  # Padding reducido
+            padding=ft.Padding.all(25),  # Padding reducido
             bgcolor=colors["surface_secondary"],
             expand=True,
         )
@@ -644,7 +644,7 @@ class VentanaPrincipal:
                                 height=60,
                                 bgcolor=colors["primary"],
                                 border_radius=15,
-                                alignment=ft.alignment.center,
+                                alignment=ft.Alignment.CENTER,
                             ),
                             ft.Column(
                                 controls=[
@@ -690,7 +690,7 @@ class VentanaPrincipal:
                 color="#00000010" if not is_dark_theme() else "#00000030",
                 offset=ft.Offset(0, 2),
             ),
-            border=ft.border.all(1, colors["surface_border"]),
+            border=ft.Border.all(1, colors["surface_border"]),
         )
 
     def _crear_formulario(self):
@@ -713,8 +713,8 @@ class VentanaPrincipal:
                         ),
                         bgcolor=colors["surface_tertiary"],
                         border_radius=20,
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        border=ft.border.all(1, colors["surface_border"]),
+                        padding=ft.Padding.symmetric(horizontal=20, vertical=12),
+                        border=ft.Border.all(1, colors["surface_border"]),
                     ),
                     
                     # Contador de registros (derecha)
@@ -729,14 +729,14 @@ class VentanaPrincipal:
                         ),
                         bgcolor=colors["primary_light"] if not is_dark_theme() else colors["surface_tertiary"],
                         border_radius=20,
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        border=ft.border.all(1, colors["surface_border"]),
+                        padding=ft.Padding.symmetric(horizontal=20, vertical=12),
+                        border=ft.Border.all(1, colors["surface_border"]),
                     ),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            padding=ft.padding.symmetric(horizontal=5, vertical=8),
+            padding=ft.Padding.symmetric(horizontal=5, vertical=8),
         )
 
         # === COLUMNA IZQUIERDA ===
@@ -772,8 +772,8 @@ class VentanaPrincipal:
                     ),
                     bgcolor=colors["surface_tertiary"],
                     border_radius=10,
-                    padding=ft.padding.all(12),  # Padding reducido
-                    border=ft.border.all(1, colors["surface_border"]),
+                    padding=ft.Padding.all(12),  # Padding reducido
+                    border=ft.Border.all(1, colors["surface_border"]),
                 ),
                 
                 ft.Container(height=10),  # Espaciado entre secciones reducido
@@ -808,8 +808,8 @@ class VentanaPrincipal:
                     ),
                     bgcolor=colors["surface_tertiary"],
                     border_radius=10,
-                    padding=ft.padding.all(12),  # Padding reducido
-                    border=ft.border.all(1, colors["surface_border"]),
+                    padding=ft.Padding.all(12),  # Padding reducido
+                    border=ft.Border.all(1, colors["surface_border"]),
                 ),
             ],
             expand=True,
@@ -849,7 +849,7 @@ class VentanaPrincipal:
                         alignment=ft.MainAxisAlignment.START,
                     ),
                     bgcolor=colors["surface_tertiary"],
-                    border=ft.border.all(1, colors["surface_border"]),
+                    border=ft.Border.all(1, colors["surface_border"]),
                     border_radius=10,
                     padding=12,  # Padding reducido
                 ),
@@ -884,8 +884,8 @@ class VentanaPrincipal:
                     ),
                     bgcolor=colors["surface_tertiary"],  # Mismo fondo gris que las otras secciones
                     border_radius=10,
-                    padding=ft.padding.all(12),  # Padding reducido
-                    border=ft.border.all(1, colors["surface_border"]),  # Borde gris como las otras secciones
+                    padding=ft.Padding.all(12),  # Padding reducido
+                    border=ft.Border.all(1, colors["surface_border"]),  # Borde gris como las otras secciones
                     shadow=ft.BoxShadow(
                         spread_radius=0,
                         blur_radius=6,  # Blur reducido
@@ -939,7 +939,7 @@ class VentanaPrincipal:
                         spacing=3,
                     ),
                     bgcolor=colors["surface_tertiary"],
-                    border=ft.border.all(1, colors["surface_border"]),
+                    border=ft.Border.all(1, colors["surface_border"]),
                     border_radius=10,
                     padding=12,  # Padding reducido
                     expand=1,
@@ -971,7 +971,7 @@ class VentanaPrincipal:
             ),
             bgcolor=colors["form_bg"], 
             border_radius=16,
-            padding=ft.padding.all(15),  # Padding principal reducido
+            padding=ft.Padding.all(15),  # Padding principal reducido
             expand=True,
         )
 
@@ -1008,8 +1008,8 @@ class VentanaPrincipal:
         self.combo_tipo = ft.Dropdown(
             label="Tipo de audiencia",
             hint_text="Seleccione el tipo de audiencia...",
-            options=[ft.dropdown.Option(tipo) for tipo in self.tipos_audiencia],
-            on_change=self._on_tipo_change,
+            options=[ft.DropdownOption(tipo) for tipo in self.tipos_audiencia],
+            on_select=self._on_tipo_change,
             border_radius=12,
             filled=True,
             bgcolor=colors["surface_primary"],
@@ -1019,7 +1019,7 @@ class VentanaPrincipal:
             label_style=ft.TextStyle(size=13, color=colors["text_secondary"]),
             content_padding=ft.Padding(12, 10, 12, 10),
             # Permitir scroll en el dropdown para acomodar más opciones
-            max_menu_height=300,
+            menu_height=300,
         )
 
         self.entrada_tipo_otra = ft.TextField(
@@ -1067,17 +1067,17 @@ class VentanaPrincipal:
         
         # Campos virtuales para compatibilidad con lógica existente
         self.combo_dia = ft.Dropdown(
-            options=[ft.dropdown.Option(f"{i:02d}") for i in range(1, 32)],
+            options=[ft.DropdownOption(f"{i:02d}") for i in range(1, 32)],
             width=80,
             value=None,
         )
         self.combo_mes = ft.Dropdown(
-            options=[ft.dropdown.Option(f"{i:02d}") for i in range(1, 13)],
+            options=[ft.DropdownOption(f"{i:02d}") for i in range(1, 13)],
             width=80,
             value=None,
         )
         self.combo_anio = ft.Dropdown(
-            options=[ft.dropdown.Option(str(i)) for i in range(2020, 2031)],
+            options=[ft.DropdownOption(str(i)) for i in range(2020, 2031)],
             width=100,
             value=None,
         )
@@ -1170,11 +1170,11 @@ class VentanaPrincipal:
             label="¿Se realizó?",
             hint_text="Seleccione SI o NO",
             options=[
-                ft.dropdown.Option("-- Seleccione --"),
-                ft.dropdown.Option("SI"), 
-                ft.dropdown.Option("NO")
+                ft.DropdownOption("-- Seleccione --"),
+                ft.DropdownOption("SI"), 
+                ft.DropdownOption("NO")
             ],
-            on_change=self._on_realizada_change,
+            on_select=self._on_realizada_change,
             border_radius=10,
             filled=True,
             bgcolor=colors["surface_primary"],
@@ -1238,7 +1238,7 @@ class VentanaPrincipal:
             bgcolor=colors["surface_primary"],  # Fondo gris claro como otros campos
             border_radius=10,
             padding=ft.Padding(12, 8, 12, 8),  # Padding ultra reducido
-            border=ft.border.all(1, colors["surface_border"]),  # Borde gris normal
+            border=ft.Border.all(1, colors["surface_border"]),  # Borde gris normal
         )
 
     def _crear_campo_observaciones(self):
@@ -1298,7 +1298,7 @@ class VentanaPrincipal:
                 ],
                 alignment=ft.MainAxisAlignment.CENTER,
             ),
-            padding=ft.padding.only(top=8, bottom=4),
+            padding=ft.Padding.only(top=8, bottom=4),
             opacity=0.7,  # Hace el texto más discreto
         )
 
@@ -1306,8 +1306,8 @@ class VentanaPrincipal:
         """Crea los botones de acción con diseño profesional y colores dinámicos."""
         colors = get_theme_colors()
         
-        self.btn_guardar = ft.ElevatedButton(
-            text="💾 GUARDAR AUDIENCIA",
+        self.btn_guardar = ft.Button(
+            content="💾 GUARDAR AUDIENCIA",
             on_click=self._on_guardar,
             style=ft.ButtonStyle(
                 bgcolor=colors["primary"],
@@ -1320,8 +1320,8 @@ class VentanaPrincipal:
             expand=True,
         )
 
-        self.btn_actualizar = ft.ElevatedButton(
-            text="✏️ ACTUALIZAR REGISTRO",
+        self.btn_actualizar = ft.Button(
+            content="✏️ ACTUALIZAR REGISTRO",
             on_click=self._on_actualizar,
             style=ft.ButtonStyle(
                 bgcolor=colors["success"],
@@ -1335,8 +1335,8 @@ class VentanaPrincipal:
             visible=False,
         )
 
-        self.btn_cancelar_edicion = ft.ElevatedButton(
-            text="❌ CANCELAR EDICIÓN",
+        self.btn_cancelar_edicion = ft.Button(
+            content="❌ CANCELAR EDICIÓN",
             on_click=self._on_cancelar_edicion,
             style=ft.ButtonStyle(
                 bgcolor=colors["danger"],
@@ -1374,15 +1374,15 @@ class VentanaPrincipal:
         """Crea los botones de acción compactos para layout de dos columnas con colores dinámicos."""
         colors = get_theme_colors()
         
-        self.btn_guardar = ft.ElevatedButton(
-            text="💾 GUARDAR AUDIENCIA",
+        self.btn_guardar = ft.Button(
+            content="💾 GUARDAR AUDIENCIA",
             on_click=self._on_guardar,
             style=get_button_style_primary(),
             expand=True,
         )
 
-        self.btn_actualizar = ft.ElevatedButton(
-            text="✏️ ACTUALIZAR REGISTRO",
+        self.btn_actualizar = ft.Button(
+            content="✏️ ACTUALIZAR REGISTRO",
             on_click=self._on_actualizar,
             style=ft.ButtonStyle(
                 bgcolor=colors["success"],
@@ -1396,8 +1396,8 @@ class VentanaPrincipal:
             visible=False,
         )
 
-        self.btn_cancelar_edicion = ft.ElevatedButton(
-            text="❌ CANCELAR EDICIÓN",
+        self.btn_cancelar_edicion = ft.Button(
+            content="❌ CANCELAR EDICIÓN",
             on_click=self._on_cancelar_edicion,
             style=get_button_style_danger(),
             expand=True,
@@ -1430,37 +1430,37 @@ class VentanaPrincipal:
         colors = get_theme_colors()
         
         # Botones para modo normal
-        btn_guardar_sticky = ft.ElevatedButton(
-            text="💾 Guardar",
+        btn_guardar_sticky = ft.Button(
+            content="💾 Guardar",
             on_click=self._on_guardar,
             style=get_action_button_primary(),
             tooltip="Guardar nueva audiencia (Ctrl+S)",
         )
         
-        btn_nuevo_archivo = ft.ElevatedButton(
-            text="📄 Nuevo",
+        btn_nuevo_archivo = ft.Button(
+            content="📄 Nuevo",
             on_click=self._on_crear_archivo,
             style=get_action_button_secondary(),
             tooltip="Crear nuevo archivo (Ctrl+N)",
         )
         
-        btn_abrir_archivo = ft.ElevatedButton(
-            text="📂 Abrir",
+        btn_abrir_archivo = ft.Button(
+            content="📂 Abrir",
             on_click=self._on_seleccionar_archivo,
             style=get_action_button_secondary(),
             tooltip="Abrir archivo existente (Ctrl+O)",
         )
         
-        btn_busqueda_avanzada = ft.ElevatedButton(
-            text="🔍 Buscar",
+        btn_busqueda_avanzada = ft.Button(
+            content="🔍 Buscar",
             on_click=self._on_busqueda_avanzada,
             style=get_action_button_secondary(),
             tooltip="Búsqueda avanzada y edición (Ctrl+F)",
         )
         
         # Botón de IA para autocompletar
-        btn_ia_autocompletar = ft.ElevatedButton(
-            text="🤖 IA",
+        btn_ia_autocompletar = ft.Button(
+            content="🤖 IA",
             on_click=self._on_ia_autocompletar,
             style=ft.ButtonStyle(
                 bgcolor=colors["success"],
@@ -1474,8 +1474,8 @@ class VentanaPrincipal:
         )
         
         # Botón de procesamiento masivo
-        btn_procesamiento_masivo = ft.ElevatedButton(
-            text="📄 Masivo",
+        btn_procesamiento_masivo = ft.Button(
+            content="📄 Masivo",
             on_click=self._on_procesamiento_masivo,
             style=ft.ButtonStyle(
                 bgcolor=colors["warning"],
@@ -1489,16 +1489,16 @@ class VentanaPrincipal:
         )
         
         # Botones para modo edición
-        btn_actualizar_sticky = ft.ElevatedButton(
-            text="✅ Actualizar",
+        btn_actualizar_sticky = ft.Button(
+            content="✅ Actualizar",
             on_click=self._on_actualizar,
             style=get_action_button_success(),
             tooltip="Guardar cambios del registro (F5)",
             visible=False,
         )
         
-        btn_cancelar_sticky = ft.ElevatedButton(
-            text="❌ Cancelar",
+        btn_cancelar_sticky = ft.Button(
+            content="❌ Cancelar",
             on_click=self._on_cancelar_edicion,
             style=get_action_button_danger(),
             tooltip="Cancelar edición (Escape)",
@@ -1510,7 +1510,7 @@ class VentanaPrincipal:
             width=1,
             height=25,
             bgcolor=colors["surface_border"],
-            margin=ft.margin.symmetric(horizontal=8),
+            margin=ft.Margin.symmetric(horizontal=8),
         )
         
         # Separador visual para IA
@@ -1518,19 +1518,19 @@ class VentanaPrincipal:
             width=1,
             height=25,
             bgcolor=colors["surface_border"],
-            margin=ft.margin.symmetric(horizontal=8),
+            margin=ft.Margin.symmetric(horizontal=8),
         )
         
         # Botones de gestión de archivos (siempre visibles)
-        btn_eliminar = ft.ElevatedButton(
-            text="🗑️ Eliminar",
+        btn_eliminar = ft.Button(
+            content="🗑️ Eliminar",
             on_click=self._on_eliminar_archivo,
             style=get_action_button_danger(),
             tooltip="Eliminar archivo (Ctrl+D)",
         )
         
-        btn_descargar = ft.ElevatedButton(
-            text="⬇️ Descargar",
+        btn_descargar = ft.Button(
+            content="⬇️ Descargar",
             on_click=self._on_descargar_archivo,
             style=get_action_button_secondary(),
             tooltip="Descargar archivo (Ctrl+Shift+S)",
@@ -1636,14 +1636,14 @@ class VentanaPrincipal:
         # Primera fila de botones
         fila1 = ft.Row(
             controls=[
-                ft.ElevatedButton(
-                    text="📄 Crear",
+                ft.Button(
+                    content="📄 Crear",
                     on_click=self._on_crear_archivo,
                     style=estilo_boton_primario,
                     expand=True,
                 ),
-                ft.ElevatedButton(
-                    text="📂 Seleccionar",
+                ft.Button(
+                    content="📂 Seleccionar",
                     on_click=self._on_seleccionar_archivo,
                     style=estilo_boton_secundario,
                     expand=True,
@@ -1655,20 +1655,20 @@ class VentanaPrincipal:
         # Segunda fila de botones
         fila2 = ft.Row(
             controls=[
-                ft.ElevatedButton(
-                    text="✏️ Editar",
+                ft.Button(
+                    content="✏️ Editar",
                     on_click=self._on_editar_registro,
                     style=estilo_boton_secundario,
                     expand=True,
                 ),
-                ft.ElevatedButton(
-                    text="🗑️ Eliminar",
+                ft.Button(
+                    content="🗑️ Eliminar",
                     on_click=self._on_eliminar_archivo,
                     style=estilo_boton_peligro,
                     expand=True,
                 ),
-                ft.ElevatedButton(
-                    text="💾 Descargar",
+                ft.Button(
+                    content="💾 Descargar",
                     on_click=self._on_descargar_archivo,
                     style=estilo_boton_primario,
                     expand=True,
@@ -2592,8 +2592,8 @@ class VentanaPrincipal:
                     ),
                     bgcolor=colors["primary_light"] if not is_dark_theme() else colors["surface_tertiary"],
                     border_radius=10,
-                    padding=ft.padding.all(15),
-                    margin=ft.margin.only(bottom=15),
+                    padding=ft.Padding.all(15),
+                    margin=ft.Margin.only(bottom=15),
                 ),
                 
                 # Sección 1: Acciones Principales
@@ -2655,8 +2655,8 @@ class VentanaPrincipal:
                     ),
                     bgcolor=colors["surface_tertiary"],
                     border_radius=8,
-                    padding=ft.padding.all(12),
-                    margin=ft.margin.only(top=10),
+                    padding=ft.Padding.all(12),
+                    margin=ft.Margin.only(top=10),
                 ),
             ],
             spacing=10,
@@ -2674,7 +2674,7 @@ class VentanaPrincipal:
                 content=contenido_principal,
                 width=500,
                 height=500,
-                padding=ft.padding.all(5),
+                padding=ft.Padding.all(5),
             ),
             actions=[
                 ft.Row(
@@ -2687,7 +2687,7 @@ class VentanaPrincipal:
                                 text_style=ft.TextStyle(size=13)
                             ),
                         ),
-                        ft.ElevatedButton(
+                        ft.Button(
                             "✅ Entendido",
                             on_click=lambda e: self._cerrar_dialog(dialog),
                             style=ft.ButtonStyle(
@@ -2701,9 +2701,9 @@ class VentanaPrincipal:
                 ),
             ],
             bgcolor=colors["surface_primary"],
-            title_padding=ft.padding.all(20),
-            content_padding=ft.padding.all(10),
-            actions_padding=ft.padding.all(15),
+            title_padding=ft.Padding.all(20),
+            content_padding=ft.Padding.all(10),
+            actions_padding=ft.Padding.all(15),
         )
         
         self.page.overlay.append(dialog)
@@ -2726,7 +2726,7 @@ class VentanaPrincipal:
                             ),
                             bgcolor=colors["primary"],
                             border_radius=6,
-                            padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                            padding=ft.Padding.symmetric(horizontal=8, vertical=4),
                             width=120,
                         ),
                         ft.Text(
@@ -2756,8 +2756,8 @@ class VentanaPrincipal:
             ),
             bgcolor=colors["surface_secondary"],
             border_radius=8,
-            padding=ft.padding.all(12),
-            margin=ft.margin.only(bottom=5),
+            padding=ft.Padding.all(12),
+            margin=ft.Margin.only(bottom=5),
         )
 
     def _recordar_atajos(self, dialog):
@@ -2820,7 +2820,7 @@ class VentanaPrincipal:
                             ),
                             bgcolor=colors["surface_tertiary"],
                             border_radius=10,
-                            padding=ft.padding.all(15),
+                            padding=ft.Padding.all(15),
                         ),
                         
                         ft.Container(height=10),
@@ -2835,7 +2835,7 @@ class VentanaPrincipal:
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 width=400,
-                padding=ft.padding.all(10),
+                padding=ft.Padding.all(10),
             ),
             actions=[
                 ft.Row(
@@ -2848,7 +2848,7 @@ class VentanaPrincipal:
                                 text_style=ft.TextStyle(size=13)
                             ),
                         ),
-                        ft.ElevatedButton(
+                        ft.Button(
                             "¡Entendido!",
                             on_click=lambda e: self._cerrar_dialog(dialog),
                             style=ft.ButtonStyle(
@@ -2862,9 +2862,9 @@ class VentanaPrincipal:
                 ),
             ],
             bgcolor=colors["surface_primary"],
-            title_padding=ft.padding.all(20),
-            content_padding=ft.padding.all(10),
-            actions_padding=ft.padding.all(15),
+            title_padding=ft.Padding.all(20),
+            content_padding=ft.Padding.all(10),
+            actions_padding=ft.Padding.all(15),
         )
         
         self.page.overlay.append(dialog)
@@ -2884,7 +2884,7 @@ class VentanaPrincipal:
                     ),
                     bgcolor=colors["primary"],
                     border_radius=5,
-                    padding=ft.padding.symmetric(horizontal=8, vertical=3),
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=3),
                     width=80,
                 ),
                 ft.Text(
@@ -3109,7 +3109,7 @@ class VentanaPrincipal:
                     tight=True,
                 ),
                 width=400,
-                padding=ft.padding.all(10),
+                padding=ft.Padding.all(10),
             ),
             actions=[
                 ft.Row(
@@ -3122,7 +3122,7 @@ class VentanaPrincipal:
                                 padding=ft.Padding(20, 10, 20, 10),
                             ),
                         ),
-                        ft.ElevatedButton(
+                        ft.Button(
                             "Guardar sin hora",
                             on_click=on_guardar_sin_hora,
                             style=ft.ButtonStyle(
@@ -3608,7 +3608,7 @@ class VentanaPrincipal:
             title=ft.Text("Información", size=18, weight=ft.FontWeight.BOLD, color=titulo_color),
             content=ft.Text(mensaje, size=14, color=mensaje_color),
             actions=[
-                ft.ElevatedButton(
+                ft.Button(
                     "OK",
                     on_click=cerrar_mensaje,
                     style=ft.ButtonStyle(
@@ -3643,7 +3643,7 @@ def crear_app(page: ft.Page):
 def ejecutar_app():
     """Ejecuta la aplicación Flet."""
     try:
-        ft.app(target=crear_app)
+        ft.run(main=crear_app)
     except Exception as e:
         print("Abriendo en modo web...")
-        ft.app(target=crear_app, view=ft.AppView.WEB_BROWSER, port=8080)
+        ft.run(main=crear_app, view=ft.AppView.WEB_BROWSER, port=8080)

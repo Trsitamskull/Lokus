@@ -1,6 +1,8 @@
 # Dependencias esenciales para Gestor de Audiencias con Flet
 # Framework UI moderno multiplataforma
-flet==0.28.3
+flet==1.1.2
+flet-desktop==1.1.2
+flet-cli==1.1.2
 
 # Manejo de archivos Excel
 openpyxl==3.1.2
@@ -9,7 +11,7 @@ openpyxl==3.1.2
 openai==1.98.0
 
 # Para generar ejecutable
-pyinstaller==6.3.0
+pyinstaller
 
 # Dependencia requerida por Flet
 zope.interface==6.1

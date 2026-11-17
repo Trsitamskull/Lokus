@@ -42,9 +42,9 @@ class DialogoConfiguracionIA:
         )
         
         # Botones
-        btn_guardar = ft.ElevatedButton(
-            text="Guardar y Activar IA",
-            icon=ft.icons.SMART_TOY,
+        btn_guardar = ft.Button(
+            content="Guardar y Activar IA",
+            icon=ft.Icons.SMART_TOY,
             on_click=self._on_guardar,
             style=ft.ButtonStyle(
                 bgcolor=colors["success"],
@@ -56,7 +56,7 @@ class DialogoConfiguracionIA:
         )
         
         btn_mas_tarde = ft.TextButton(
-            text="Configurar después",
+            content="Configurar después",
             on_click=self._on_cancelar,
             style=ft.ButtonStyle(
                 color=colors["text_secondary"],
@@ -65,8 +65,8 @@ class DialogoConfiguracionIA:
         )
         
         btn_obtener_key = ft.TextButton(
-            text="¿Cómo obtener API Key?",
-            icon=ft.icons.HELP_OUTLINE,
+            content="¿Cómo obtener API Key?",
+            icon=ft.Icons.HELP_OUTLINE,
             on_click=self._mostrar_ayuda,
             style=ft.ButtonStyle(
                 color=colors["primary"],
@@ -82,7 +82,7 @@ class DialogoConfiguracionIA:
             modal=True,
             title=ft.Row(
                 controls=[
-                    ft.Icon(ft.icons.SMART_TOY, color=colors["primary"], size=24),
+                    ft.Icon(ft.Icons.SMART_TOY, color=colors["primary"], size=24),
                     ft.Text(
                         "Configuración de Inteligencia Artificial", 
                         size=18, 
@@ -100,7 +100,7 @@ class DialogoConfiguracionIA:
                             content=ft.Row(
                                 controls=[
                                     ft.Icon(
-                                        ft.icons.CIRCLE,
+                                        ft.Icons.CIRCLE,
                                         color=colors["success"] if estado_actual["configurado"] else colors["warning"],
                                         size=12,
                                     ),
@@ -149,7 +149,7 @@ class DialogoConfiguracionIA:
                         # Ayuda
                         ft.Container(
                             content=btn_obtener_key,
-                            alignment=ft.alignment.center_left,
+                            alignment=ft.Alignment.CENTER_LEFT,
                             margin=ft.Margin(0, 8, 0, 0),
                         ),
                         
@@ -159,7 +159,7 @@ class DialogoConfiguracionIA:
                         ft.Container(
                             content=ft.Row(
                                 controls=[
-                                    ft.Icon(ft.icons.SECURITY, color=colors["text_secondary"], size=16),
+                                    ft.Icon(ft.Icons.SECURITY, color=colors["text_secondary"], size=16),
                                     ft.Text(
                                         "Tu API Key se guarda localmente y de forma segura",
                                         size=12,
@@ -265,13 +265,15 @@ class DialogoConfiguracionIA:
             ),
             actions=[
                 ft.TextButton(
-                    text="Entendido",
-                    on_click=lambda e: self.page.close(ayuda_dialog),
+                    content="Entendido",
+                    on_click=lambda e: self._cerrar_dialogo(ayuda_dialog),
                 ),
             ],
         )
         
-        self.page.open(ayuda_dialog)
+        self.page.overlay.append(ayuda_dialog)
+        ayuda_dialog.open = True
+        self.page.update()
     
     def _on_guardar(self, e):
         """Guarda la configuración de IA."""
@@ -343,13 +345,23 @@ class DialogoConfiguracionIA:
         
         self.page.update()
     
+    def _cerrar_dialogo(self, dlg: ft.AlertDialog):
+        """Cierra un diálogo especificado."""
+        dlg.open = False
+        self.page.update()
+
     def _on_cancelar(self, e):
         """Cancela y cierra el diálogo."""
-        self.page.close(self.dialog)
+        if self.dialog:
+            self.dialog.open = False
+            self.page.update()
     
     def mostrar(self):
         """Muestra el diálogo."""
-        self.page.open(self.dialog)
+        if self.dialog not in self.page.overlay:
+            self.page.overlay.append(self.dialog)
+        self.dialog.open = True
+        self.page.update()
 
 
 def mostrar_dialogo_configuracion_ia(page: ft.Page, callback: Optional[Callable] = None):

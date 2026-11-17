@@ -50,8 +50,8 @@ class DialogoAutocompletarIA:
         )
         
         # Botón procesar
-        self.btn_procesar = ft.ElevatedButton(
-            text="🤖 Procesar con IA",
+        self.btn_procesar = ft.Button(
+            content="🤖 Procesar con IA",
             on_click=self._on_procesar,
             style=ft.ButtonStyle(
                 bgcolor=colors["success"],
@@ -64,7 +64,7 @@ class DialogoAutocompletarIA:
         
         # Botón cancelar
         self.btn_cancelar = ft.TextButton(
-            text="Cancelar",
+            content="Cancelar",
             on_click=self._on_cancelar,
             style=ft.ButtonStyle(
                 color=colors["text_secondary"],
@@ -193,9 +193,9 @@ class DialogoAutocompletarIA:
         if self.btn_procesar:
             self.btn_procesar.disabled = mostrar
             if mostrar:
-                self.btn_procesar.text = "🔄 Procesando..."
+                self.btn_procesar.content = "🔄 Procesando..."
             else:
-                self.btn_procesar.text = "🤖 Procesar con IA"
+                self.btn_procesar.content = "🤖 Procesar con IA"
                 
         if self.btn_cancelar:
             self.btn_cancelar.disabled = mostrar
@@ -207,12 +207,12 @@ class DialogoAutocompletarIA:
         texto = self.campo_texto.value.strip() if self.campo_texto.value else ""
         
         if not texto:
-            self.campo_texto.error_text = "Ingresa información para procesar"
+            self.campo_texto.error = "Ingresa información para procesar"
             self.page.update()
             return
         
         # Limpiar errores previos
-        self.campo_texto.error_text = None
+        self.campo_texto.error = None
         
         # Mostrar indicador de carga
         self._mostrar_carga(True)
@@ -239,13 +239,13 @@ class DialogoAutocompletarIA:
                 # Ocultar indicador de carga
                 self._mostrar_carga(False)
                 # Mostrar error si no está el servicio
-                self.campo_texto.error_text = "❌ Servicio de IA no disponible"
+                self.campo_texto.error = "❌ Servicio de IA no disponible"
                 self.page.update()
             except Exception as ex:
                 # Ocultar indicador de carga
                 self._mostrar_carga(False)
                 # Mostrar error general
-                self.campo_texto.error_text = f"❌ Error: {str(ex)}"
+                self.campo_texto.error = f"❌ Error: {str(ex)}"
                 self.page.update()
         
         # Ejecutar procesamiento
@@ -303,8 +303,8 @@ class DialogoCrearArchivo:
         )
         
         # Botones
-        btn_crear = ft.ElevatedButton(
-            text="Crear",
+        btn_crear = ft.Button(
+            content="Crear",
             on_click=self._on_crear,
             style=ft.ButtonStyle(
                 bgcolor="#1E40AF",
@@ -316,7 +316,7 @@ class DialogoCrearArchivo:
         )
         
         btn_cancelar = ft.TextButton(
-            text="Cancelar",
+            content="Cancelar",
             on_click=self._on_cancelar,
             style=ft.ButtonStyle(
                 color="#6B7280",
@@ -363,7 +363,7 @@ class DialogoCrearArchivo:
         
         if not nombre:
             # Mostrar error si no hay nombre
-            self.campo_nombre.error_text = "El nombre es obligatorio"
+            self.campo_nombre.error = "El nombre es obligatorio"
             self.page.update()
             return
         
@@ -406,7 +406,7 @@ class VentanaSeleccionArchivo:
                     alignment=ft.MainAxisAlignment.START,
                 ),
                 bgcolor="#F9FAFB",
-                border=ft.border.all(1, "#E5E7EB"),
+                border=ft.Border.all(1, "#E5E7EB"),
                 border_radius=8,
                 padding=ft.Padding(15, 12, 15, 12),
                 on_click=lambda e, arch=archivo: self._on_seleccionar(arch),
@@ -416,7 +416,7 @@ class VentanaSeleccionArchivo:
         
         # Botón cancelar
         btn_cancelar = ft.TextButton(
-            text="Cancelar",
+            content="Cancelar",
             on_click=self._on_cancelar,
             style=ft.ButtonStyle(
                 color="#6B7280",
@@ -508,8 +508,8 @@ class VentanaSeleccionRegistro:
                     controls=[
                         ft.Icon(ft.Icons.EDIT_DOCUMENT, size=20, color="#059669"),
                         ft.Text(info_text, size=13, color="#1F2937", expand=True),
-                        ft.ElevatedButton(
-                            text="Editar",
+                        ft.Button(
+                            content="Editar",
                             on_click=lambda e, fn=fila_num, d=datos: self._on_editar_item(fn, d),
                             style=ft.ButtonStyle(
                                 bgcolor="#059669",
@@ -525,7 +525,7 @@ class VentanaSeleccionRegistro:
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 bgcolor="#F9FAFB",
-                border=ft.border.all(1, "#E5E7EB"),
+                border=ft.Border.all(1, "#E5E7EB"),
                 border_radius=8,
                 padding=ft.Padding(15, 12, 15, 12),
             )
@@ -533,7 +533,7 @@ class VentanaSeleccionRegistro:
         
         # Botón cancelar
         btn_cancelar = ft.TextButton(
-            text="Cancelar",
+            content="Cancelar",
             on_click=self._on_cancelar,
             style=ft.ButtonStyle(
                 color="#6B7280",

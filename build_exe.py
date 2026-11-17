@@ -55,7 +55,7 @@ class BuildConfig:
     # Módulos a incluir explícitamente
     HIDDEN_IMPORTS = [
         "flet",
-        "flet.core",
+        "flet.controls",
         "openpyxl",
         "openai",
         "gui.main_window",
