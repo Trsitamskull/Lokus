@@ -1,5 +1,7 @@
 # Ignorar entornos virtuales
 venv/
+.lokusvenv/
+.flet/
 
 # Ignorar archivos de caché de Python
 __pycache__/
@@ -7,10 +9,17 @@ __pycache__/
 *.pyd
 *.pyo
 
-# Ignorar archivos de configuración sensibles
+# Ignorar archivos de configuración sensibles (API Keys)
 config/config.py
 config/config_local.py
+config/settings.json
 *.env
+*.env.*
+
+# Ignorar dependencias y artefactos de compilación (Rust / Tauri / Node)
+node_modules/
+src-tauri/target/
+src-tauri/gen/
 
 # Ignorar archivos de editor/IDE (ej. VS Code)
 .vscode/
