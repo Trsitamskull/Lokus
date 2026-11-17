@@ -32,7 +32,9 @@ Este documento constituye la memoria persistente, la especificación operativa y
 ### 2.2 Estructura de directorios y responsabilidades
 
 1. **Frontend y vistas (`src/` e `index.html`):**
-   - `src/App.svelte`: Ventana principal (Header, Barra *Sticky*, Formulario en 2 columnas y Modales de Crear/Abrir/Buscar-Editar/IA/Config/Atajos).
+   - `src/App.svelte`: Orquestador principal de estado, barra superior, comandos IPC y atajos globales.
+   - `src/lib/constants.js`: Catálogos oficiales del frontend (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`, `HORAS_RAPIDAS`).
+   - `src/lib/components/`: Componentes modulares Svelte 5 (`Sidebar.svelte`, `AudienciaForm.svelte`, `RegistrosTable.svelte`, `Modals.svelte`, `CustomSelect.svelte`).
    - `src/app.css`: Sistema de temas (`data-theme="dark"` y `data-theme="light"`) basado en variables CSS.
 2. **Backend y lógica de dominio en Rust (`src-tauri/src/`):**
    - `models.rs`: Estructuras `AudienciaInput`, `RegistroAudiencia`, `TotalesExcel`, catálogos oficiales (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`), mapeo de columnas `mapear_motivo_a_indice` y validadores.

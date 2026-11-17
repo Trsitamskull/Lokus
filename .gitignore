@@ -21,9 +21,10 @@ node_modules/
 src-tauri/target/
 src-tauri/gen/
 
-# Ignorar archivos de editor/IDE (ej. VS Code)
+# Ignorar archivos de editor/IDE y escritorio
 .vscode/
 .idea/
+.directory
 
 # Ignorar archivos específicos de sistema operativo
 .DS_Store
