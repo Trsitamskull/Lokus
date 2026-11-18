@@ -1,0 +1,83 @@
+name: Solicitar una mejora o funcionalidad
+description: Propón una capacidad nueva o mejora una función existente.
+title: "[Propuesta]: "
+labels:
+  - "tipo: mejora"
+  - "estado: por revisar"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Usa este formulario para proponer algo nuevo o mejorar una función existente. Explica primero el problema o necesidad que quieres resolver.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema o necesidad
+      description: ¿Qué tarea es difícil, repetitiva o imposible actualmente?
+      placeholder: Describe el caso de uso y a quién afecta.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propuesta
+      description: ¿Qué te gustaría que hiciera Lokus?
+      placeholder: Describe el resultado esperado, sin necesidad de definir la implementación técnica.
+    validations:
+      required: true
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Comportamiento actual
+      description: Si se trata de una mejora, explica cómo funciona actualmente.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas consideradas
+      description: ¿Cómo resuelves hoy esta necesidad o qué otras opciones evaluaste?
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área relacionada
+      options:
+        - Interfaz
+        - Planillas Excel
+        - Autocompletado con IA
+        - Estadísticas
+        - Instalación o actualización
+        - Otro
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impacto esperado
+      options:
+        - Ahorra tiempo
+        - Reduce errores
+        - Mejora la accesibilidad
+        - Mejora el rendimiento
+        - Mejora la claridad de la interfaz
+        - Otro
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Contexto adicional
+      description: Incluye ejemplos o capturas sin datos personales ni información sensible.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Comprobaciones
+      options:
+        - label: He buscado propuestas similares antes de crear esta.
+          required: true
+        - label: He eliminado datos personales y secretos de la información compartida.
+          required: true
