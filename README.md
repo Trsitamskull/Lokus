@@ -100,6 +100,7 @@ Lokus/
 │   │       ├── AudienciaForm.svelte     # Formulario principal, barra inferior de acciones y cajón de IA
 │   │       ├── AutocompleteInput.svelte # Autocompletado de texto integrado al sistema de temas
 │   │       ├── CustomSelect.svelte      # Selector buscable para tipos de audiencia, meses y filtros
+│   │       ├── DatePickerInput.svelte   # Campo de fecha DD/MM/AAAA con calendario desplegable e indicadores
 │   │       ├── EstadisticasView.svelte  # Vista de estadísticas mensuales y por defensor
 │   │       ├── Modals.svelte            # Diálogos (<dialog>): crear planilla, IA, defensores y respaldos
 │   │       ├── RegistrosTable.svelte    # Tabla responsiva y resumen de totales (Fila 111)

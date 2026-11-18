@@ -65,7 +65,9 @@ jobs:
         if: matrix.platform == 'windows-latest'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload v3.0.0 src-tauri/target/release/Lokus.exe --clobber
+        run: |
+          $ver = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          gh release upload "v$ver" src-tauri/target/release/Lokus.exe --clobber
 
       - name: Upload Windows .exe (portable + setup con WebView2)
         if: matrix.platform == 'windows-latest'

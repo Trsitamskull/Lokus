@@ -13,6 +13,7 @@
     Trash2,
   } from "@lucide/svelte";
   import AutocompleteInput from "./AutocompleteInput.svelte";
+  import { MODELOS_GEMINI, MODELOS_OPENAI } from "../constants.js";
 
   let {
     modalActivo = $bindable(null),
@@ -262,18 +263,19 @@
         {#if settings.provider === "openai"}
           <div class="field-group">
             <div class="field-header">
-              <label class="field-label" for="openai-model">Modelo</label>
-              <div style="display: flex; gap: 4px">
-                {#each ["gpt-5-mini", "gpt-4o-mini", "gpt-4o"] as m}
-                  <button
-                    type="button"
-                    class="preset-btn"
-                    onclick={() => (settings.openai_model = m)}
-                  >
-                    {m}
-                  </button>
-                {/each}
-              </div>
+              <label class="field-label" for="openai-model">Modelo de OpenAI</label>
+              <span class="shortcut-hint">Selecciona uno o escríbelo abajo</span>
+            </div>
+            <div class="model-presets-wrap">
+              {#each MODELOS_OPENAI as m}
+                <button
+                  type="button"
+                  class="preset-btn {settings.openai_model === m ? 'active' : ''}"
+                  onclick={() => (settings.openai_model = m)}
+                >
+                  {m}
+                </button>
+              {/each}
             </div>
             <input
               id="openai-model"
@@ -320,18 +322,19 @@
         {:else}
           <div class="field-group">
             <div class="field-header">
-              <label class="field-label" for="gemini-model">Modelo</label>
-              <div style="display: flex; gap: 4px">
-                {#each ["gemini-2.5-flash", "gemini-2.0-flash"] as m}
-                  <button
-                    type="button"
-                    class="preset-btn"
-                    onclick={() => (settings.gemini_model = m)}
-                  >
-                    {m}
-                  </button>
-                {/each}
-              </div>
+              <label class="field-label" for="gemini-model">Modelo de Google Gemini</label>
+              <span class="shortcut-hint">Selecciona uno o escríbelo abajo</span>
+            </div>
+            <div class="model-presets-wrap">
+              {#each MODELOS_GEMINI as m}
+                <button
+                  type="button"
+                  class="preset-btn {settings.gemini_model === m ? 'active' : ''}"
+                  onclick={() => (settings.gemini_model = m)}
+                >
+                  {m}
+                </button>
+              {/each}
             </div>
             <input
               id="gemini-model"

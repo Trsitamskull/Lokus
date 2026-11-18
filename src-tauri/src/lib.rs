@@ -11,8 +11,9 @@ use aprendizaje::{
     registrar_resultado_ia, ruta_memoria, ResumenAprendizaje,
 };
 use config::{
-    actualizar_config, actualizar_tema, agregar_defensor, cargar_config_publica,
-    eliminar_defensor, renombrar_defensor, ActualizarConfig, ConfigPublica,
+    actualizar_config, actualizar_tema, agregar_defensor, agregar_juzgado, agregar_tipo_audiencia,
+    cargar_config_publica, eliminar_defensor, eliminar_juzgado, eliminar_tipo_audiencia,
+    renombrar_defensor, ActualizarConfig, ConfigPublica,
 };
 use excel::{
     actualizar_audiencia_existente, actualizar_defensor_archivo, crear_copia_plantilla,
@@ -94,10 +95,8 @@ async fn cmd_guardar_audiencia(
     permitir_duplicado: bool,
 ) -> Result<TotalesExcel, String> {
     validar_audiencia(&datos, permitir_hora_vacia)?;
-    ejecutar_en_hilo_io(move || {
-        guardar_nueva_audiencia(&nombre_archivo, &datos, permitir_duplicado)
-    })
-    .await
+    ejecutar_en_hilo_io(move || guardar_nueva_audiencia(&nombre_archivo, &datos, permitir_duplicado))
+        .await
 }
 
 #[tauri::command]
@@ -175,6 +174,26 @@ fn cmd_renombrar_defensor(actual: String, nuevo: String) -> Result<ConfigPublica
 #[tauri::command]
 fn cmd_eliminar_defensor(nombre: String) -> Result<ConfigPublica, String> {
     eliminar_defensor(&nombre)
+}
+
+#[tauri::command]
+fn cmd_agregar_juzgado(nombre: String) -> Result<ConfigPublica, String> {
+    agregar_juzgado(&nombre)
+}
+
+#[tauri::command]
+fn cmd_eliminar_juzgado(nombre: String) -> Result<ConfigPublica, String> {
+    eliminar_juzgado(&nombre)
+}
+
+#[tauri::command]
+fn cmd_agregar_tipo_audiencia(nombre: String) -> Result<ConfigPublica, String> {
+    agregar_tipo_audiencia(&nombre)
+}
+
+#[tauri::command]
+fn cmd_eliminar_tipo_audiencia(nombre: String) -> Result<ConfigPublica, String> {
+    eliminar_tipo_audiencia(&nombre)
 }
 
 #[tauri::command]
@@ -294,6 +313,10 @@ pub fn run() {
             cmd_agregar_defensor,
             cmd_renombrar_defensor,
             cmd_eliminar_defensor,
+            cmd_agregar_juzgado,
+            cmd_eliminar_juzgado,
+            cmd_agregar_tipo_audiencia,
+            cmd_eliminar_tipo_audiencia,
             cmd_autocompletar_ia,
             cmd_registrar_resultado_ia,
             cmd_responder_aclaracion_ia,

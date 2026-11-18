@@ -15,6 +15,8 @@ pub struct AppSettings {
     pub gemini_model: String,
     pub theme: String, // "dark" | "light"
     pub defensores: Vec<String>,
+    pub juzgados: Vec<String>,
+    pub tipos_audiencia: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -27,6 +29,8 @@ impl Default for AppSettings {
             gemini_model: "gemini-2.5-flash".to_string(),
             theme: "dark".to_string(),
             defensores: Vec::new(),
+            juzgados: Vec::new(),
+            tipos_audiencia: Vec::new(),
         }
     }
 }
@@ -50,6 +54,8 @@ pub struct ConfigPublica {
     pub gemini_model: String,
     pub theme: String,
     pub defensores: Vec<String>,
+    pub juzgados: Vec<String>,
+    pub tipos_audiencia: Vec<String>,
     pub status: AiStatusResponse,
 }
 
@@ -150,11 +156,40 @@ fn intentar_migrar_config_python() -> Option<String> {
     None
 }
 
+pub fn normalizar_modelo_gemini(modelo: &str) -> String {
+    let limpio = modelo.trim().trim_start_matches("models/");
+    match limpio {
+        "" | "gemini-2.0-flash" | "gemini-2.0-flash-exp" | "gemini-2.0-flash-lite"
+        | "gemini-1.5-flash" | "gemini-1.5-pro" => "gemini-2.5-flash".to_string(),
+        otro => otro.to_string(),
+    }
+}
+
+pub fn normalizar_modelo_openai(modelo: &str) -> String {
+    let limpio = modelo.trim();
+    if limpio.is_empty() {
+        "gpt-5-mini".to_string()
+    } else {
+        limpio.to_string()
+    }
+}
+
 pub fn cargar_settings() -> AppSettings {
     let ruta = obtener_ruta_config();
     if let Ok(contenido) = fs::read_to_string(&ruta) {
         if let Ok(mut settings) = serde_json::from_str::<AppSettings>(&contenido) {
             settings.defensores = normalizar_lista_defensores(settings.defensores);
+            settings.juzgados = normalizar_lista_defensores(settings.juzgados);
+            settings.tipos_audiencia = normalizar_lista_defensores(settings.tipos_audiencia);
+            let gemini_norm = normalizar_modelo_gemini(&settings.gemini_model);
+            let openai_norm = normalizar_modelo_openai(&settings.openai_model);
+            let cambio_modelo =
+                gemini_norm != settings.gemini_model || openai_norm != settings.openai_model;
+            settings.gemini_model = gemini_norm;
+            settings.openai_model = openai_norm;
+            if cambio_modelo {
+                let _ = guardar_settings(&settings);
+            }
             return settings;
         }
     }
@@ -209,8 +244,75 @@ pub fn config_publica_desde_settings(s: &AppSettings) -> ConfigPublica {
         gemini_model: s.gemini_model.clone(),
         theme: s.theme.clone(),
         defensores: s.defensores.clone(),
+        juzgados: s.juzgados.clone(),
+        tipos_audiencia: s.tipos_audiencia.clone(),
         status: estado_desde_settings(s),
     }
+}
+
+fn agregar_juzgado_en_memoria(mut actual: AppSettings, nombre: &str) -> Result<AppSettings, String> {
+    let limpio = nombre.split_whitespace().collect::<Vec<_>>().join(" ");
+    if limpio.is_empty() {
+        return Err("Ingresa el nombre del juzgado o despacho.".to_string());
+    }
+    actual.juzgados.push(limpio);
+    actual.juzgados = normalizar_lista_defensores(actual.juzgados);
+    Ok(actual)
+}
+
+fn eliminar_juzgado_en_memoria(mut actual: AppSettings, nombre: &str) -> AppSettings {
+    let target = nombre.trim().to_lowercase();
+    actual.juzgados.retain(|j| j.to_lowercase() != target);
+    actual
+}
+
+fn agregar_tipo_audiencia_en_memoria(
+    mut actual: AppSettings,
+    nombre: &str,
+) -> Result<AppSettings, String> {
+    let limpio = nombre.split_whitespace().collect::<Vec<_>>().join(" ");
+    if limpio.is_empty() {
+        return Err("Ingresa el nombre del tipo de audiencia.".to_string());
+    }
+    actual.tipos_audiencia.push(limpio);
+    actual.tipos_audiencia = normalizar_lista_defensores(actual.tipos_audiencia);
+    Ok(actual)
+}
+
+fn eliminar_tipo_audiencia_en_memoria(mut actual: AppSettings, nombre: &str) -> AppSettings {
+    let target = nombre.trim().to_lowercase();
+    actual
+        .tipos_audiencia
+        .retain(|t| t.to_lowercase() != target);
+    actual
+}
+
+pub fn agregar_juzgado(nombre: &str) -> Result<ConfigPublica, String> {
+    let actual = cargar_settings();
+    let nuevo = agregar_juzgado_en_memoria(actual, nombre)?;
+    guardar_settings(&nuevo)?;
+    Ok(config_publica_desde_settings(&nuevo))
+}
+
+pub fn eliminar_juzgado(nombre: &str) -> Result<ConfigPublica, String> {
+    let actual = cargar_settings();
+    let nuevo = eliminar_juzgado_en_memoria(actual, nombre);
+    guardar_settings(&nuevo)?;
+    Ok(config_publica_desde_settings(&nuevo))
+}
+
+pub fn agregar_tipo_audiencia(nombre: &str) -> Result<ConfigPublica, String> {
+    let actual = cargar_settings();
+    let nuevo = agregar_tipo_audiencia_en_memoria(actual, nombre)?;
+    guardar_settings(&nuevo)?;
+    Ok(config_publica_desde_settings(&nuevo))
+}
+
+pub fn eliminar_tipo_audiencia(nombre: &str) -> Result<ConfigPublica, String> {
+    let actual = cargar_settings();
+    let nuevo = eliminar_tipo_audiencia_en_memoria(actual, nombre);
+    guardar_settings(&nuevo)?;
+    Ok(config_publica_desde_settings(&nuevo))
 }
 
 pub fn cargar_config_publica() -> ConfigPublica {
@@ -227,12 +329,12 @@ fn aplicar_actualizacion_en_memoria(mut actual: AppSettings, input: ActualizarCo
 
     let openai_model = input.openai_model.trim();
     if !openai_model.is_empty() {
-        actual.openai_model = openai_model.to_string();
+        actual.openai_model = normalizar_modelo_openai(openai_model);
     }
 
     let gemini_model = input.gemini_model.trim();
     if !gemini_model.is_empty() {
-        actual.gemini_model = gemini_model.to_string();
+        actual.gemini_model = normalizar_modelo_gemini(gemini_model);
     }
 
     actual.theme = if input.theme.trim() == "light" {
@@ -377,6 +479,8 @@ mod tests {
             gemini_model: "gemini-2.5-flash".into(),
             theme: "dark".into(),
             defensores: vec!["Ana Pérez".into()],
+            juzgados: vec!["Juzgado 1 Penal".into()],
+            tipos_audiencia: vec!["Audiencia especial".into()],
         };
 
         let actualizado = aplicar_actualizacion_en_memoria(

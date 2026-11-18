@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::aprendizaje::{obtener_contexto_prompt, AnalisisCorreccionIa, CorreccionIa};
-use crate::config::cargar_settings;
+use crate::config::{cargar_settings, guardar_settings};
 use crate::models::{mapear_motivo_a_indice, MOTIVOS_LABELS, TIPOS_AUDIENCIA};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -580,10 +580,15 @@ async fn llamar_openai(api_key: &str, model: &str, prompt: &str) -> Result<Value
         .map_err(|e| format!("No se pudo interpretar el JSON de OpenAI: {}", e))
 }
 
-async fn llamar_gemini(api_key: &str, model: &str, prompt: &str) -> Result<Value, String> {
+async fn enviar_peticion_gemini(
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let modelo_limpio = model.trim().trim_start_matches("models/");
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-        model.trim()
+        modelo_limpio
     );
 
     let body = json!({
@@ -613,6 +618,38 @@ async fn llamar_gemini(api_key: &str, model: &str, prompt: &str) -> Result<Value
         .json()
         .await
         .map_err(|e| format!("Respuesta inválida de Gemini: {}", e.without_url()))?;
+    Ok((status, json_resp))
+}
+
+fn extraer_modelo_sugerido_gemini(msg: &str) -> Option<String> {
+    let re = Regex::new(r"use models/([a-zA-Z0-9._-]+)").ok()?;
+    re.captures(msg)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+async fn llamar_gemini(api_key: &str, model: &str, prompt: &str) -> Result<Value, String> {
+    let modelo_inicial = model.trim().trim_start_matches("models/");
+    let (mut status, mut json_resp) = enviar_peticion_gemini(api_key, modelo_inicial, prompt).await?;
+
+    // Si Google retiró el modelo para cuentas nuevas (404), usar automáticamente el modelo sugerido
+    // por el propio mensaje de error de Google (o "gemini-flash-latest") y actualizar settings.json.
+    if status.as_u16() == 404 {
+        let msg_404 = json_resp["error"]["message"].as_str().unwrap_or("");
+        let reemplazo = extraer_modelo_sugerido_gemini(msg_404)
+            .unwrap_or_else(|| "gemini-flash-latest".to_string());
+        if reemplazo != modelo_inicial {
+            if let Ok((st2, jr2)) = enviar_peticion_gemini(api_key, &reemplazo, prompt).await {
+                if st2.is_success() {
+                    let mut cfg = cargar_settings();
+                    cfg.gemini_model = reemplazo;
+                    let _ = guardar_settings(&cfg);
+                    status = st2;
+                    json_resp = jr2;
+                }
+            }
+        }
+    }
 
     if !status.is_success() {
         let msg = json_resp["error"]["message"]
@@ -960,5 +997,20 @@ mod tests {
         let ctx = obtener_contexto_prompt("Audiencia en Juzgado 3 Cto Penal fracasa fiscalía");
         assert!(ctx.contains("CTO"));
         assert!(ctx.contains("Fiscalía"));
+
+        // 5) Extracción de modelo sugerido ante 404 de Gemini y migración de modelos retirados
+        let msg = "This model models/gemini-2.0-flash is no longer available to new users. Please update your code to use models/gemini-2.5-flash for the latest features and improvements.";
+        assert_eq!(
+            extraer_modelo_sugerido_gemini(msg),
+            Some("gemini-2.5-flash".to_string())
+        );
+        assert_eq!(
+            crate::config::normalizar_modelo_gemini("models/gemini-2.0-flash"),
+            "gemini-2.5-flash"
+        );
+        assert_eq!(
+            crate::config::normalizar_modelo_gemini("models/gemini-3-flash-preview"),
+            "gemini-3-flash-preview"
+        );
     }
 }

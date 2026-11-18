@@ -11,7 +11,9 @@
     autocorrect = "on",
     autocapitalize = "sentences",
     spellcheck = true,
-    maxSuggestions = 8,
+    maxSuggestions = 12,
+    allowEmptyOption = false,
+    emptyOptionLabel = "Sin especificar (dejar vacío)",
     inputEl = $bindable(null),
     onEnter = undefined,
     onSelect = undefined,
@@ -33,6 +35,7 @@
 
   let filtradas = $derived.by(() => {
     const q = normalizar(value);
+    const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
     const unicas = [];
     const vistas = new Set();
 
@@ -41,7 +44,9 @@
       if (!clean) continue;
       const key = normalizar(clean);
       if (vistas.has(key)) continue;
-      if (!q || key.includes(q)) {
+      const coincide =
+        tokens.length === 0 || tokens.every((tok) => key.includes(tok));
+      if (coincide) {
         vistas.add(key);
         unicas.push(clean);
         if (unicas.length >= maxSuggestions) break;
@@ -111,6 +116,17 @@
       highlightedIndex = -1;
     }
   }
+
+  function contenerWheelEnLista(e) {
+    const el = e.currentTarget;
+    const enTopeSuperior = e.deltaY < 0 && el.scrollTop <= 0;
+    const enTopeInferior =
+      e.deltaY > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if (enTopeSuperior || enTopeInferior) {
+      e.preventDefault();
+    }
+    e.stopPropagation();
+  }
 </script>
 
 <svelte:window onpointerdown={handleWindowPointerDown} />
@@ -142,10 +158,48 @@
     onkeydown={handleKeydown}
   />
 
-  {#if open && filtradas.length > 0}
-    <div id={listboxId} class="custom-select-popover autocomplete-popover" role="listbox">
-      <div class="autocomplete-header">Sugerencias guardadas</div>
-      <div class="custom-select-list scroller" style="max-height: 185px">
+  {#if open && (filtradas.length > 0 || (allowEmptyOption && value.trim() !== ""))}
+    <div
+      id={listboxId}
+      class="custom-select-popover autocomplete-popover"
+      role="listbox"
+      onwheel={(e) => {
+        if (!e.target.closest(".custom-select-list")) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }}
+    >
+      <div class="autocomplete-header">
+        <span>Despachos sugeridos (escribe municipio o número para filtrar)</span>
+      </div>
+      <div
+        class="custom-select-list scroller"
+        style="max-height: 210px"
+        onwheel={contenerWheelEnLista}
+      >
+        {#if allowEmptyOption}
+          {@const isEmptySelected = value.trim() === ""}
+          <button
+            type="button"
+            role="option"
+            aria-selected={isEmptySelected}
+            class="custom-select-option {isEmptySelected ? 'selected' : ''}"
+            onpointerdown={(e) => {
+              e.preventDefault();
+              selectSuggestion("");
+            }}
+          >
+            <span class="opt-text" style="color: var(--text-muted); font-style: italic">
+              {emptyOptionLabel}
+            </span>
+            {#if isEmptySelected}
+              <span class="opt-check">
+                <Check size={14} strokeWidth={2.5} />
+              </span>
+            {/if}
+          </button>
+        {/if}
         {#each filtradas as item, idx}
           {@const isSelected = normalizar(value) === normalizar(item)}
           {@const isHighlighted = highlightedIndex === idx}

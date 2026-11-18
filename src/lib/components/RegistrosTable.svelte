@@ -132,10 +132,10 @@
             <tr>
               <td data-label="N°" style="color: var(--text-muted); font-variant-numeric: tabular-nums">{reg.numero}</td>
               <td data-label="Radicado" style="font-weight: 600">{reg.radicado}</td>
-              <td data-label="Audiencia">{reg.tipo}</td>
-              <td data-label="Fecha" style="font-variant-numeric: tabular-nums">{reg.fecha}</td>
+              <td data-label="Audiencia">{reg.tipo || "—"}</td>
+              <td data-label="Fecha" style="font-variant-numeric: tabular-nums">{reg.fecha || "—"}</td>
               <td data-label="Hora" style="font-variant-numeric: tabular-nums">{reg.hora || "—"}</td>
-              <td data-label="Despacho">{reg.juzgado}</td>
+              <td data-label="Despacho">{reg.juzgado || "—"}</td>
               <td data-label="Estado">
                 {#if reg.realizada === "SI"}
                   <span class="tag-si">SI</span>

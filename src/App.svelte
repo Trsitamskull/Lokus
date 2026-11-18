@@ -2,7 +2,11 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { FileText, List, PanelLeft, BarChart3, Share2 } from "@lucide/svelte";
-  import { TIPOS_AUDIENCIA, MOTIVOS_LABELS } from "./lib/constants.js";
+  import {
+    TIPOS_AUDIENCIA,
+    MOTIVOS_LABELS,
+    JUZGADOS_BASE,
+  } from "./lib/constants.js";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import AudienciaForm from "./lib/components/AudienciaForm.svelte";
   import RegistrosTable from "./lib/components/RegistrosTable.svelte";
@@ -17,6 +21,8 @@
   let registros = $state([]);
   let defensorArchivo = $state("");
   let defensores = $state([]);
+  let juzgadosGuardados = $state([]);
+  let tiposGuardados = $state([]);
   let totales = $state({
     num_registros: 0,
     total_si: 0,
@@ -45,7 +51,8 @@
 
   // Formulario
   let radicado = $state("");
-  let juzgado = $state("");
+  let juzgadoSeleccionado = $state("");
+  let juzgadoOtra = $state("");
   let tipoSeleccionado = $state("");
   let tipoOtra = $state("");
   let realizada = $state(""); // "SI" | "NO" | ""
@@ -167,6 +174,8 @@
         theme: res.theme || "dark",
       };
       defensores = res.defensores || [];
+      juzgadosGuardados = res.juzgados || [];
+      tiposGuardados = res.tipos_audiencia || [];
       aiStatus = res.status;
       aplicarTema(settings.theme);
     } catch (_) {
@@ -271,7 +280,8 @@
 
   function limpiarFormulario() {
     radicado = "";
-    juzgado = "";
+    juzgadoSeleccionado = "";
+    juzgadoOtra = "";
     tipoSeleccionado = "";
     tipoOtra = "";
     realizada = "";
@@ -295,6 +305,10 @@
   function construirPayloadFormulario() {
     const tipoFinal =
       tipoSeleccionado === "Otra" ? tipoOtra.trim() : tipoSeleccionado.trim();
+    const juzgadoFinal =
+      juzgadoSeleccionado === "Otra"
+        ? juzgadoOtra.trim()
+        : juzgadoSeleccionado.trim();
     const h = hora.trim();
     const m = minuto.trim();
     const horaFinal =
@@ -307,7 +321,7 @@
       tipo: tipoFinal,
       fecha: fecha.trim(),
       hora: horaFinal,
-      juzgado: juzgado.trim(),
+      juzgado: juzgadoFinal,
       realizada,
       motivo: realizada === "NO" ? motivoSeleccionado : "",
       observaciones: observaciones.trim(),
@@ -618,13 +632,102 @@
     );
   }
 
-  function aplicarTipoAlFormulario(tipo) {
-    if (TIPOS_AUDIENCIA.includes(tipo) && tipo !== "Otra") {
-      tipoSeleccionado = tipo;
+  function aplicarTipoAlFormulario(tipo, otraExplicita = "") {
+    const limpio = (tipo || "").trim();
+    if (!limpio) {
+      tipoSeleccionado = "";
       tipoOtra = "";
-    } else if (tipo) {
+      return;
+    }
+    if (limpio === "Otra") {
       tipoSeleccionado = "Otra";
-      tipoOtra = tipo;
+      tipoOtra = (otraExplicita || "").trim();
+      return;
+    }
+    const lower = limpio.toLowerCase();
+    const matchGuardado = tiposGuardados.find((t) => t.toLowerCase() === lower);
+    if (matchGuardado) {
+      tipoSeleccionado = matchGuardado;
+      tipoOtra = "";
+      return;
+    }
+    const matchBase = TIPOS_AUDIENCIA.find(
+      (t) => t !== "Otra" && t.toLowerCase() === lower
+    );
+    if (matchBase) {
+      tipoSeleccionado = matchBase;
+      tipoOtra = "";
+      return;
+    }
+    tipoSeleccionado = "Otra";
+    tipoOtra = limpio;
+  }
+
+  function aplicarJuzgadoAlFormulario(juzgadoValor) {
+    const limpio = (juzgadoValor || "").trim();
+    if (!limpio) {
+      juzgadoSeleccionado = "";
+      juzgadoOtra = "";
+      return;
+    }
+    const lower = limpio.toLowerCase();
+    const matchGuardado = juzgadosGuardados.find(
+      (j) => j.toLowerCase() === lower
+    );
+    if (matchGuardado) {
+      juzgadoSeleccionado = matchGuardado;
+      juzgadoOtra = "";
+      return;
+    }
+    const matchBase = JUZGADOS_BASE.find((j) => j.toLowerCase() === lower);
+    if (matchBase) {
+      juzgadoSeleccionado = matchBase;
+      juzgadoOtra = "";
+      return;
+    }
+    juzgadoSeleccionado = "Otra";
+    juzgadoOtra = limpio;
+  }
+
+  async function agregarJuzgadoUsuario(nombre) {
+    try {
+      const cfg = await invoke("cmd_agregar_juzgado", { nombre });
+      juzgadosGuardados = cfg.juzgados || [];
+      juzgadoOtra = "";
+      mostrarToast(`'${nombre}' agregado a la lista de juzgados`, "success", 2400);
+    } catch (e) {
+      mostrarToast(String(e), "error");
+    }
+  }
+
+  async function eliminarJuzgadoUsuario(nombre) {
+    try {
+      const cfg = await invoke("cmd_eliminar_juzgado", { nombre });
+      juzgadosGuardados = cfg.juzgados || [];
+      mostrarToast(`'${nombre}' eliminado de la lista`, "info", 2200);
+    } catch (e) {
+      mostrarToast(String(e), "error");
+    }
+  }
+
+  async function agregarTipoAudienciaUsuario(nombre) {
+    try {
+      const cfg = await invoke("cmd_agregar_tipo_audiencia", { nombre });
+      tiposGuardados = cfg.tipos_audiencia || [];
+      tipoOtra = "";
+      mostrarToast(`'${nombre}' agregado a los tipos de audiencia`, "success", 2400);
+    } catch (e) {
+      mostrarToast(String(e), "error");
+    }
+  }
+
+  async function eliminarTipoAudienciaUsuario(nombre) {
+    try {
+      const cfg = await invoke("cmd_eliminar_tipo_audiencia", { nombre });
+      tiposGuardados = cfg.tipos_audiencia || [];
+      mostrarToast(`'${nombre}' eliminado de la lista`, "info", 2200);
+    } catch (e) {
+      mostrarToast(String(e), "error");
     }
   }
 
@@ -635,7 +738,7 @@
     numeroEditando = reg.numero;
     radicadoEditando = reg.radicado;
     radicado = reg.radicado;
-    juzgado = reg.juzgado;
+    aplicarJuzgadoAlFormulario(reg.juzgado);
     aplicarTipoAlFormulario(reg.tipo);
     fecha = reg.fecha;
 
@@ -657,7 +760,7 @@
   function clonarBaseParaNuevaSesion(reg) {
     cancelarEdicion();
     radicado = reg.radicado;
-    juzgado = reg.juzgado;
+    aplicarJuzgadoAlFormulario(reg.juzgado);
     aplicarTipoAlFormulario(reg.tipo);
     vistaActiva = "formulario";
     mostrarToast("Radicado y despacho copiados para nueva sesión", "info", 2200);
@@ -701,8 +804,15 @@
       abrirConfiguracionIa();
       return;
     }
-    errorIa = "";
-    modalActivo = "ia";
+    vistaActiva = "formulario";
+    if (textoIa.trim()) {
+      procesarConIa();
+    } else {
+      errorIa = "";
+      setTimeout(() => {
+        document.getElementById("ia-inline-textarea")?.focus();
+      }, 15);
+    }
   }
 
   async function procesarConIa() {
@@ -716,13 +826,17 @@
       const datos = await invoke("cmd_autocompletar_ia", { texto: textoIa });
       if (datos.radicado) radicado = datos.radicado;
       if (datos.tipo_audiencia) {
-        tipoSeleccionado = datos.tipo_audiencia;
-        tipoOtra = datos.tipo_otra || "";
+        aplicarTipoAlFormulario(
+          datos.tipo_audiencia === "Otra"
+            ? datos.tipo_otra || "Otra"
+            : datos.tipo_audiencia,
+          datos.tipo_otra
+        );
       }
       if (datos.fecha) fecha = datos.fecha;
       hora = datos.hora || "";
       minuto = datos.minuto || "";
-      if (datos.juzgado) juzgado = datos.juzgado;
+      if (datos.juzgado) aplicarJuzgadoAlFormulario(datos.juzgado);
       if (datos.se_realizo === "SI" || datos.se_realizo === "NO") {
         realizada = datos.se_realizo;
         motivoSeleccionado = datos.se_realizo === "NO" ? datos.motivo || "" : "";
@@ -1015,6 +1129,8 @@
         <AudienciaForm
           {archivoActual}
           {registros}
+          {juzgadosGuardados}
+          {tiposGuardados}
           {totales}
           {aiStatus}
           bind:textoIa
@@ -1024,7 +1140,8 @@
           {filaEditando}
           {numeroEditando}
           bind:radicado
-          bind:juzgado
+          bind:juzgadoSeleccionado
+          bind:juzgadoOtra
           bind:tipoSeleccionado
           bind:tipoOtra
           bind:realizada
@@ -1041,6 +1158,10 @@
           onAbrirConfigIa={abrirConfiguracionIa}
           onVerTodos={() => cambiarVista("listado")}
           onEditarRegistro={cargarRegistroParaEdicion}
+          onAgregarJuzgado={agregarJuzgadoUsuario}
+          onEliminarJuzgado={eliminarJuzgadoUsuario}
+          onAgregarTipo={agregarTipoAudienciaUsuario}
+          onEliminarTipo={eliminarTipoAudienciaUsuario}
           aclaracionPendiente={aprendizaje.aclaracion_pendiente}
           onResponderAclaracion={responderAclaracionIa}
           onOmitirAclaracion={omitirAclaracionIa}

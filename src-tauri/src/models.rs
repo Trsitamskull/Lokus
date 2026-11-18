@@ -313,40 +313,32 @@ pub fn buscar_posible_duplicado(
     None
 }
 
-pub fn validar_audiencia(datos: &AudienciaInput, permitir_hora_vacia: bool) -> Result<(), String> {
+pub fn validar_audiencia(datos: &AudienciaInput, _permitir_hora_vacia: bool) -> Result<(), String> {
     if datos.radicado.trim().is_empty() {
         return Err("El campo 'Radicado del proceso' es obligatorio".to_string());
-    }
-    if datos.tipo.trim().is_empty() || datos.tipo.trim() == "-- Seleccione tipo --" {
-        return Err("El campo 'Tipo de audiencia' es obligatorio".to_string());
-    }
-    if datos.juzgado.trim().is_empty() {
-        return Err("El campo 'Juzgado' es obligatorio".to_string());
     }
     let realizada = datos.realizada.trim().to_uppercase();
     if realizada != "SI" && realizada != "NO" {
         return Err("Debe seleccionar si la audiencia se realizó o no (SI/NO)".to_string());
     }
 
-    // Validar fecha DD/MM/AAAA entre 2018 y 2050
+    // Validar fecha DD/MM/AAAA entre 2018 y 2050 cuando se ingresa (opcional si se deja vacía)
     let fecha_str = datos.fecha.trim();
-    let fecha = NaiveDate::parse_from_str(fecha_str, "%d/%m/%Y")
-        .map_err(|_| format!("Formato de fecha inválido: {}. Use DD/MM/AAAA", fecha_str))?;
-    let year = fecha.format("%Y").to_string().parse::<i32>().unwrap_or(0);
-    if !(2018..=2050).contains(&year) {
-        return Err(format!(
-            "La fecha debe estar entre los años 2018 y 2050: {}",
-            fecha_str
-        ));
+    if !fecha_str.is_empty() {
+        let fecha = NaiveDate::parse_from_str(fecha_str, "%d/%m/%Y")
+            .map_err(|_| format!("Formato de fecha inválido: {}. Use DD/MM/AAAA", fecha_str))?;
+        let year = fecha.format("%Y").to_string().parse::<i32>().unwrap_or(0);
+        if !(2018..=2050).contains(&year) {
+            return Err(format!(
+                "La fecha debe estar entre los años 2018 y 2050: {}",
+                fecha_str
+            ));
+        }
     }
 
-    // Validar hora HH:MM
+    // Validar hora HH:MM cuando se ingresa (opcional si se deja vacía)
     let hora_str = datos.hora.trim();
-    if hora_str.is_empty() {
-        if !permitir_hora_vacia {
-            return Err("HORA_VACIA_REQUIERE_CONFIRMACION".to_string());
-        }
-    } else {
+    if !hora_str.is_empty() {
         NaiveTime::parse_from_str(hora_str, "%H:%M")
             .map_err(|_| format!("Formato de hora inválido: {}. Use HH:MM (00:00 - 23:59)", hora_str))?;
     }
@@ -390,11 +382,20 @@ mod tests {
         assert!(validar_audiencia(&input, false).is_ok());
 
         input.hora = "".into();
-        assert_eq!(
-            validar_audiencia(&input, false),
-            Err("HORA_VACIA_REQUIERE_CONFIRMACION".into())
-        );
-        assert!(validar_audiencia(&input, true).is_ok());
+        assert!(validar_audiencia(&input, false).is_ok());
+
+        input.fecha = "".into();
+        assert!(validar_audiencia(&input, false).is_ok());
+
+        // Si se escribe una fecha u hora con formato inválido, sigue rechazándola
+        input.fecha = "32/13/2025".into();
+        assert!(validar_audiencia(&input, false).is_err());
+        input.fecha = "".into();
+
+        // Tipo de audiencia y juzgado son opcionales cuando el defensor no los menciona
+        input.tipo = "".into();
+        input.juzgado = "".into();
+        assert!(validar_audiencia(&input, false).is_ok());
     }
 
     #[test]

@@ -154,6 +154,8 @@ struct PaqueteExportacion {
     total_reglas: usize,
     total_correcciones: usize,
     correcciones_por_campo: BTreeMap<String, usize>,
+    juzgados_agregados_usuario: Vec<String>,
+    tipos_audiencia_agregados_usuario: Vec<String>,
     reglas: Vec<ReglaAprendida>,
     correcciones: Vec<CorreccionIa>,
 }
@@ -911,12 +913,21 @@ pub fn obtener_pendientes_analisis_en(ruta: &Path, limite: usize) -> Vec<Correcc
         .collect()
 }
 
-pub fn exportar_aprendizaje_en(ruta: &Path, carpeta_destino: &Path) -> Result<String, String> {
+pub fn exportar_aprendizaje_con_catalogos_en(
+    ruta: &Path,
+    carpeta_destino: &Path,
+    juzgados_usuario: &[String],
+    tipos_usuario: &[String],
+) -> Result<String, String> {
     let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
     let mut memoria = cargar_memoria_en(ruta);
-    if memoria.correcciones.is_empty() && memoria.reglas.is_empty() {
+    if memoria.correcciones.is_empty()
+        && memoria.reglas.is_empty()
+        && juzgados_usuario.is_empty()
+        && tipos_usuario.is_empty()
+    {
         return Err(
-            "Aún no hay correcciones de la IA para compartir. Se acumulan solas cuando corriges un autocompletado."
+            "Aún no hay correcciones de la IA ni elementos agregados para compartir."
                 .to_string(),
         );
     }
@@ -937,6 +948,8 @@ pub fn exportar_aprendizaje_en(ruta: &Path, carpeta_destino: &Path) -> Result<St
         total_reglas: memoria.reglas.len(),
         total_correcciones: memoria.correcciones.len(),
         correcciones_por_campo,
+        juzgados_agregados_usuario: juzgados_usuario.to_vec(),
+        tipos_audiencia_agregados_usuario: tipos_usuario.to_vec(),
         reglas: memoria.reglas.clone(),
         correcciones: memoria.correcciones.iter().map(anonimizar_correccion).collect(),
     };
@@ -961,6 +974,10 @@ pub fn exportar_aprendizaje_en(ruta: &Path, carpeta_destino: &Path) -> Result<St
     guardar_memoria_en(ruta, &memoria)?;
 
     Ok(destino.to_string_lossy().to_string())
+}
+
+pub fn exportar_aprendizaje_en(ruta: &Path, carpeta_destino: &Path) -> Result<String, String> {
+    exportar_aprendizaje_con_catalogos_en(ruta, carpeta_destino, &[], &[])
 }
 
 // ---------------------------------------------------------------------------
@@ -995,7 +1012,13 @@ pub fn obtener_resumen_aprendizaje() -> ResumenAprendizaje {
 }
 
 pub fn exportar_aprendizaje_ia() -> Result<String, String> {
-    exportar_aprendizaje_en(&ruta_memoria(), &carpeta_descargas()?)
+    let settings = cargar_settings();
+    exportar_aprendizaje_con_catalogos_en(
+        &ruta_memoria(),
+        &carpeta_descargas()?,
+        &settings.juzgados,
+        &settings.tipos_audiencia,
+    )
 }
 
 #[cfg(test)]

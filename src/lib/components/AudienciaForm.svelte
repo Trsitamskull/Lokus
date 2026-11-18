@@ -4,20 +4,22 @@
     CheckCircle2,
     XCircle,
     Edit3,
-    ChevronDown,
     SlidersHorizontal,
   } from "@lucide/svelte";
   import CustomSelect from "./CustomSelect.svelte";
-  import AutocompleteInput from "./AutocompleteInput.svelte";
+  import DatePickerInput from "./DatePickerInput.svelte";
   import {
     TIPOS_AUDIENCIA,
     MOTIVOS_LABELS,
     HORAS_RAPIDAS,
+    JUZGADOS_BASE,
   } from "../constants.js";
 
   let {
     archivoActual = null,
     registros = [],
+    juzgadosGuardados = [],
+    tiposGuardados = [],
     totales,
     aiStatus,
     textoIa = $bindable(""),
@@ -27,7 +29,8 @@
     filaEditando = null,
     numeroEditando = null,
     radicado = $bindable(""),
-    juzgado = $bindable(""),
+    juzgadoSeleccionado = $bindable(""),
+    juzgadoOtra = $bindable(""),
     tipoSeleccionado = $bindable(""),
     tipoOtra = $bindable(""),
     realizada = $bindable(""),
@@ -44,38 +47,65 @@
     onAbrirConfigIa,
     onVerTodos,
     onEditarRegistro,
+    onAgregarJuzgado,
+    onEliminarJuzgado,
+    onAgregarTipo,
+    onEliminarTipo,
     aclaracionPendiente = null,
     onResponderAclaracion,
     onOmitirAclaracion,
   } = $props();
 
-  let iaPanelAbierto = $state(false);
   let iaTextareaEl = $state(null);
   let notaAclaracion = $state("");
 
-  let juzgadosOrdenados = $derived.by(() => {
-    const mapa = new Map();
-    for (const r of registros) {
-      const j = r.juzgado?.trim();
-      if (j) mapa.set(j, (mapa.get(j) || 0) + 1);
+  let opcionesJuzgado = $derived.by(() => {
+    const vistos = new Set();
+    const lista = [{ value: "", label: "Sin especificar (dejar vacío)" }];
+    for (const j of juzgadosGuardados) {
+      const k = j.trim().toLowerCase();
+      if (k && !vistos.has(k)) {
+        vistos.add(k);
+        lista.push({ value: j.trim(), label: j.trim(), deletable: true });
+      }
     }
-    return [...mapa.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([nombre]) => nombre);
+    for (const j of JUZGADOS_BASE) {
+      const k = j.trim().toLowerCase();
+      if (k && !vistos.has(k)) {
+        vistos.add(k);
+        lista.push({ value: j.trim(), label: j.trim(), deletable: false });
+      }
+    }
+    lista.push({
+      value: "Otra",
+      label: "Otra (especificar solo para este registro)",
+    });
+    return lista;
   });
 
-  let juzgadosFrecuentes = $derived(juzgadosOrdenados.slice(0, 4));
-
-  function formatearFechaInput(e) {
-    const digitos = e.target.value.replace(/\D/g, "").slice(0, 8);
-    if (digitos.length <= 2) {
-      fecha = digitos;
-    } else if (digitos.length <= 4) {
-      fecha = `${digitos.slice(0, 2)}/${digitos.slice(2)}`;
-    } else {
-      fecha = `${digitos.slice(0, 2)}/${digitos.slice(2, 4)}/${digitos.slice(4)}`;
+  let opcionesTipoAudiencia = $derived.by(() => {
+    const vistos = new Set();
+    const lista = [{ value: "", label: "Sin especificar (dejar vacío)" }];
+    for (const t of tiposGuardados) {
+      const k = t.trim().toLowerCase();
+      if (k && k !== "otra" && !vistos.has(k)) {
+        vistos.add(k);
+        lista.push({ value: t.trim(), label: t.trim(), deletable: true });
+      }
     }
-  }
+    for (const t of TIPOS_AUDIENCIA) {
+      const k = t.trim().toLowerCase();
+      if (k && k !== "otra" && !vistos.has(k)) {
+        vistos.add(k);
+        lista.push({ value: t.trim(), label: t.trim(), deletable: false });
+      }
+    }
+    lista.push({
+      value: "Otra",
+      label: "Otra (especificar solo para este registro)",
+    });
+    return lista;
+  });
 
   function ponerFechaHoy() {
     const hoy = new Date();
@@ -85,20 +115,11 @@
     fecha = `${d}/${m}/${y}`;
   }
 
-  function toggleIaPanel() {
-    iaPanelAbierto = !iaPanelAbierto;
-    if (iaPanelAbierto) {
-      setTimeout(() => {
-        iaTextareaEl?.focus();
-      }, 20);
-    }
-  }
-
   async function manejarExtraer() {
-    await onProcesarConIa();
-    if (!errorIa && !textoIa.trim()) {
-      iaPanelAbierto = false;
+    if (!textoIa.trim()) {
+      iaTextareaEl?.focus();
     }
+    await onProcesarConIa();
   }
 </script>
 
@@ -136,7 +157,81 @@
           </button>
         </div>
       </div>
-    {:else if !aiStatus.configured}
+    {:else if aiStatus.configured}
+      <!-- CAJA DE TEXTO DE IA SIEMPRE VISIBLE ARRIBA CUANDO HAY API CONFIGURADA -->
+      <div class="ia-top-strip ready">
+        <div class="ia-top-row">
+          <div class="ia-top-left">
+            <span class="ia-card-dot"></span>
+            <Sparkles size={14} strokeWidth={2.2} />
+            <label
+              for="ia-inline-textarea"
+              class="ia-top-hint"
+              style="color: var(--text-primary); font-weight: 600; cursor: pointer"
+            >
+              Texto de la audiencia (IA)
+            </label>
+            <span class="ia-top-hint">
+              Pega aquí la nota de WhatsApp o acta para llenar el formulario
+            </span>
+          </div>
+
+          <button
+            type="button"
+            class="mini-icon-btn"
+            onclick={onAbrirConfigIa}
+            title="Ajustar proveedor de IA ({aiStatus.model})"
+            aria-label="Ajustar configuración de IA"
+          >
+            <SlidersHorizontal size={14} />
+          </button>
+        </div>
+
+        <textarea
+          id="ia-inline-textarea"
+          bind:this={iaTextareaEl}
+          class="textarea"
+          rows="3"
+          bind:value={textoIa}
+          placeholder="Pega aquí el reporte, acta o nota de la audiencia..."
+          onkeydown={(e) => {
+            if (e.ctrlKey && e.key === "Enter") {
+              e.preventDefault();
+              manejarExtraer();
+            }
+          }}
+        ></textarea>
+        {#if errorIa}
+          <p style="color: var(--status-no); font-size: 12px">{errorIa}</p>
+        {/if}
+
+        <div class="ia-card-actions">
+          <div class="action-with-shortcut">
+            <button
+              type="button"
+              class="btn btn-ia-action"
+              disabled={procesandoIa}
+              onclick={manejarExtraer}
+              title="Extraer datos del texto al formulario ({aiStatus.model})"
+            >
+              <Sparkles size={14} strokeWidth={2.2} />
+              <span>{procesandoIa ? "Extrayendo..." : "Autocompletar con IA"}</span>
+            </button>
+            <span class="shortcut-hint">Ctrl + Enter</span>
+          </div>
+          {#if textoIa.trim()}
+            <button
+              type="button"
+              class="inline-action-link"
+              disabled={procesandoIa}
+              onclick={() => (textoIa = "")}
+            >
+              Borrar texto
+            </button>
+          {/if}
+        </div>
+      </div>
+    {:else}
       <!-- AVISO SUPERIOR SOLO CUANDO FALTA CONFIGURAR LA API DE IA -->
       <div class="ia-top-strip pending">
         <div class="ia-top-row">
@@ -230,27 +325,28 @@
       <div class="field-group">
         <div class="field-header">
           <label class="field-label" for="juzgado">Juzgado o Despacho Judicial</label>
+          <span class="shortcut-hint">Opcional</span>
         </div>
-        <AutocompleteInput
+        <CustomSelect
           id="juzgado"
-          name="juzgado"
-          bind:value={juzgado}
-          suggestions={juzgadosOrdenados}
-          placeholder="Nombre del juzgado o despacho"
+          bind:value={juzgadoSeleccionado}
+          options={opcionesJuzgado}
+          placeholder="Sin especificar (opcional)..."
+          searchPlaceholder="Filtrar por municipio o juzgado (ej: Valledupar 2 Circuito)..."
+          allowAdd={true}
+          addButtonLabel="Agregar nuevo juzgado a la lista..."
+          addPlaceholder="Nombre del nuevo juzgado o despacho..."
+          onAddOption={onAgregarJuzgado}
+          onDeleteOption={onEliminarJuzgado}
         />
-        {#if juzgadosFrecuentes.length > 0}
-          <div class="recent-chips-row">
-            {#each juzgadosFrecuentes as j}
-              <button
-                type="button"
-                class="recent-chip"
-                onclick={() => (juzgado = j)}
-                title="Usar '{j}'"
-              >
-                {j}
-              </button>
-            {/each}
-          </div>
+        {#if juzgadoSeleccionado === "Otra"}
+          <input
+            id="juzgado-otra"
+            type="text"
+            class="input"
+            bind:value={juzgadoOtra}
+            placeholder="Especificar juzgado solo para este registro..."
+          />
         {/if}
       </div>
     </div>
@@ -260,39 +356,45 @@
       <div class="field-group">
         <div class="field-header">
           <label class="field-label" for="tipo-audiencia">Tipo de Audiencia</label>
+          <span class="shortcut-hint">Opcional</span>
         </div>
         <CustomSelect
           id="tipo-audiencia"
           bind:value={tipoSeleccionado}
-          options={TIPOS_AUDIENCIA}
-          placeholder="Seleccionar o filtrar tipo..."
+          options={opcionesTipoAudiencia}
+          placeholder="Sin especificar (opcional)..."
           searchPlaceholder="Filtrar tipo de audiencia..."
+          allowAdd={true}
+          addButtonLabel="Agregar nuevo tipo de audiencia..."
+          addPlaceholder="Nombre del nuevo tipo de audiencia..."
+          onAddOption={onAgregarTipo}
+          onDeleteOption={onEliminarTipo}
         />
       </div>
 
       <div class="field-group">
         <div class="field-header">
           <label class="field-label" for="fecha">Fecha</label>
-          <button type="button" class="inline-action-link" onclick={ponerFechaHoy}>
-            Hoy
-          </button>
+          <div style="display: inline-flex; align-items: center; gap: 8px">
+            <span class="shortcut-hint">Opcional</span>
+            <button type="button" class="inline-action-link" onclick={ponerFechaHoy}>
+              Hoy
+            </button>
+          </div>
         </div>
-        <input
+        <DatePickerInput
           id="fecha"
           name="fecha"
-          type="text"
-          inputmode="numeric"
-          maxlength="10"
-          class="input"
-          value={fecha}
-          oninput={formatearFechaInput}
-          placeholder="DD/MM/AAAA"
+          bind:value={fecha}
+          {registros}
+          placeholder="DD/MM/AAAA (opcional)"
         />
       </div>
 
       <div class="field-group">
         <div class="field-header">
           <label class="field-label" for="hora">Hora (24h)</label>
+          <span class="shortcut-hint">Opcional</span>
         </div>
         <div class="time-inline-box">
           <input
@@ -428,97 +530,8 @@
 
     <div class="dossier-divider"></div>
 
-    {#if !modoEdicion && aiStatus.configured && iaPanelAbierto}
-      <div class="ia-top-strip ready">
-        <div class="ia-top-row">
-          <div class="ia-top-left">
-            <span class="ia-card-dot"></span>
-            <Sparkles size={14} strokeWidth={2.2} />
-            <span class="ia-top-hint" style="color: var(--text-primary); font-weight: 600">
-              Autocompletar con IA
-            </span>
-            <span class="ia-top-hint">
-              Pega una nota de WhatsApp o acta
-            </span>
-          </div>
-
-          <button
-            type="button"
-            class="mini-icon-btn"
-            onclick={onAbrirConfigIa}
-            title="Ajustar proveedor de IA ({aiStatus.model})"
-            aria-label="Ajustar configuración de IA"
-          >
-            <SlidersHorizontal size={14} />
-          </button>
-        </div>
-
-        <div class="ia-top-body">
-          <textarea
-            bind:this={iaTextareaEl}
-            class="textarea"
-            rows="3"
-            bind:value={textoIa}
-            placeholder="Pega aquí el texto o acta de la audiencia (Ctrl+Enter para extraer)..."
-            onkeydown={(e) => {
-              if (e.ctrlKey && e.key === "Enter") {
-                e.preventDefault();
-                manejarExtraer();
-              }
-            }}
-          ></textarea>
-          {#if errorIa}
-            <p style="color: var(--status-no); font-size: 12px">{errorIa}</p>
-          {/if}
-          <div class="ia-card-actions">
-            <button
-              type="button"
-              class="btn btn-subtle"
-              onclick={() => (iaPanelAbierto = false)}
-              disabled={procesandoIa}
-            >
-              Cerrar
-            </button>
-            <div class="action-with-shortcut">
-              <span class="shortcut-hint">Ctrl + Enter</span>
-              <button
-                type="button"
-                class="btn btn-solid"
-                onclick={manejarExtraer}
-                disabled={procesandoIa || !textoIa.trim()}
-              >
-                <span>{procesandoIa ? "Extrayendo..." : "Extraer al formulario →"}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    {/if}
-
-    <!-- ACCIONES FINALES: AUTOCOMPLETAR (CON API) A LA IZQUIERDA · LIMPIAR Y REGISTRAR A LA DERECHA -->
+    <!-- ACCIONES FINALES: LIMPIAR Y REGISTRAR A LA DERECHA -->
     <div class="dossier-actions">
-      {#if !modoEdicion && aiStatus.configured}
-        <div class="dossier-actions-left">
-          <div class="action-with-shortcut">
-            <button
-              type="button"
-              class="btn btn-ia-action"
-              aria-expanded={iaPanelAbierto}
-              onclick={toggleIaPanel}
-              title="Autocompletar con IA ({aiStatus.model})"
-            >
-              <Sparkles size={14} strokeWidth={2.2} />
-              <span>Autocompletar con IA</span>
-              <ChevronDown
-                size={13}
-                style="transform: {iaPanelAbierto ? 'rotate(0deg)' : 'rotate(180deg)'}; transition: transform 0.14s ease"
-              />
-            </button>
-            <span class="shortcut-hint">Ctrl + I</span>
-          </div>
-        </div>
-      {/if}
-
       <div class="dossier-actions-right">
         {#if !modoEdicion}
           <div class="action-with-shortcut">
@@ -556,7 +569,7 @@
                 #{r.numero} · {r.radicado}
               </strong>
               <span class="shortcut-hint" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-                {r.fecha} {r.hora || "sin hora"} · {r.tipo}
+                {r.fecha || "Sin fecha"} · {r.hora || "sin hora"}{r.tipo ? ` · ${r.tipo}` : ""}
               </span>
             </div>
             <div class="recent-strip-right">

@@ -34,7 +34,7 @@ Este documento constituye la memoria persistente, la especificación operativa y
 1. **Frontend y vistas (`src/` e `index.html`):**
    - `src/App.svelte`: Orquestador principal de estado, barra superior, comandos IPC y atajos globales.
    - `src/lib/constants.js`: Catálogos oficiales del frontend (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`, `HORAS_RAPIDAS`).
-   - `src/lib/components/`: Componentes modulares Svelte 5 (`Sidebar.svelte`, `AudienciaForm.svelte`, `RegistrosTable.svelte`, `EstadisticasView.svelte`, `Modals.svelte`, `CustomSelect.svelte`, `AutocompleteInput.svelte`).
+   - `src/lib/components/`: Componentes modulares Svelte 5 (`Sidebar.svelte`, `AudienciaForm.svelte`, `RegistrosTable.svelte`, `EstadisticasView.svelte`, `Modals.svelte`, `CustomSelect.svelte`, `AutocompleteInput.svelte`, `DatePickerInput.svelte`).
    - `src/app.css`: Sistema de temas (`data-theme="dark"` Warm Obsidian y `data-theme="light"` Azul Niebla Sereno), barras de scroll integradas y CSS `@container` responsivo.
 2. **Backend y lógica de dominio en Rust (`src-tauri/src/`):**
    - `models.rs`: Estructuras `AudienciaInput`, `RegistroAudiencia`, `TotalesExcel`, catálogos oficiales (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`), mapeo de columnas `mapear_motivo_a_indice` y validadores.
