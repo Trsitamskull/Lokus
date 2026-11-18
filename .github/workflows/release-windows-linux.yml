@@ -49,7 +49,7 @@ jobs:
         run: npm install
 
       - name: Build Tauri Desktop App & Publish to GitHub Releases
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -58,6 +58,7 @@ jobs:
           releaseBody: "Descarga directa de Lokus para Windows (Lokus.exe portable y Lokus-setup.exe con WebView2 incluido) y Linux (.AppImage, .deb, .rpm)."
           releaseDraft: false
           prerelease: false
+          retryAttempts: "3"
           args: ${{ matrix.args }}
 
       - name: Adjuntar Lokus.exe portable a GitHub Releases
