@@ -20,7 +20,7 @@ Este documento constituye la memoria persistente, la especificación operativa y
 
 | Categoría | Especificación del proyecto |
 | :--- | :--- |
-| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v3.1` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
+| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v3.2` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
 | **Pila tecnológica activa (`rust-tauri`)** | **Backend:** Rust 2021 + Tauri v2 (`umya-spreadsheet`, `reqwest` con `rustls-tls`, `tokio`, `serde`, `chrono`, `regex`, `base64`, `flate2`)<br>**Frontend:** Svelte 5 (Runes: `$state`, `$derived`) + Vite 6 + CSS Variables nativas (puerto dev `5173`) |
 | **Pila tecnológica legado (`legacy-python`)** | Python 3 + `flet==1.1.2` (`flet-desktop==1.1.2`, `flet-cli==1.1.2`) + `openpyxl==3.1.2` + `openai==1.98.0` |
 | **Proveedores de IA soportados** | **OpenAI** (`gpt-5-mini`, `gpt-4o-mini`, `gpt-4o`) y **Google Gemini** (`gemini-2.5-flash`, `gemini-2.0-flash`) para autocompletado de formulario a partir de texto libre |
