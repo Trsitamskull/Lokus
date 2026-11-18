@@ -100,9 +100,36 @@ pub struct ResumenDefensor {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanillaResumen {
+    #[serde(default)]
+    pub id: String,
     pub archivo: String,
     pub defensor: String,
     pub num_registros: u32,
+    #[serde(default)]
+    pub archivada: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ResumenMesPlanilla {
+    pub anio: i32, // 0 cuando el registro no tiene fecha
+    pub mes: u32,  // 0 cuando el registro no tiene fecha
+    pub total: u32,
+    pub total_si: u32,
+    pub total_no: u32,
+    pub totales_motivos: [u32; 8],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ResumenPlanillaArchivada {
+    pub id: String,
+    pub archivo: String,
+    pub defensor: String,
+    pub archivado_en: String,
+    pub num_registros: u32,
+    pub total_si: u32,
+    pub total_no: u32,
+    pub totales_motivos: [u32; 8],
+    pub por_mes: Vec<ResumenMesPlanilla>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -114,6 +141,7 @@ pub struct EstadisticasGlobales {
     pub totales_motivos: [u32; 8],
     pub total_planillas: u32,
     pub total_planillas_con_datos: u32,
+    pub total_archivadas: u32,
     pub meses_disponibles: Vec<MesDisponible>,
     pub planillas: Vec<PlanillaResumen>,
     pub defensores_disponibles: Vec<String>,

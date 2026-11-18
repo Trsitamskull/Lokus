@@ -3,6 +3,7 @@ pub mod aprendizaje;
 pub mod config;
 pub mod excel;
 pub mod models;
+pub mod paquete;
 
 use ai::{analizar_correccion_ia, extraer_datos_audiencia_ia, AiAudienciaOutput};
 use aprendizaje::{
@@ -16,13 +17,21 @@ use config::{
     renombrar_defensor, ActualizarConfig, ConfigPublica,
 };
 use excel::{
-    actualizar_audiencia_existente, actualizar_defensor_archivo, crear_copia_plantilla,
-    descargar_archivo, eliminar_archivo, eliminar_registro_audiencia, guardar_nueva_audiencia,
-    leer_archivo_completo, listar_archivos, listar_respaldos, obtener_estadisticas_globales,
-    restaurar_respaldo, RespaldoInfo,
+    actualizar_audiencia_existente, actualizar_defensor_archivo, crear_carpeta_con_color,
+    crear_copia_plantilla, descargar_archivo, eliminar_archivo_con_opcion,
+    eliminar_carpeta_con_opciones, eliminar_estadistica_archivada, eliminar_registro_audiencia,
+    guardar_color_carpeta, guardar_nueva_audiencia, guardar_orden_carpetas,
+    leer_archivo_completo, listar_archivos, listar_carpetas, listar_respaldos, mover_archivo,
+    obtener_colores_carpetas, obtener_estadisticas_globales, obtener_orden_carpetas,
+    renombrar_carpeta, restaurar_respaldo, validar_color_carpeta, RespaldoInfo,
 };
+use std::collections::BTreeMap;
 use models::{
     validar_audiencia, AudienciaInput, EstadisticasGlobales, RegistroAudiencia, TotalesExcel,
+};
+use paquete::{
+    exportar_paquete, importar_paquete, inspeccionar_importacion, ResultadoImportacion,
+    ResumenInspeccionImportacion,
 };
 use serde::Serialize;
 
@@ -49,16 +58,100 @@ async fn cmd_listar_archivos() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-async fn cmd_crear_archivo(nombre: String, defensor: Option<String>) -> Result<String, String> {
-    if nombre.trim().is_empty() {
-        return Err("El nombre del archivo es obligatorio".to_string());
-    }
-    ejecutar_en_hilo_io(move || crear_copia_plantilla(nombre.trim(), defensor.as_deref())).await
+async fn cmd_listar_carpetas() -> Result<Vec<String>, String> {
+    ejecutar_en_hilo_io(listar_carpetas).await
 }
 
 #[tauri::command]
-async fn cmd_eliminar_archivo(nombre: String) -> Result<(), String> {
-    ejecutar_en_hilo_io(move || eliminar_archivo(&nombre)).await
+async fn cmd_obtener_orden_carpetas() -> Result<Vec<String>, String> {
+    ejecutar_en_hilo_io(|| Ok(obtener_orden_carpetas())).await
+}
+
+#[tauri::command]
+async fn cmd_guardar_orden_carpetas(orden: Vec<String>) -> Result<Vec<String>, String> {
+    ejecutar_en_hilo_io(move || guardar_orden_carpetas(orden)).await
+}
+
+#[tauri::command]
+async fn cmd_obtener_colores_carpetas() -> Result<BTreeMap<String, String>, String> {
+    ejecutar_en_hilo_io(|| Ok(obtener_colores_carpetas())).await
+}
+
+#[tauri::command]
+async fn cmd_guardar_color_carpeta(
+    ruta: String,
+    color: String,
+) -> Result<BTreeMap<String, String>, String> {
+    ejecutar_en_hilo_io(move || guardar_color_carpeta(&ruta, &color)).await
+}
+
+#[tauri::command]
+async fn cmd_crear_carpeta(ruta: String, color: Option<String>) -> Result<String, String> {
+    ejecutar_en_hilo_io(move || crear_carpeta_con_color(&ruta, color.as_deref())).await
+}
+
+#[tauri::command]
+async fn cmd_renombrar_carpeta(
+    actual: String,
+    nueva: String,
+    color: Option<String>,
+) -> Result<String, String> {
+    ejecutar_en_hilo_io(move || {
+        if let Some(ref c) = color {
+            validar_color_carpeta(c)?;
+        }
+        let nueva_ruta = renombrar_carpeta(&actual, &nueva)?;
+        if let Some(c) = color {
+            guardar_color_carpeta(&nueva_ruta, &c)?;
+        }
+        Ok(nueva_ruta)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn cmd_eliminar_carpeta(
+    ruta: String,
+    eliminar_contenido: Option<bool>,
+    conservar_estadisticas: Option<bool>,
+) -> Result<(), String> {
+    let eliminar = eliminar_contenido.unwrap_or(false);
+    let conservar = conservar_estadisticas.unwrap_or(false);
+    ejecutar_en_hilo_io(move || eliminar_carpeta_con_opciones(&ruta, eliminar, conservar)).await
+}
+
+#[tauri::command]
+async fn cmd_mover_archivo(nombre: String, carpeta_destino: String) -> Result<String, String> {
+    ejecutar_en_hilo_io(move || mover_archivo(&nombre, &carpeta_destino)).await
+}
+
+#[tauri::command]
+async fn cmd_crear_archivo(
+    nombre: String,
+    defensor: Option<String>,
+    carpeta: Option<String>,
+) -> Result<String, String> {
+    if nombre.trim().is_empty() {
+        return Err("El nombre del archivo es obligatorio".to_string());
+    }
+    ejecutar_en_hilo_io(move || {
+        crear_copia_plantilla(nombre.trim(), defensor.as_deref(), carpeta.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn cmd_eliminar_archivo(
+    nombre: String,
+    conservar_estadisticas: Option<bool>,
+) -> Result<(), String> {
+    let conservar = conservar_estadisticas.unwrap_or(false);
+    ejecutar_en_hilo_io(move || eliminar_archivo_con_opcion(&nombre, conservar)).await
+}
+
+#[tauri::command]
+async fn cmd_eliminar_estadistica_archivada(id: String) -> Result<(), String> {
+    ejecutar_en_hilo_io(move || eliminar_estadistica_archivada(&id)).await
 }
 
 #[tauri::command]
@@ -282,6 +375,28 @@ async fn cmd_exportar_aprendizaje_ia() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn cmd_exportar_paquete(tipo_paquete: String) -> Result<String, String> {
+    ejecutar_en_hilo_io(move || exportar_paquete(&tipo_paquete)).await
+}
+
+#[tauri::command]
+async fn cmd_inspeccionar_importacion(
+    contenido_b64: String,
+) -> Result<ResumenInspeccionImportacion, String> {
+    ejecutar_en_hilo_io(move || inspeccionar_importacion(&contenido_b64)).await
+}
+
+#[tauri::command]
+async fn cmd_importar_paquete(
+    contenido_b64: String,
+    modo_conflicto: String,
+    importar_config: bool,
+) -> Result<ResultadoImportacion, String> {
+    ejecutar_en_hilo_io(move || importar_paquete(&contenido_b64, &modo_conflicto, importar_config))
+        .await
+}
+
+#[tauri::command]
 async fn cmd_obtener_estadisticas(
     anio: Option<i32>,
     mes: Option<u32>,
@@ -296,8 +411,18 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             cmd_listar_archivos,
+            cmd_listar_carpetas,
+            cmd_obtener_orden_carpetas,
+            cmd_guardar_orden_carpetas,
+            cmd_obtener_colores_carpetas,
+            cmd_guardar_color_carpeta,
+            cmd_crear_carpeta,
+            cmd_renombrar_carpeta,
+            cmd_eliminar_carpeta,
+            cmd_mover_archivo,
             cmd_crear_archivo,
             cmd_eliminar_archivo,
+            cmd_eliminar_estadistica_archivada,
             cmd_descargar_archivo,
             cmd_leer_archivo,
             cmd_actualizar_defensor_archivo,
@@ -323,6 +448,9 @@ pub fn run() {
             cmd_descartar_aclaracion_ia,
             cmd_resumen_aprendizaje_ia,
             cmd_exportar_aprendizaje_ia,
+            cmd_exportar_paquete,
+            cmd_inspeccionar_importacion,
+            cmd_importar_paquete,
         ])
         .run(tauri::generate_context!())
         .expect("error al ejecutar la aplicación Tauri");

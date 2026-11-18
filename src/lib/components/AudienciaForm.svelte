@@ -138,18 +138,16 @@
           {modoEdicion ? `Editando registro #${numeroEditando}` : "Nueva Audiencia Judicial"}
         </h1>
         <p class="dossier-subtitle">
-          {#if archivoActual}
-            {archivoActual} · orden cronológico automático al guardar
-          {:else}
-            Selecciona o crea una planilla en el panel izquierdo para comenzar
-          {/if}
+          {archivoActual
+            ? "Los registros se ordenan automáticamente por fecha y hora al guardar"
+            : "Selecciona o crea una planilla en el panel izquierdo para comenzar"}
         </p>
       </div>
     </div>
 
     {#if modoEdicion}
       <div class="dossier-banner-edit">
-        <span>Editando registro #{numeroEditando} en {archivoActual}</span>
+        <span>Editando registro #{numeroEditando}</span>
         <div class="action-with-shortcut">
           <span class="shortcut-hint">Esc</span>
           <button type="button" class="btn btn-subtle" onclick={onCancelarEdicion}>
@@ -158,30 +156,23 @@
         </div>
       </div>
     {:else if aiStatus.configured}
-      <!-- CAJA DE TEXTO DE IA SIEMPRE VISIBLE ARRIBA CUANDO HAY API CONFIGURADA -->
-      <div class="ia-top-strip ready">
-        <div class="ia-top-row">
-          <div class="ia-top-left">
-            <span class="ia-card-dot"></span>
-            <Sparkles size={14} strokeWidth={2.2} />
-            <label
-              for="ia-inline-textarea"
-              class="ia-top-hint"
-              style="color: var(--text-primary); font-weight: 600; cursor: pointer"
-            >
+      <!-- CAJA DE TEXTO DE IA SIEMPRE VISIBLE ARRIBA -->
+      <div class="extract-panel">
+        <div class="extract-panel-head">
+          <div class="extract-panel-title-wrap">
+            <label for="ia-inline-textarea" class="field-label" style="cursor: pointer; color: var(--ia-text)">
               Texto de la audiencia (IA)
             </label>
-            <span class="ia-top-hint">
-              Pega aquí la nota de WhatsApp o acta para llenar el formulario
+            <span class="shortcut-hint">
+              Pega la nota o el acta para rellenar el formulario
             </span>
           </div>
-
           <button
             type="button"
             class="mini-icon-btn"
             onclick={onAbrirConfigIa}
-            title="Ajustar proveedor de IA ({aiStatus.model})"
-            aria-label="Ajustar configuración de IA"
+            title="Configurar modelo ({aiStatus.model})"
+            aria-label="Configurar modelo de IA"
           >
             <SlidersHorizontal size={14} />
           </button>
@@ -193,7 +184,7 @@
           class="textarea"
           rows="3"
           bind:value={textoIa}
-          placeholder="Pega aquí el reporte, acta o nota de la audiencia..."
+          placeholder="Pega aquí la nota de WhatsApp, correo o acta de la audiencia..."
           onkeydown={(e) => {
             if (e.ctrlKey && e.key === "Enter") {
               e.preventDefault();
@@ -205,7 +196,7 @@
           <p style="color: var(--status-no); font-size: 12px">{errorIa}</p>
         {/if}
 
-        <div class="ia-card-actions">
+        <div class="extract-panel-actions">
           <div class="action-with-shortcut">
             <button
               type="button"
@@ -232,33 +223,25 @@
         </div>
       </div>
     {:else}
-      <!-- AVISO SUPERIOR SOLO CUANDO FALTA CONFIGURAR LA API DE IA -->
-      <div class="ia-top-strip pending">
-        <div class="ia-top-row">
-          <div class="ia-top-left">
-            <span class="ia-card-dot"></span>
-            <Sparkles size={14} strokeWidth={2.2} />
-            <span class="ia-top-pending-msg">
-              Configura tu clave de OpenAI o Gemini para habilitar el autocompletado con IA
-            </span>
-          </div>
+      <!-- AVISO SOLO CUANDO FALTA CONFIGURAR LA API DE IA -->
+      <div class="extract-panel is-unconfigured">
+        <div class="extract-panel-head">
+          <span style="font-size: 12.5px; font-weight: 600; color: var(--accent-warm)">
+            Configura una clave de OpenAI o Gemini para habilitar el autocompletado con IA
+          </span>
           <button type="button" class="btn btn-ai-warm" onclick={onAbrirConfigIa}>
-            <span>Configurar API Key</span>
+            Configurar API Key
           </button>
         </div>
       </div>
     {/if}
 
     {#if !modoEdicion && aclaracionPendiente}
-      <div class="ia-top-strip ready">
-        <div class="ia-top-row">
-          <div class="ia-top-left">
-            <span class="ia-card-dot"></span>
-            <Sparkles size={14} strokeWidth={2.2} />
-            <span class="ia-top-hint" style="color: var(--text-primary); font-weight: 600">
-              {aclaracionPendiente.pregunta}
-            </span>
-          </div>
+      <div class="extract-panel">
+        <div class="extract-panel-head">
+          <span class="field-label" style="text-transform: none; letter-spacing: 0">
+            {aclaracionPendiente.pregunta}
+          </span>
           <button
             type="button"
             class="btn btn-subtle"
@@ -275,7 +258,7 @@
             type="text"
             class="input"
             bind:value={notaAclaracion}
-            placeholder="Nota breve opcional para que la IA lo recuerde la próxima vez..."
+            placeholder="Nota breve opcional para recordarlo en próximas extracciones..."
             onkeydown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();

@@ -1,7 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
@@ -9,11 +11,12 @@ use umya_spreadsheet::{reader, writer, Spreadsheet, Worksheet};
 
 use crate::models::{
     buscar_posible_duplicado, mapear_motivo_a_indice, AudienciaInput, EstadisticasGlobales,
-    MesDisponible, PlanillaResumen, RegistroAudiencia, ResumenDefensor, TotalesExcel,
-    MOTIVOS_LABELS,
+    MesDisponible, PlanillaResumen, RegistroAudiencia, ResumenDefensor, ResumenMesPlanilla,
+    ResumenPlanillaArchivada, TotalesExcel, MOTIVOS_LABELS,
 };
 
 const PLANTILLA_BYTES: &[u8] = include_bytes!("../../templates/plantilla_audiencias.xlsx");
+pub const NOMBRE_INDICE_ESTADISTICAS: &str = ".lokus_estadisticas.json";
 
 pub const FILA_DEFENSOR: u32 = 8;
 pub const COL_DEFENSOR: u32 = 2; // B8
@@ -122,45 +125,374 @@ pub fn sanitizar_nombre_archivo(nombre: &str) -> Result<String, String> {
     Ok(format!("{}.xlsx", limpio))
 }
 
-pub fn ruta_archivo(nombre_archivo: &str) -> Result<PathBuf, String> {
-    let trimmed = nombre_archivo.trim();
-    if trimmed.is_empty()
-        || trimmed.contains('/')
-        || trimmed.contains('\\')
-        || trimmed.contains("..")
-    {
-        return Err("Nombre de archivo inválido.".to_string());
+/// Valida una ruta relativa dentro de `archivos_creados` (separador `/`, sin `..`, sin rutas absolutas)
+/// y devuelve sus segmentos ya limpios.
+pub(crate) fn segmentos_ruta_relativa(ruta: &str) -> Result<Vec<String>, String> {
+    let trimmed = ruta.trim();
+    if trimmed.is_empty() || trimmed.contains('\\') || trimmed.starts_with('/') {
+        return Err("Ruta inválida.".to_string());
     }
-    let nombre_final = if trimmed.to_lowercase().ends_with(".xlsx") {
-        trimmed.to_string()
-    } else {
-        format!("{}.xlsx", trimmed)
-    };
-    Ok(obtener_carpeta_archivos().join(nombre_final))
+    let mut segmentos = Vec::new();
+    for seg in trimmed.split('/') {
+        let seg = seg.trim();
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains("..") || seg.starts_with('.')
+        {
+            return Err("Ruta inválida.".to_string());
+        }
+        segmentos.push(seg.to_string());
+    }
+    Ok(segmentos)
 }
 
-pub fn listar_archivos_en(carpeta: &Path) -> Result<Vec<String>, String> {
+pub fn ruta_archivo(nombre_archivo: &str) -> Result<PathBuf, String> {
+    let segmentos = segmentos_ruta_relativa(nombre_archivo)
+        .map_err(|_| "Nombre de archivo inválido.".to_string())?;
+    let mut ruta = obtener_carpeta_archivos();
+    let ultimo = segmentos.len() - 1;
+    for (i, seg) in segmentos.iter().enumerate() {
+        if i == ultimo && !seg.to_lowercase().ends_with(".xlsx") {
+            ruta.push(format!("{}.xlsx", seg));
+        } else {
+            ruta.push(seg);
+        }
+    }
+    Ok(ruta)
+}
+
+/// Ruta de una carpeta (o subcarpeta) de planillas dentro de `archivos_creados`.
+pub fn ruta_carpeta(carpeta_relativa: &str) -> Result<PathBuf, String> {
+    let segmentos = segmentos_ruta_relativa(carpeta_relativa)
+        .map_err(|_| "Nombre de carpeta inválido.".to_string())?;
+    let mut ruta = obtener_carpeta_archivos();
+    for seg in segmentos {
+        ruta.push(seg);
+    }
+    Ok(ruta)
+}
+
+/// Limpia cada tramo de una ruta de carpeta escrita por el usuario (`2026/Enero`).
+pub fn sanitizar_ruta_carpeta(carpeta: &str) -> Result<String, String> {
+    let mut limpios = Vec::new();
+    for seg in carpeta.split(['/', '\\']) {
+        if seg.trim().is_empty() {
+            continue;
+        }
+        let limpio = sanitizar_nombre_archivo(seg)?;
+        let nombre = limpio.trim_end_matches(".xlsx").trim_start_matches('.').to_string();
+        if nombre.is_empty() {
+            return Err("El nombre de la carpeta no es válido.".to_string());
+        }
+        limpios.push(nombre);
+    }
+    if limpios.is_empty() {
+        return Err("Ingresa el nombre de la carpeta.".to_string());
+    }
+    Ok(limpios.join("/"))
+}
+
+fn es_oculto(nombre: &str) -> bool {
+    nombre.starts_with('.') || nombre.starts_with("~$")
+}
+
+fn recorrer_carpeta(
+    base: &Path,
+    actual: &Path,
+    archivos: &mut Vec<String>,
+    carpetas: &mut Vec<String>,
+) -> Result<(), String> {
+    let entradas = fs::read_dir(actual).map_err(|e| format!("Error leyendo carpeta: {}", e))?;
+    for entrada in entradas.flatten() {
+        let Ok(nombre) = entrada.file_name().into_string() else {
+            continue;
+        };
+        if es_oculto(&nombre) {
+            continue;
+        }
+        let ruta = entrada.path();
+        let Ok(rel) = ruta.strip_prefix(base) else {
+            continue;
+        };
+        let rel_str = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+        if ruta.is_dir() {
+            carpetas.push(rel_str);
+            recorrer_carpeta(base, &ruta, archivos, carpetas)?;
+        } else if nombre.to_lowercase().ends_with(".xlsx") {
+            archivos.push(rel_str);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn explorar_carpeta_en(carpeta: &Path) -> Result<(Vec<String>, Vec<String>), String> {
     fs::create_dir_all(carpeta).map_err(|e| format!("Error creando carpeta: {}", e))?;
-
-    let mut archivos: Vec<String> = fs::read_dir(carpeta)
-        .map_err(|e| format!("Error leyendo carpeta: {}", e))?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let name = entry.file_name().into_string().ok()?;
-            if name.to_lowercase().ends_with(".xlsx") && !name.starts_with("~$") {
-                Some(name)
-            } else {
-                None
-            }
-        })
-        .collect();
-
+    let mut archivos = Vec::new();
+    let mut carpetas = Vec::new();
+    recorrer_carpeta(carpeta, carpeta, &mut archivos, &mut carpetas)?;
     archivos.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-    Ok(archivos)
+    carpetas.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    Ok((archivos, carpetas))
+}
+
+/// Lista recursivamente las planillas (`sub/carpeta/archivo.xlsx`, separador `/`).
+pub fn listar_archivos_en(carpeta: &Path) -> Result<Vec<String>, String> {
+    Ok(explorar_carpeta_en(carpeta)?.0)
 }
 
 pub fn listar_archivos() -> Result<Vec<String>, String> {
     listar_archivos_en(&obtener_carpeta_archivos())
+}
+
+/// Lista recursivamente todas las carpetas y subcarpetas (incluidas las vacías).
+pub fn listar_carpetas() -> Result<Vec<String>, String> {
+    Ok(explorar_carpeta_en(&obtener_carpeta_archivos())?.1)
+}
+
+pub fn validar_color_carpeta(color: &str) -> Result<String, String> {
+    let c = color.trim().to_lowercase();
+    if c.is_empty() || c == "default" || c == "predeterminado" {
+        return Ok(String::new());
+    }
+    match c.as_str() {
+        "azul" | "verde" | "ambar" | "coral" | "rosa" | "violeta" | "turquesa" => Ok(c),
+        _ => Err(format!(
+            "Color de carpeta no válido: '{}'. Usa uno de la paleta permitida.",
+            color.trim()
+        )),
+    }
+}
+
+pub fn crear_carpeta_con_color_en(
+    base: &Path,
+    carpeta_relativa: &str,
+    color: Option<&str>,
+) -> Result<String, String> {
+    let limpia = sanitizar_ruta_carpeta(carpeta_relativa)?;
+    let color_limpio = match color {
+        Some(c) => validar_color_carpeta(c)?,
+        None => String::new(),
+    };
+    let mut ruta = base.to_path_buf();
+    for seg in limpia.split('/') {
+        ruta.push(seg);
+    }
+    if ruta.exists() {
+        return Err("Ya existe una carpeta con ese nombre.".to_string());
+    }
+    fs::create_dir_all(&ruta).map_err(|e| format!("No se pudo crear la carpeta: {}", e))?;
+    if !color_limpio.is_empty() {
+        guardar_color_carpeta_en(base, &limpia, &color_limpio)?;
+    }
+    Ok(limpia)
+}
+
+pub fn crear_carpeta_con_color(
+    carpeta_relativa: &str,
+    color: Option<&str>,
+) -> Result<String, String> {
+    crear_carpeta_con_color_en(&obtener_carpeta_archivos(), carpeta_relativa, color)
+}
+
+pub fn crear_carpeta(carpeta_relativa: &str) -> Result<String, String> {
+    crear_carpeta_con_color(carpeta_relativa, None)
+}
+
+fn carpeta_esta_vacia_de_planillas(ruta: &Path) -> bool {
+    let mut archivos = Vec::new();
+    let mut carpetas = Vec::new();
+    recorrer_carpeta(ruta, ruta, &mut archivos, &mut carpetas).is_ok()
+        && archivos.is_empty()
+        && carpetas.is_empty()
+}
+
+pub fn eliminar_carpeta_con_opciones_en(
+    base: &Path,
+    carpeta_relativa: &str,
+    eliminar_contenido: bool,
+    conservar_estadisticas: bool,
+) -> Result<(), String> {
+    let segmentos = segmentos_ruta_relativa(carpeta_relativa)
+        .map_err(|_| "Nombre de carpeta inválido.".to_string())?;
+    let mut ruta = base.to_path_buf();
+    for seg in &segmentos {
+        ruta.push(seg);
+    }
+    let rel_carpeta = segmentos.join("/");
+
+    if !ruta.is_dir() {
+        return Err("La carpeta no existe.".to_string());
+    }
+    if !eliminar_contenido && !carpeta_esta_vacia_de_planillas(&ruta) {
+        return Err(
+            "La carpeta no está vacía. Mueve o confirma la eliminación de su contenido."
+                .to_string(),
+        );
+    }
+
+    let archivos_internos = listar_archivos_en(&ruta)?;
+    let mut reg = cargar_registro_estadisticas_en(base);
+    let mut cambio_indice = false;
+
+    for rel_interno in archivos_internos {
+        let rel_completa = format!("{}/{}", rel_carpeta, rel_interno);
+        let (id, _) = asegurar_id_ruta(&mut reg, &rel_completa);
+        let archivo_abs = ruta.join(&rel_interno);
+        if conservar_estadisticas {
+            if let Ok((registros, _totales, defensor)) = leer_archivo_en(&archivo_abs) {
+                if !registros.is_empty() {
+                    let resumen = construir_resumen_desde_lectura(
+                        id,
+                        rel_completa.clone(),
+                        &defensor,
+                        &registros,
+                    );
+                    upsert_resumen_archivado(&mut reg, resumen);
+                    cambio_indice = true;
+                }
+            }
+        }
+    if reg.ids_por_ruta.remove(&rel_completa).is_some() {
+            cambio_indice = true;
+        }
+        invalidar_cache(&archivo_abs);
+    }
+
+    let prefijo_carpeta = format!("{}/", rel_carpeta);
+    let len_orden_antes = reg.orden_carpetas.len();
+    reg.orden_carpetas
+        .retain(|c| c != &rel_carpeta && !c.starts_with(&prefijo_carpeta));
+    if reg.orden_carpetas.len() != len_orden_antes {
+        cambio_indice = true;
+    }
+    let len_colores_antes = reg.colores_carpetas.len();
+    reg.colores_carpetas
+        .retain(|k, _| k != &rel_carpeta && !k.starts_with(&prefijo_carpeta));
+    if reg.colores_carpetas.len() != len_colores_antes {
+        cambio_indice = true;
+    }
+
+    if cambio_indice {
+        guardar_registro_estadisticas_en(base, &reg)?;
+    }
+    if let Ok(mut c) = cache_planillas().lock() {
+        c.clear();
+    }
+    fs::remove_dir_all(&ruta).map_err(|e| format!("No se pudo eliminar la carpeta: {}", e))
+}
+
+pub fn eliminar_carpeta_con_opciones(
+    carpeta_relativa: &str,
+    eliminar_contenido: bool,
+    conservar_estadisticas: bool,
+) -> Result<(), String> {
+    eliminar_carpeta_con_opciones_en(
+        &obtener_carpeta_archivos(),
+        carpeta_relativa,
+        eliminar_contenido,
+        conservar_estadisticas,
+    )
+}
+
+pub fn eliminar_carpeta(carpeta_relativa: &str) -> Result<(), String> {
+    eliminar_carpeta_con_opciones(carpeta_relativa, false, false)
+}
+
+/// Renombra o mueve una carpeta completa (con sus planillas y respaldos) a otra ruta relativa.
+pub fn renombrar_carpeta(actual: &str, nueva: &str) -> Result<String, String> {
+    let origen = ruta_carpeta(actual)?;
+    if !origen.is_dir() {
+        return Err("La carpeta no existe.".to_string());
+    }
+    let nueva_limpia = sanitizar_ruta_carpeta(nueva)?;
+    let destino = ruta_carpeta(&nueva_limpia)?;
+    if destino.exists() {
+        return Err("Ya existe una carpeta con ese nombre.".to_string());
+    }
+    if destino.starts_with(&origen) {
+        return Err("No puedes mover una carpeta dentro de sí misma.".to_string());
+    }
+    if let Some(parent) = destino.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("No se pudo preparar el destino: {}", e))?;
+    }
+    fs::rename(&origen, &destino).map_err(|e| {
+        format!(
+            "No se pudo renombrar la carpeta (verifique que no haya planillas abiertas en Excel): {}",
+            e
+        )
+    })?;
+    if let Ok(mut c) = cache_planillas().lock() {
+        c.clear();
+    }
+    let base = obtener_carpeta_archivos();
+    let limpia_actual = sanitizar_ruta_carpeta(actual).unwrap_or_else(|_| actual.trim().to_string());
+    let _ = actualizar_prefijo_carpeta_indice(&base, &limpia_actual, &nueva_limpia);
+    Ok(nueva_limpia)
+}
+
+/// Mueve una planilla (y su historial de respaldos) a otra carpeta. `carpeta_destino` vacío = raíz.
+pub fn mover_archivo(nombre_archivo: &str, carpeta_destino: &str) -> Result<String, String> {
+    let origen = ruta_archivo(nombre_archivo)?;
+    if !origen.is_file() {
+        return Err("El archivo no existe.".to_string());
+    }
+    let nombre_base = origen
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Nombre de archivo inválido.".to_string())?
+        .to_string();
+
+    let (dir_destino, relativo) = if carpeta_destino.trim().is_empty() {
+        (obtener_carpeta_archivos(), nombre_base.clone())
+    } else {
+        let limpia = sanitizar_ruta_carpeta(carpeta_destino)?;
+        (ruta_carpeta(&limpia)?, format!("{}/{}", limpia, nombre_base))
+    };
+    let destino = dir_destino.join(&nombre_base);
+    if destino == origen {
+        return Ok(relativo);
+    }
+    if destino.exists() {
+        return Err("Ya existe una planilla con ese nombre en la carpeta de destino.".to_string());
+    }
+    fs::create_dir_all(&dir_destino)
+        .map_err(|e| format!("No se pudo preparar la carpeta de destino: {}", e))?;
+
+    let respaldos_origen = carpeta_respaldos_de(&origen);
+    fs::rename(&origen, &destino).map_err(|e| {
+        format!(
+            "No se pudo mover el archivo (verifique que no esté abierto en Excel): {}",
+            e
+        )
+    })?;
+    invalidar_cache(&origen);
+    invalidar_cache(&destino);
+    let base = obtener_carpeta_archivos();
+    if let (Ok(rel_orig), Ok(rel_dest)) = (origen.strip_prefix(&base), destino.strip_prefix(&base)) {
+        let orig_s = rel_orig
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+        let dest_s = rel_dest
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+        let _ = actualizar_ruta_en_indice(&base, &orig_s, &dest_s);
+    }
+    if respaldos_origen.is_dir() {
+        let respaldos_destino = carpeta_respaldos_de(&destino);
+        if let Some(parent) = respaldos_destino.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if !respaldos_destino.exists() {
+            let _ = fs::rename(&respaldos_origen, &respaldos_destino);
+        }
+    }
+    Ok(relativo)
 }
 
 fn leer_defensor_de_hoja(ws: &Worksheet) -> String {
@@ -215,19 +547,83 @@ fn crear_copia_plantilla_en(destino: &Path, defensor: Option<&str>) -> Result<()
     Ok(())
 }
 
-pub fn crear_copia_plantilla(nombre_archivo: &str, defensor: Option<&str>) -> Result<String, String> {
+/// Crea una planilla desde la plantilla oficial. `carpeta` (opcional) es una ruta relativa como `2026/Enero`.
+/// Devuelve la ruta relativa de la planilla (`2026/Enero/informe.xlsx`).
+pub fn crear_copia_plantilla(
+    nombre_archivo: &str,
+    defensor: Option<&str>,
+    carpeta: Option<&str>,
+) -> Result<String, String> {
     let nombre_sanitizado = sanitizar_nombre_archivo(nombre_archivo)?;
-    let destino = ruta_archivo(&nombre_sanitizado)?;
+    let relativa = match carpeta.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(c) => format!("{}/{}", sanitizar_ruta_carpeta(c)?, nombre_sanitizado),
+        None => nombre_sanitizado,
+    };
+    let destino = ruta_archivo(&relativa)?;
     crear_copia_plantilla_en(&destino, defensor)?;
-    Ok(nombre_sanitizado)
+    let base = obtener_carpeta_archivos();
+    let mut reg = cargar_registro_estadisticas_en(&base);
+    let (_, cambio) = asegurar_id_ruta(&mut reg, &relativa);
+    if cambio {
+        let _ = guardar_registro_estadisticas_en(&base, &reg);
+    }
+    Ok(relativa)
 }
 
-pub fn eliminar_archivo(nombre_archivo: &str) -> Result<(), String> {
-    let ruta = ruta_archivo(nombre_archivo)?;
+pub fn eliminar_archivo_en(
+    carpeta: &Path,
+    nombre_archivo: &str,
+    conservar_estadisticas: bool,
+) -> Result<(), String> {
+    let segmentos = segmentos_ruta_relativa(nombre_archivo)
+        .map_err(|_| "Nombre de archivo inválido.".to_string())?;
+    let mut ruta = carpeta.to_path_buf();
+    let mut norm_partes = Vec::with_capacity(segmentos.len());
+    let ultimo = segmentos.len() - 1;
+    for (i, seg) in segmentos.into_iter().enumerate() {
+        let final_seg = if i == ultimo && !seg.to_lowercase().ends_with(".xlsx") {
+            format!("{}.xlsx", seg)
+        } else {
+            seg
+        };
+        ruta.push(&final_seg);
+        norm_partes.push(final_seg);
+    }
+    let rel_norm = norm_partes.join("/");
+
     if !ruta.exists() {
         return Err("El archivo no existe.".to_string());
     }
-    fs::remove_file(&ruta).map_err(|e| format!("No se pudo eliminar el archivo: {}", e))
+
+    let mut reg = cargar_registro_estadisticas_en(carpeta);
+    let (id, _) = asegurar_id_ruta(&mut reg, &rel_norm);
+
+    if conservar_estadisticas {
+        let (registros, _totales, defensor) = leer_archivo_en(&ruta)?;
+        if !registros.is_empty() {
+            let resumen =
+                construir_resumen_desde_lectura(id.clone(), rel_norm.clone(), &defensor, &registros);
+            upsert_resumen_archivado(&mut reg, resumen);
+        }
+    }
+
+    reg.ids_por_ruta.remove(&rel_norm);
+    guardar_registro_estadisticas_en(carpeta, &reg)?;
+
+    fs::remove_file(&ruta).map_err(|e| format!("No se pudo eliminar el archivo: {}", e))?;
+    invalidar_cache(&ruta);
+    Ok(())
+}
+
+pub fn eliminar_archivo_con_opcion(
+    nombre_archivo: &str,
+    conservar_estadisticas: bool,
+) -> Result<(), String> {
+    eliminar_archivo_en(&obtener_carpeta_archivos(), nombre_archivo, conservar_estadisticas)
+}
+
+pub fn eliminar_archivo(nombre_archivo: &str) -> Result<(), String> {
+    eliminar_archivo_con_opcion(nombre_archivo, false)
 }
 
 /// Carpeta de Descargas del usuario (o su carpeta personal si no existe) para exportaciones.
@@ -280,7 +676,7 @@ fn carpeta_respaldos_de(ruta_excel: &Path) -> PathBuf {
     parent.join(".respaldos").join(stem)
 }
 
-fn crear_respaldo_en(ruta_excel: &Path) -> Result<(), String> {
+pub(crate) fn crear_respaldo_en(ruta_excel: &Path) -> Result<(), String> {
     if !ruta_excel.exists() {
         return Ok(());
     }
@@ -393,6 +789,7 @@ fn restaurar_respaldo_en(ruta_excel: &Path, archivo_respaldo: &str) -> Result<()
         .map_err(|e| format!("No se pudo preparar la restauración: {}", e))?;
 
     let _ = crear_respaldo_en(ruta_excel);
+    invalidar_cache(ruta_excel);
 
     if let Err(e) = fs::rename(&tmp_ruta, ruta_excel) {
         let _ = fs::remove_file(&tmp_ruta);
@@ -412,6 +809,7 @@ pub fn restaurar_respaldo(nombre_archivo: &str, archivo_respaldo: &str) -> Resul
 
 /// Escribe el libro Excel de forma atómica usando un archivo temporal en la misma carpeta.
 fn guardar_libro(book: &Spreadsheet, ruta: &Path) -> Result<(), String> {
+    invalidar_cache(ruta);
     let parent = ruta.parent().unwrap_or_else(|| Path::new("."));
     let file_name = ruta
         .file_name()
@@ -706,7 +1104,59 @@ fn reordenar_y_recalcular(ws: &mut Worksheet) -> TotalesExcel {
     calcular_y_escribir_totales(ws)
 }
 
-fn leer_archivo_en(ruta: &Path) -> Result<(Vec<RegistroAudiencia>, TotalesExcel, String), String> {
+type LecturaPlanilla = (Vec<RegistroAudiencia>, TotalesExcel, String);
+
+struct EntradaCache {
+    modificado: Option<SystemTime>,
+    tamano: u64,
+    lectura: LecturaPlanilla,
+}
+
+/// Caché en memoria de planillas ya leídas: con cientos de archivos, las estadísticas solo
+/// vuelven a abrir los Excel que cambiaron (según fecha de modificación y tamaño).
+fn cache_planillas() -> &'static Mutex<HashMap<PathBuf, EntradaCache>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, EntradaCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn invalidar_cache(ruta: &Path) {
+    if let Ok(mut c) = cache_planillas().lock() {
+        c.remove(ruta);
+    }
+}
+
+pub(crate) fn leer_archivo_en(ruta: &Path) -> Result<LecturaPlanilla, String> {
+    let meta = fs::metadata(ruta).ok();
+    let modificado = meta.as_ref().and_then(|m| m.modified().ok());
+    let tamano = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+
+    if modificado.is_some() {
+        if let Ok(c) = cache_planillas().lock() {
+            if let Some(e) = c.get(ruta) {
+                if e.modificado == modificado && e.tamano == tamano {
+                    return Ok(e.lectura.clone());
+                }
+            }
+        }
+    }
+
+    let lectura = leer_archivo_sin_cache(ruta)?;
+    if modificado.is_some() {
+        if let Ok(mut c) = cache_planillas().lock() {
+            c.insert(
+                ruta.to_path_buf(),
+                EntradaCache {
+                    modificado,
+                    tamano,
+                    lectura: lectura.clone(),
+                },
+            );
+        }
+    }
+    Ok(lectura)
+}
+
+fn leer_archivo_sin_cache(ruta: &Path) -> Result<LecturaPlanilla, String> {
     if !ruta.exists() {
         return Err("El archivo seleccionado no existe.".to_string());
     }
@@ -948,6 +1398,278 @@ fn redondear_1_decimal(val: f64) -> f64 {
     (val * 10.0).round() / 10.0
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RegistroEstadisticasLocal {
+    pub formato: u32,
+    pub ids_por_ruta: BTreeMap<String, String>,
+    pub archivadas: Vec<ResumenPlanillaArchivada>,
+    pub orden_carpetas: Vec<String>,
+    pub colores_carpetas: BTreeMap<String, String>,
+}
+
+impl Default for RegistroEstadisticasLocal {
+    fn default() -> Self {
+        Self {
+            formato: 1,
+            ids_por_ruta: BTreeMap::new(),
+            archivadas: Vec::new(),
+            orden_carpetas: Vec::new(),
+            colores_carpetas: BTreeMap::new(),
+        }
+    }
+}
+
+pub fn obtener_orden_carpetas_en(carpeta: &Path) -> Vec<String> {
+    cargar_registro_estadisticas_en(carpeta).orden_carpetas
+}
+
+pub fn obtener_orden_carpetas() -> Vec<String> {
+    obtener_orden_carpetas_en(&obtener_carpeta_archivos())
+}
+
+pub fn guardar_orden_carpetas_en(carpeta: &Path, orden: Vec<String>) -> Result<Vec<String>, String> {
+    let mut reg = cargar_registro_estadisticas_en(carpeta);
+    let mut vistos = HashSet::new();
+    let mut limpio = Vec::new();
+    for item in orden {
+        if let Ok(ruta) = sanitizar_ruta_carpeta(&item) {
+            if vistos.insert(ruta.clone()) {
+                limpio.push(ruta);
+            }
+        }
+    }
+    reg.orden_carpetas = limpio.clone();
+    guardar_registro_estadisticas_en(carpeta, &reg)?;
+    Ok(limpio)
+}
+
+pub fn guardar_orden_carpetas(orden: Vec<String>) -> Result<Vec<String>, String> {
+    guardar_orden_carpetas_en(&obtener_carpeta_archivos(), orden)
+}
+
+pub fn obtener_colores_carpetas_en(carpeta: &Path) -> BTreeMap<String, String> {
+    cargar_registro_estadisticas_en(carpeta).colores_carpetas
+}
+
+pub fn obtener_colores_carpetas() -> BTreeMap<String, String> {
+    obtener_colores_carpetas_en(&obtener_carpeta_archivos())
+}
+
+pub fn guardar_color_carpeta_en(
+    carpeta: &Path,
+    carpeta_relativa: &str,
+    color: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    let limpia = sanitizar_ruta_carpeta(carpeta_relativa)?;
+    let mut ruta_dir = carpeta.to_path_buf();
+    for seg in limpia.split('/') {
+        ruta_dir.push(seg);
+    }
+    if !ruta_dir.is_dir() {
+        return Err("La carpeta seleccionada no existe.".to_string());
+    }
+    let color_limpio = validar_color_carpeta(color)?;
+    let mut reg = cargar_registro_estadisticas_en(carpeta);
+    if color_limpio.is_empty() {
+        reg.colores_carpetas.remove(&limpia);
+    } else {
+        reg.colores_carpetas.insert(limpia, color_limpio);
+    }
+    guardar_registro_estadisticas_en(carpeta, &reg)?;
+    Ok(reg.colores_carpetas)
+}
+
+pub fn guardar_color_carpeta(
+    carpeta_relativa: &str,
+    color: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    guardar_color_carpeta_en(&obtener_carpeta_archivos(), carpeta_relativa, color)
+}
+
+pub fn generar_id_planilla() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("pl-{:x}-{:04x}", nanos, seq % 0xffff)
+}
+
+pub fn cargar_registro_estadisticas_en(carpeta: &Path) -> RegistroEstadisticasLocal {
+    let ruta = carpeta.join(NOMBRE_INDICE_ESTADISTICAS);
+    if let Ok(contenido) = fs::read_to_string(&ruta) {
+        if let Ok(mut reg) = serde_json::from_str::<RegistroEstadisticasLocal>(&contenido) {
+            if reg.formato == 0 {
+                reg.formato = 1;
+            }
+            return reg;
+        }
+    }
+    RegistroEstadisticasLocal::default()
+}
+
+pub fn guardar_registro_estadisticas_en(
+    carpeta: &Path,
+    reg: &RegistroEstadisticasLocal,
+) -> Result<(), String> {
+    fs::create_dir_all(carpeta)
+        .map_err(|e| format!("No se pudo preparar carpeta para índice estadístico: {}", e))?;
+    let ruta = carpeta.join(NOMBRE_INDICE_ESTADISTICAS);
+    let json = serde_json::to_string_pretty(reg)
+        .map_err(|e| format!("Error serializando índice de estadísticas: {}", e))?;
+    let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = carpeta.join(format!(".{}.{}.{}.tmp", NOMBRE_INDICE_ESTADISTICAS, std::process::id(), seq));
+    fs::write(&tmp, json)
+        .map_err(|e| format!("Error escribiendo índice de estadísticas: {}", e))?;
+    if let Err(e) = fs::rename(&tmp, &ruta) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Error guardando índice de estadísticas: {}", e));
+    }
+    Ok(())
+}
+
+pub fn asegurar_id_ruta(reg: &mut RegistroEstadisticasLocal, ruta_relativa: &str) -> (String, bool) {
+    if let Some(id) = reg.ids_por_ruta.get(ruta_relativa) {
+        if !id.trim().is_empty() {
+            return (id.clone(), false);
+        }
+    }
+    let nuevo = generar_id_planilla();
+    reg.ids_por_ruta.insert(ruta_relativa.to_string(), nuevo.clone());
+    (nuevo, true)
+}
+
+fn actualizar_ruta_en_indice(carpeta: &Path, ruta_anterior: &str, ruta_nueva: &str) -> Result<(), String> {
+    let mut reg = cargar_registro_estadisticas_en(carpeta);
+    let id = reg
+        .ids_por_ruta
+        .remove(ruta_anterior)
+        .unwrap_or_else(generar_id_planilla);
+    reg.ids_por_ruta.insert(ruta_nueva.to_string(), id);
+    guardar_registro_estadisticas_en(carpeta, &reg)
+}
+
+fn actualizar_prefijo_carpeta_indice(
+    carpeta: &Path,
+    prefijo_anterior: &str,
+    prefijo_nuevo: &str,
+) -> Result<(), String> {
+    let mut reg = cargar_registro_estadisticas_en(carpeta);
+    let prefijo_slash = format!("{}/", prefijo_anterior);
+    let mut nuevas: BTreeMap<String, String> = BTreeMap::new();
+    let mut cambio = false;
+    for (k, v) in std::mem::take(&mut reg.ids_por_ruta) {
+        if let Some(resto) = k.strip_prefix(&prefijo_slash) {
+            nuevas.insert(format!("{}/{}", prefijo_nuevo, resto), v);
+            cambio = true;
+        } else {
+            nuevas.insert(k, v);
+        }
+    }
+    reg.ids_por_ruta = nuevas;
+
+    for item in &mut reg.orden_carpetas {
+        if *item == prefijo_anterior {
+            *item = prefijo_nuevo.to_string();
+            cambio = true;
+        } else if let Some(resto) = item.strip_prefix(&prefijo_slash) {
+            *item = format!("{}/{}", prefijo_nuevo, resto);
+            cambio = true;
+        }
+    }
+
+    let mut nuevos_colores: BTreeMap<String, String> = BTreeMap::new();
+    for (k, v) in std::mem::take(&mut reg.colores_carpetas) {
+        if k == prefijo_anterior {
+            nuevos_colores.insert(prefijo_nuevo.to_string(), v);
+            cambio = true;
+        } else if let Some(resto) = k.strip_prefix(&prefijo_slash) {
+            nuevos_colores.insert(format!("{}/{}", prefijo_nuevo, resto), v);
+            cambio = true;
+        } else {
+            nuevos_colores.insert(k, v);
+        }
+    }
+    reg.colores_carpetas = nuevos_colores;
+
+    if cambio {
+        guardar_registro_estadisticas_en(carpeta, &reg)?;
+    }
+    Ok(())
+}
+
+pub fn upsert_resumen_archivado(reg: &mut RegistroEstadisticasLocal, resumen: ResumenPlanillaArchivada) {
+    reg.archivadas.retain(|r| r.id != resumen.id);
+    reg.archivadas.push(resumen);
+}
+
+fn agrupar_registros_por_mes(registros: &[RegistroAudiencia]) -> Vec<ResumenMesPlanilla> {
+    let mut mapa: BTreeMap<(i32, u32), ResumenMesPlanilla> = BTreeMap::new();
+    for r in registros {
+        let clave = NaiveDate::parse_from_str(r.fecha.trim(), "%d/%m/%Y")
+            .map(|d| (d.year(), d.month()))
+            .unwrap_or((0, 0));
+        let entry = mapa.entry(clave).or_insert_with(|| ResumenMesPlanilla {
+            anio: clave.0,
+            mes: clave.1,
+            ..Default::default()
+        });
+        entry.total += 1;
+        if r.realizada == "SI" {
+            entry.total_si += 1;
+        } else if r.realizada == "NO" {
+            entry.total_no += 1;
+        }
+        for i in 0..8 {
+            if r.motivos_flags[i] {
+                entry.totales_motivos[i] += 1;
+            }
+        }
+    }
+    mapa.into_values().collect()
+}
+
+pub fn construir_resumen_desde_lectura(
+    id: String,
+    archivo: String,
+    defensor: &str,
+    registros: &[RegistroAudiencia],
+) -> ResumenPlanillaArchivada {
+    let por_mes = agrupar_registros_por_mes(registros);
+    let mut resumen = ResumenPlanillaArchivada {
+        id,
+        archivo,
+        defensor: defensor.split_whitespace().collect::<Vec<_>>().join(" "),
+        archivado_en: Local::now().to_rfc3339(),
+        num_registros: registros.len() as u32,
+        por_mes,
+        ..Default::default()
+    };
+    for m in &resumen.por_mes {
+        resumen.total_si += m.total_si;
+        resumen.total_no += m.total_no;
+        for i in 0..8 {
+            resumen.totales_motivos[i] += m.totales_motivos[i];
+        }
+    }
+    resumen
+}
+
+pub fn eliminar_estadistica_archivada_en(carpeta: &Path, id: &str) -> Result<(), String> {
+    let mut reg = cargar_registro_estadisticas_en(carpeta);
+    let antes = reg.archivadas.len();
+    reg.archivadas.retain(|a| a.id != id);
+    if reg.archivadas.len() == antes {
+        return Err("No se encontró ese resumen archivado.".to_string());
+    }
+    guardar_registro_estadisticas_en(carpeta, &reg)
+}
+
+pub fn eliminar_estadistica_archivada(id: &str) -> Result<(), String> {
+    eliminar_estadistica_archivada_en(&obtener_carpeta_archivos(), id)
+}
+
 #[derive(Default)]
 struct AcumuladorDefensor {
     display: String,
@@ -958,7 +1680,94 @@ struct AcumuladorDefensor {
     motivos: [u32; 8],
 }
 
-/// Consolida estadísticas globales o filtradas por año/mes/planilla/defensor sobre los Excel creados.
+fn acumular_planilla_en_stats(
+    nombre_display: &str,
+    defensor_norm: &str,
+    por_mes: &[ResumenMesPlanilla],
+    anio: Option<i32>,
+    mes: Option<u32>,
+    filtro_archivo: Option<&str>,
+    filtro_defensor: Option<&str>,
+    meses_map: &mut BTreeMap<(i32, u32), u32>,
+    defensores_map: &mut HashMap<String, AcumuladorDefensor>,
+    stats: &mut EstadisticasGlobales,
+) {
+    if let Some(filtro_arch) = filtro_archivo {
+        if nombre_display != filtro_arch {
+            return;
+        }
+    }
+
+    if let Some(filtro_def) = filtro_defensor {
+        if filtro_def == "__SIN_ASIGNAR__" {
+            if !defensor_norm.is_empty() {
+                return;
+            }
+        } else if defensor_norm.to_lowercase() != filtro_def.to_lowercase() {
+            return;
+        }
+    }
+
+    let mut tuvo_datos_en_rango = false;
+
+    for m in por_mes {
+        if m.anio > 0 && m.mes > 0 {
+            *meses_map.entry((m.anio, m.mes)).or_insert(0) += m.total;
+        }
+
+        let cumple_periodo = match (anio, mes) {
+            (Some(y), Some(mes_num)) => m.anio == y && m.mes == mes_num,
+            (Some(y), None) => m.anio == y,
+            (None, Some(mes_num)) => m.mes == mes_num,
+            (None, None) => true,
+        };
+
+        if !cumple_periodo {
+            continue;
+        }
+
+        tuvo_datos_en_rango = true;
+        stats.total_audiencias += m.total;
+        stats.total_si += m.total_si;
+        stats.total_no += m.total_no;
+        for i in 0..8 {
+            stats.totales_motivos[i] += m.totales_motivos[i];
+        }
+
+        let (clave_def, display_def) = if defensor_norm.is_empty() {
+            (
+                format!("__sin_asignar__:{}", nombre_display.to_lowercase()),
+                format!("Sin asignar ({})", nombre_display.trim_end_matches(".xlsx")),
+            )
+        } else {
+            (defensor_norm.to_lowercase(), defensor_norm.to_string())
+        };
+
+        let acc = defensores_map
+            .entry(clave_def)
+            .or_insert_with(|| AcumuladorDefensor {
+                display: display_def,
+                ..Default::default()
+            });
+        let archivo_str = nombre_display.to_string();
+        if !acc.archivos.contains(&archivo_str) {
+            acc.archivos.push(archivo_str);
+        }
+        acc.total += m.total;
+        acc.si += m.total_si;
+        acc.no += m.total_no;
+        for i in 0..8 {
+            acc.motivos[i] += m.totales_motivos[i];
+        }
+    }
+
+    if tuvo_datos_en_rango {
+        stats.total_planillas_con_datos += 1;
+    }
+}
+
+/// Consolida estadísticas globales o filtradas por año/mes/planilla/defensor sobre los Excel activos
+/// y los resúmenes archivados (sin duplicar nunca una planilla que siga en disco con el mismo ID).
 pub fn calcular_estadisticas_en(
     carpeta: &Path,
     anio: Option<i32>,
@@ -967,6 +1776,9 @@ pub fn calcular_estadisticas_en(
     defensor_filtro: Option<&str>,
 ) -> Result<EstadisticasGlobales, String> {
     let nombres = listar_archivos_en(carpeta)?;
+    let mut reg_est = cargar_registro_estadisticas_en(carpeta);
+    let mut cambio_indice = false;
+
     let filtro_archivo_limpio = archivo_filtro
         .map(str::trim)
         .filter(|s| !s.is_empty());
@@ -979,11 +1791,18 @@ pub fn calcular_estadisticas_en(
         ..Default::default()
     };
 
+    let mut ids_activos: HashSet<String> = HashSet::new();
     let mut meses_map: BTreeMap<(i32, u32), u32> = BTreeMap::new();
     let mut defensores_map: HashMap<String, AcumuladorDefensor> = HashMap::new();
     let mut defensores_disponibles_map: HashMap<String, String> = HashMap::new();
 
     for nombre in &nombres {
+        let (id, creado) = asegurar_id_ruta(&mut reg_est, nombre);
+        if creado {
+            cambio_indice = true;
+        }
+        ids_activos.insert(id.clone());
+
         let ruta = carpeta.join(nombre);
         let (registros, _totales, defensor) = leer_archivo_en(&ruta)
             .map_err(|e| format!("Error leyendo '{}': {}", nombre, e))?;
@@ -996,97 +1815,66 @@ pub fn calcular_estadisticas_en(
         }
 
         stats.planillas.push(PlanillaResumen {
+            id,
             archivo: nombre.clone(),
             defensor: defensor_norm.clone(),
             num_registros: registros.len() as u32,
+            archivada: false,
         });
 
-        if let Some(filtro_arch) = filtro_archivo_limpio {
-            if nombre != filtro_arch {
-                continue;
-            }
+        let por_mes = agrupar_registros_por_mes(&registros);
+        acumular_planilla_en_stats(
+            nombre,
+            &defensor_norm,
+            &por_mes,
+            anio,
+            mes,
+            filtro_archivo_limpio,
+            filtro_defensor_limpio.as_deref(),
+            &mut meses_map,
+            &mut defensores_map,
+            &mut stats,
+        );
+    }
+
+    if cambio_indice {
+        let _ = guardar_registro_estadisticas_en(carpeta, &reg_est);
+    }
+
+    for arch in &reg_est.archivadas {
+        if ids_activos.contains(&arch.id) {
+            continue;
+        }
+        stats.total_planillas += 1;
+        stats.total_archivadas += 1;
+
+        let defensor_norm = arch.defensor.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !defensor_norm.is_empty() {
+            defensores_disponibles_map
+                .entry(defensor_norm.to_lowercase())
+                .or_insert_with(|| defensor_norm.clone());
         }
 
-        if let Some(ref filtro_def) = filtro_defensor_limpio {
-            if filtro_def == "__SIN_ASIGNAR__" {
-                if !defensor_norm.is_empty() {
-                    continue;
-                }
-            } else if defensor_norm.to_lowercase() != filtro_def.to_lowercase() {
-                continue;
-            }
-        }
+        stats.planillas.push(PlanillaResumen {
+            id: arch.id.clone(),
+            archivo: arch.archivo.clone(),
+            defensor: defensor_norm.clone(),
+            num_registros: arch.num_registros,
+            archivada: true,
+        });
 
-        let mut tuvo_datos_en_rango = false;
-
-        for r in &registros {
-            let fecha_parsed = NaiveDate::parse_from_str(r.fecha.trim(), "%d/%m/%Y").ok();
-
-            if let Some(d) = fecha_parsed {
-                *meses_map.entry((d.year(), d.month())).or_insert(0) += 1;
-            }
-
-            let cumple_periodo = match (anio, mes) {
-                (Some(y), Some(m)) => fecha_parsed
-                    .map(|d| d.year() == y && d.month() == m)
-                    .unwrap_or(false),
-                (Some(y), None) => fecha_parsed.map(|d| d.year() == y).unwrap_or(false),
-                (None, Some(m)) => fecha_parsed.map(|d| d.month() == m).unwrap_or(false),
-                (None, None) => true,
-            };
-
-            if !cumple_periodo {
-                continue;
-            }
-
-            tuvo_datos_en_rango = true;
-            stats.total_audiencias += 1;
-            if r.realizada == "SI" {
-                stats.total_si += 1;
-            } else if r.realizada == "NO" {
-                stats.total_no += 1;
-            }
-            for i in 0..8 {
-                if r.motivos_flags[i] {
-                    stats.totales_motivos[i] += 1;
-                }
-            }
-
-            let (clave_def, display_def) = if defensor.trim().is_empty() {
-                (
-                    format!("__sin_asignar__:{}", nombre.to_lowercase()),
-                    format!("Sin asignar ({})", nombre.trim_end_matches(".xlsx")),
-                )
-            } else {
-                let norm = defensor.split_whitespace().collect::<Vec<_>>().join(" ");
-                (norm.to_lowercase(), norm)
-            };
-
-            let acc = defensores_map
-                .entry(clave_def)
-                .or_insert_with(|| AcumuladorDefensor {
-                    display: display_def,
-                    ..Default::default()
-                });
-            if !acc.archivos.contains(nombre) {
-                acc.archivos.push(nombre.clone());
-            }
-            acc.total += 1;
-            if r.realizada == "SI" {
-                acc.si += 1;
-            } else if r.realizada == "NO" {
-                acc.no += 1;
-            }
-            for i in 0..8 {
-                if r.motivos_flags[i] {
-                    acc.motivos[i] += 1;
-                }
-            }
-        }
-
-        if tuvo_datos_en_rango {
-            stats.total_planillas_con_datos += 1;
-        }
+        acumular_planilla_en_stats(
+            &arch.archivo,
+            &defensor_norm,
+            &arch.por_mes,
+            anio,
+            mes,
+            filtro_archivo_limpio,
+            filtro_defensor_limpio.as_deref(),
+            &mut meses_map,
+            &mut defensores_map,
+            &mut stats,
+        );
     }
 
     if stats.total_audiencias > 0 {
@@ -1369,6 +2157,52 @@ mod tests {
     }
 
     #[test]
+    fn test_rutas_con_subcarpetas_seguras() {
+        let ok = ruta_archivo("2026/Enero/agosto").unwrap();
+        assert!(ok.ends_with("2026/Enero/agosto.xlsx"));
+        assert!(ruta_archivo("/etc/pasaporte.xlsx").is_err());
+        assert!(ruta_archivo("2026/../../x.xlsx").is_err());
+        assert!(ruta_archivo("2026\\Enero\\x.xlsx").is_err());
+        assert!(ruta_archivo(".respaldos/x.xlsx").is_err());
+        assert!(ruta_carpeta("2026//Enero").is_err());
+
+        assert_eq!(sanitizar_ruta_carpeta("2026 / Enero").unwrap(), "2026/Enero");
+        assert_eq!(sanitizar_ruta_carpeta("Año: 2026*").unwrap(), "Año- 2026-");
+        assert!(sanitizar_ruta_carpeta("  ").is_err());
+    }
+
+    #[test]
+    fn test_listado_recursivo_ignora_ocultos_y_respaldos() {
+        let dir = preparar_temp_dir("listado_recursivo");
+        fs::create_dir_all(dir.join("2026/Enero")).unwrap();
+        fs::create_dir_all(dir.join("Vacia")).unwrap();
+        fs::create_dir_all(dir.join(".respaldos/x")).unwrap();
+        crear_copia_plantilla_en(&dir.join("raiz.xlsx"), None).unwrap();
+        crear_copia_plantilla_en(&dir.join("2026/Enero/a.xlsx"), None).unwrap();
+        fs::write(dir.join("2026/~$a.xlsx"), b"tmp").unwrap();
+        fs::write(dir.join(".respaldos/x/old.xlsx"), b"bak").unwrap();
+
+        let (archivos, carpetas) = explorar_carpeta_en(&dir).unwrap();
+        assert_eq!(archivos, vec!["2026/Enero/a.xlsx", "raiz.xlsx"]);
+        assert_eq!(carpetas, vec!["2026", "2026/Enero", "Vacia"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_cache_se_invalida_al_guardar() {
+        let dir = preparar_temp_dir("cache_planilla");
+        let ruta = dir.join("cache.xlsx");
+        crear_copia_plantilla_en(&ruta, None).unwrap();
+        assert_eq!(leer_archivo_en(&ruta).unwrap().0.len(), 0);
+        assert_eq!(leer_archivo_en(&ruta).unwrap().0.len(), 0);
+
+        let input = ejemplo_audiencia("PEDRO LOPEZ - 123456789", "15/08/2025", "09:00", "SI", "");
+        guardar_nueva_audiencia_en(&ruta, &input, false).unwrap();
+        assert_eq!(leer_archivo_en(&ruta).unwrap().0.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_estadisticas_globales_por_mes_y_defensor() {
         let dir = preparar_temp_dir("stats_globales");
         let p1 = dir.join("paula.xlsx");
@@ -1430,6 +2264,134 @@ mod tests {
         let sin_asignar = calcular_estadisticas_en(&dir, None, None, None, Some("__SIN_ASIGNAR__")).unwrap();
         assert_eq!(sin_asignar.total_audiencias, 1);
         assert_eq!(sin_asignar.total_si, 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_archivar_estadisticas_y_evitar_duplicados() {
+        let dir = preparar_temp_dir("stats_archivadas");
+        let p1 = dir.join("2026/enero.xlsx");
+        let p2 = dir.join("febrero.xlsx");
+
+        crear_copia_plantilla_en(&p1, Some("Dra. Paula Ríos")).unwrap();
+        crear_copia_plantilla_en(&p2, Some("Dr. Carlos Mendoza")).unwrap();
+
+        guardar_nueva_audiencia_en(&p1, &ejemplo_audiencia("R-1", "10/01/2026", "09:00", "SI", ""), false).unwrap();
+        guardar_nueva_audiencia_en(&p1, &ejemplo_audiencia("R-2", "11/01/2026", "10:00", "NO", "Juez"), false).unwrap();
+        // También una audiencia sin fecha (opcional)
+        guardar_nueva_audiencia_en(&p1, &ejemplo_audiencia("R-3", "", "", "SI", ""), false).unwrap();
+        guardar_nueva_audiencia_en(&p2, &ejemplo_audiencia("R-4", "15/02/2026", "11:00", "NO", "Fiscalía"), false).unwrap();
+
+        // Primer cálculo asigna IDs estables a p1 y p2
+        let antes = calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        assert_eq!(antes.total_audiencias, 4);
+        assert_eq!(antes.total_archivadas, 0);
+        let id_p1 = antes
+            .planillas
+            .iter()
+            .find(|p| p.archivo == "2026/enero.xlsx")
+            .unwrap()
+            .id
+            .clone();
+
+        // Eliminar 2026/enero.xlsx conservando sus estadísticas
+        eliminar_archivo_en(&dir, "2026/enero.xlsx", true).unwrap();
+        assert!(!p1.exists());
+
+        let despues = calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        assert_eq!(despues.total_audiencias, 4);
+        assert_eq!(despues.total_si, 2);
+        assert_eq!(despues.total_no, 2);
+        assert_eq!(despues.total_archivadas, 1);
+        assert_eq!(despues.totales_motivos[0], 1); // Juez conservado
+        assert_eq!(despues.totales_motivos[1], 1); // Fiscalía conservado
+
+        // Filtro por Enero 2026 sigue encontrando las 2 audiencias con fecha de enero (sin incluir la sin fecha)
+        let enero = calcular_estadisticas_en(&dir, Some(2026), Some(1), None, None).unwrap();
+        assert_eq!(enero.total_audiencias, 2);
+        assert_eq!(enero.total_si, 1);
+        assert_eq!(enero.total_no, 1);
+
+        // Si el archivo vuelve a estar en disco con el MISMO ID, nunca se duplica el conteo
+        crear_copia_plantilla_en(&p1, Some("Dra. Paula Ríos")).unwrap();
+        guardar_nueva_audiencia_en(&p1, &ejemplo_audiencia("R-1", "10/01/2026", "09:00", "SI", ""), false).unwrap();
+        let mut reg = cargar_registro_estadisticas_en(&dir);
+        reg.ids_por_ruta.insert("2026/enero.xlsx".to_string(), id_p1.clone());
+        guardar_registro_estadisticas_en(&dir, &reg).unwrap();
+
+        let sin_duplicar = calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        assert_eq!(sin_duplicar.total_audiencias, 2); // 1 de p1 vivo + 1 de p2 vivo (ignora el resumen archivado del mismo ID)
+        assert_eq!(sin_duplicar.total_archivadas, 0);
+
+        // Borrar el archivo sin conservar y quitar resumen archivado
+        eliminar_archivo_en(&dir, "2026/enero.xlsx", false).unwrap();
+        let con_archivado = calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        assert_eq!(con_archivado.total_archivadas, 1);
+        eliminar_estadistica_archivada_en(&dir, &id_p1).unwrap();
+        let limpio = calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        assert_eq!(limpio.total_archivadas, 0);
+        assert_eq!(limpio.total_audiencias, 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_eliminar_carpeta_llena_con_y_sin_conservar_estadisticas() {
+        let dir = preparar_temp_dir("eliminar_carpeta_llena");
+        let sub = dir.join("2026/Enero");
+        fs::create_dir_all(&sub).unwrap();
+        let p = sub.join("audiencias.xlsx");
+        crear_copia_plantilla_en(&p, Some("Dra. Laura Gómez")).unwrap();
+        guardar_nueva_audiencia_en(&p, &ejemplo_audiencia("R-1", "10/01/2026", "09:00", "SI", ""), false).unwrap();
+        guardar_nueva_audiencia_en(&p, &ejemplo_audiencia("R-2", "11/01/2026", "10:00", "NO", "INPEC"), false).unwrap();
+
+        // Sin confirmar eliminar_contenido -> debe fallar
+        assert!(eliminar_carpeta_con_opciones_en(&dir, "2026", false, false).is_err());
+        assert!(p.exists());
+
+        // Con confirmar + conservar_estadisticas -> borra carpeta pero conserva estadísticas
+        eliminar_carpeta_con_opciones_en(&dir, "2026", true, true).unwrap();
+        assert!(!dir.join("2026").exists());
+
+        let stats = calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        assert_eq!(stats.total_audiencias, 2);
+        assert_eq!(stats.total_si, 1);
+        assert_eq!(stats.total_no, 1);
+        assert_eq!(stats.total_archivadas, 1);
+        assert_eq!(stats.totales_motivos[3], 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_colores_carpetas_crud_y_limpieza() {
+        let dir = preparar_temp_dir("colores_carpetas");
+        crear_carpeta_con_color_en(&dir, "2026", Some("azul")).unwrap();
+        crear_carpeta_con_color_en(&dir, "2026/Enero", Some("verde")).unwrap();
+        assert!(guardar_color_carpeta_en(&dir, "2026", "neon-invalido").is_err());
+
+        let colores = obtener_colores_carpetas_en(&dir);
+        assert_eq!(colores.get("2026").map(String::as_str), Some("azul"));
+        assert_eq!(colores.get("2026/Enero").map(String::as_str), Some("verde"));
+
+        fs::rename(dir.join("2026"), dir.join("2027")).unwrap();
+        actualizar_prefijo_carpeta_indice(&dir, "2026", "2027").unwrap();
+        let renombrados = obtener_colores_carpetas_en(&dir);
+        assert!(!renombrados.contains_key("2026"));
+        assert_eq!(renombrados.get("2027").map(String::as_str), Some("azul"));
+        assert_eq!(
+            renombrados.get("2027/Enero").map(String::as_str),
+            Some("verde")
+        );
+
+        assert!(guardar_color_carpeta_en(&dir, "2026/Enero", "").is_err());
+        let tras_limpiar = guardar_color_carpeta_en(&dir, "2027/Enero", "").unwrap();
+        assert!(!tras_limpiar.contains_key("2027/Enero"));
+        assert_eq!(tras_limpiar.get("2027").map(String::as_str), Some("azul"));
+
+        eliminar_carpeta_con_opciones_en(&dir, "2027", true, false).unwrap();
+        assert!(obtener_colores_carpetas_en(&dir).is_empty());
 
         let _ = fs::remove_dir_all(&dir);
     }

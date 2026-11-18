@@ -37,6 +37,17 @@ export const HORAS_RAPIDAS = [
   ["16", "00"],
 ];
 
+export const COLORES_CARPETA = [
+  { id: "", label: "Predeterminado", cssVar: "var(--text-secondary)" },
+  { id: "azul", label: "Azul", cssVar: "var(--folder-azul)" },
+  { id: "verde", label: "Verde", cssVar: "var(--folder-verde)" },
+  { id: "ambar", label: "Ámbar", cssVar: "var(--folder-ambar)" },
+  { id: "coral", label: "Coral", cssVar: "var(--folder-coral)" },
+  { id: "rosa", label: "Rosa", cssVar: "var(--folder-rosa)" },
+  { id: "violeta", label: "Violeta", cssVar: "var(--folder-violeta)" },
+  { id: "turquesa", label: "Turquesa", cssVar: "var(--folder-turquesa)" },
+];
+
 export const MODELOS_GEMINI = [
   "gemini-2.5-flash",
   "gemini-2.5-pro",

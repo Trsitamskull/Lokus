@@ -5,6 +5,8 @@
     Copy,
     Search,
     RefreshCw,
+    Archive,
+    Trash2,
   } from "@lucide/svelte";
   import CustomSelect from "./CustomSelect.svelte";
   import { MOTIVOS_LABELS } from "../constants.js";
@@ -18,9 +20,15 @@
     onFiltrarChange,
     onAbrirPlanilla,
     onCopiarResumen,
+    onEliminarArchivada = undefined,
   } = $props();
 
   let busquedaDefensor = $state("");
+  let verArchivadas = $state(false);
+
+  let planillasArchivadas = $derived(
+    (stats?.planillas || []).filter((p) => p.archivada)
+  );
 
   let causalPrincipal = $derived.by(() => {
     const motivos = stats?.totales_motivos || [];
@@ -89,7 +97,7 @@
       },
       ...lista.map((p) => ({
         value: p.archivo,
-        label: `${p.archivo.replace(/\.xlsx$/i, "")}${p.defensor ? ` · ${p.defensor}` : ""}`,
+        label: `${p.archivo.replace(/\.xlsx$/i, "")}${p.defensor ? ` · ${p.defensor}` : ""}${p.archivada ? " (archivada)" : ""}`,
       })),
     ];
   });
@@ -245,6 +253,51 @@
       </button>
     </div>
   </div>
+
+  {#if (stats?.total_archivadas ?? 0) > 0}
+    <div class="stats-archive-banner">
+      <div class="stats-archive-summary">
+        <Archive size={14} />
+        <span>
+          Incluye <strong>{stats.total_archivadas}</strong>
+          {stats.total_archivadas === 1 ? "planilla archivada" : "planillas archivadas"} sin archivo Excel en disco.
+        </span>
+      </div>
+      <button
+        type="button"
+        class="inline-action-link"
+        onclick={() => (verArchivadas = !verArchivadas)}
+      >
+        {verArchivadas ? "Ocultar lista" : "Gestionar archivadas"}
+      </button>
+    </div>
+
+    {#if verArchivadas && planillasArchivadas.length > 0}
+      <div class="stats-archive-list">
+        {#each planillasArchivadas as arch (arch.id)}
+          <div class="stats-archive-row">
+            <div>
+              <strong>{arch.archivo.replace(/\.xlsx$/i, "")}</strong>
+              <span class="shortcut-hint">
+                · {arch.num_registros} audiencias{arch.defensor ? ` · ${arch.defensor}` : ""}
+              </span>
+            </div>
+            {#if onEliminarArchivada}
+              <button
+                type="button"
+                class="mini-icon-btn danger"
+                title="Eliminar resumen archivado del historial"
+                aria-label="Eliminar resumen archivado {arch.archivo}"
+                onclick={() => onEliminarArchivada(arch)}
+              >
+                <Trash2 size={13} />
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+  {/if}
 
   <!-- 4 TARJETAS KPI -->
   <div class="stats-kpi-grid">

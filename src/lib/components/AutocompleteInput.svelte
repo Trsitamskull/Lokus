@@ -1,5 +1,5 @@
 <script>
-  import { Check } from "@lucide/svelte";
+  import { Check, ChevronDown } from "@lucide/svelte";
 
   let {
     id = "",
@@ -14,12 +14,16 @@
     maxSuggestions = 12,
     allowEmptyOption = false,
     emptyOptionLabel = "Sin especificar (dejar vacío)",
+    headerText = "",
+    showDropdownButton = false,
+    describedBy = undefined,
     inputEl = $bindable(null),
     onEnter = undefined,
     onSelect = undefined,
   } = $props();
 
   let open = $state(false);
+  let mostrarTodas = $state(false);
   let highlightedIndex = $state(-1);
   let rootEl = $state(null);
   const fallbackId = `ac-${Math.random().toString(36).slice(2, 8)}`;
@@ -35,7 +39,7 @@
 
   let filtradas = $derived.by(() => {
     const q = normalizar(value);
-    const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+    const tokens = mostrarTodas || !q ? [] : q.split(/\s+/).filter(Boolean);
     const unicas = [];
     const vistas = new Set();
 
@@ -54,6 +58,7 @@
     }
 
     if (
+      !mostrarTodas &&
       unicas.length === 1 &&
       q &&
       normalizar(unicas[0]) === q
@@ -67,17 +72,33 @@
   function selectSuggestion(item) {
     value = item;
     open = false;
+    mostrarTodas = false;
     highlightedIndex = -1;
     onSelect?.(item);
+  }
+
+  function toggleDropdown() {
+    if (suggestions.length === 0) return;
+    if (open) {
+      open = false;
+      mostrarTodas = false;
+      highlightedIndex = -1;
+    } else {
+      open = true;
+      mostrarTodas = true;
+      highlightedIndex = -1;
+      inputEl?.focus();
+    }
   }
 
   function handleKeydown(e) {
     if (e.isComposing) return;
 
-    if (e.key === "Escape" && open && filtradas.length > 0) {
+    if (e.key === "Escape" && open && (filtradas.length > 0 || (allowEmptyOption && value.trim() !== ""))) {
       e.preventDefault();
       e.stopPropagation();
       open = false;
+      mostrarTodas = false;
       highlightedIndex = -1;
       return;
     }
@@ -105,6 +126,7 @@
       } else if (onEnter) {
         e.preventDefault();
         open = false;
+        mostrarTodas = false;
         onEnter();
       }
     }
@@ -113,6 +135,7 @@
   function handleWindowPointerDown(e) {
     if (open && rootEl && !rootEl.contains(e.target)) {
       open = false;
+      mostrarTodas = false;
       highlightedIndex = -1;
     }
   }
@@ -132,31 +155,55 @@
 <svelte:window onpointerdown={handleWindowPointerDown} />
 
 <div class="autocomplete-root" bind:this={rootEl}>
-  <input
-    {id}
-    {name}
-    type="text"
-    class="input {invalid ? 'is-invalid' : ''}"
-    bind:this={inputEl}
-    bind:value
-    {placeholder}
-    autocomplete="off"
-    {autocorrect}
-    {autocapitalize}
-    {spellcheck}
-    role="combobox"
-    aria-autocomplete="list"
-    aria-controls={listboxId}
-    aria-expanded={open && filtradas.length > 0}
-    onfocus={() => {
-      if (suggestions.length > 0) open = true;
-    }}
-    oninput={() => {
-      open = true;
-      highlightedIndex = -1;
-    }}
-    onkeydown={handleKeydown}
-  />
+  <div class="autocomplete-input-wrap">
+    <input
+      {id}
+      {name}
+      type="text"
+      class="input {invalid ? 'is-invalid' : ''} {showDropdownButton && suggestions.length > 0 ? 'has-toggle' : ''}"
+      bind:this={inputEl}
+      bind:value
+      {placeholder}
+      autocomplete="off"
+      {autocorrect}
+      {autocapitalize}
+      {spellcheck}
+      role="combobox"
+      aria-autocomplete="list"
+      aria-controls={listboxId}
+      aria-describedby={describedBy}
+      aria-expanded={open && (filtradas.length > 0 || (allowEmptyOption && value.trim() !== ""))}
+      aria-activedescendant={open && highlightedIndex >= 0 ? `${listboxId}-opt-${highlightedIndex}` : undefined}
+      onfocus={() => {
+        if (suggestions.length > 0) open = true;
+      }}
+      oninput={() => {
+        open = true;
+        mostrarTodas = false;
+        highlightedIndex = -1;
+      }}
+      onkeydown={handleKeydown}
+    />
+
+    {#if showDropdownButton && suggestions.length > 0}
+      <button
+        type="button"
+        class="autocomplete-toggle-btn"
+        aria-label="Mostrar opciones guardadas"
+        aria-expanded={open && (filtradas.length > 0 || (allowEmptyOption && value.trim() !== ""))}
+        onpointerdown={(e) => {
+          e.preventDefault();
+          toggleDropdown();
+        }}
+        onclick={(e) => {
+          // Soporte de activación por teclado (Enter/Space) cuando el foco está en el botón
+          if (e.detail === 0) toggleDropdown();
+        }}
+      >
+        <ChevronDown size={15} class={open ? "is-rotated" : ""} />
+      </button>
+    {/if}
+  </div>
 
   {#if open && (filtradas.length > 0 || (allowEmptyOption && value.trim() !== ""))}
     <div
@@ -170,9 +217,11 @@
         }
       }}
     >
-      <div class="autocomplete-header">
-        <span>Despachos sugeridos (escribe municipio o número para filtrar)</span>
-      </div>
+      {#if headerText}
+        <div class="autocomplete-header">
+          <span>{headerText}</span>
+        </div>
+      {/if}
       <div
         class="custom-select-list scroller"
         style="max-height: 210px"
@@ -204,6 +253,7 @@
           {@const isSelected = normalizar(value) === normalizar(item)}
           {@const isHighlighted = highlightedIndex === idx}
           <button
+            id="{listboxId}-opt-{idx}"
             type="button"
             role="option"
             aria-selected={isSelected}

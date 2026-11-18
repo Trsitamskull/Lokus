@@ -27,3 +27,5 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 dirs = "5"
 thiserror = "2"
+base64 = "0.22"
+flate2 = "1.1"

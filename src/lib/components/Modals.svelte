@@ -11,20 +11,59 @@
     AlertTriangle,
     Edit3,
     Trash2,
+    FolderPlus,
+    FolderInput,
+    Pencil,
+    Package,
+    Download,
+    Upload,
+    Archive,
+    FileSpreadsheet,
+    Palette,
+    Check,
   } from "@lucide/svelte";
   import AutocompleteInput from "./AutocompleteInput.svelte";
-  import { MODELOS_GEMINI, MODELOS_OPENAI } from "../constants.js";
+  import CustomSelect from "./CustomSelect.svelte";
+  import { COLORES_CARPETA, MODELOS_GEMINI, MODELOS_OPENAI } from "../constants.js";
 
   let {
     modalActivo = $bindable(null),
     defensorTargetArchivo = null,
     defensorTargetNombre = "",
     defensores = [],
+    carpetasDisponibles = [],
     settings = $bindable(),
     aiStatus,
     nombreNuevoArchivo = $bindable(""),
     defensorNuevoArchivo = $bindable(""),
+    carpetaNuevoArchivo = $bindable(""),
     errorModalCrear = "",
+    carpetaPadreNueva = $bindable(""),
+    nombreNuevaCarpeta = $bindable(""),
+    colorNuevaCarpeta = $bindable(""),
+    carpetaRenombrarActual = "",
+    carpetaRenombrarNueva = $bindable(""),
+    colorCarpetaRenombrar = $bindable(""),
+    colorCarpetaTarget = "",
+    colorCarpetaEditando = $bindable(""),
+    errorModalCarpeta = "",
+    archivoMoverTarget = "",
+    carpetaDestinoMover = $bindable(""),
+    carpetaDestinoNueva = $bindable(""),
+    errorModalMover = "",
+    eliminarTargetNombre = "",
+    eliminarTargetResumen = null,
+    eliminarCarpetaTarget = null,
+    conservarEstadisticasAlEliminar = $bindable(true),
+    portabilidadTab = $bindable("exportar"),
+    tipoExportacion = $bindable("completo"),
+    exportandoPaquete = false,
+    archivoImportNombre = "",
+    inspeccionImportacion = null,
+    errorImportacion = "",
+    modoConflictoImport = $bindable("omitir"),
+    importarConfigPaquete = $bindable(true),
+    importandoPaquete = false,
     textoIa = $bindable(""),
     procesandoIa = false,
     errorIa = "",
@@ -45,6 +84,15 @@
     respaldosTarget = "",
     cargandoRespaldos = false,
     onCrearNuevoArchivo,
+    onCrearCarpeta,
+    onRenombrarCarpeta,
+    onGuardarColorCarpeta,
+    onMoverArchivo,
+    onConfirmarEliminarArchivo,
+    onConfirmarEliminarCarpeta,
+    onExportarPaquete,
+    onSeleccionarArchivoImportar,
+    onEjecutarImportacion,
     onAbrirConfigIa,
     onProcesarConIa,
     onGuardarConfigIa,
@@ -72,6 +120,34 @@
     return defensores.filter((d) => d.toLowerCase().includes(q));
   });
 
+  let opcionesCarpetas = $derived([
+    { value: "", label: "Carpeta principal (raíz)" },
+    ...carpetasDisponibles.map((c) => ({ value: c, label: c })),
+  ]);
+
+  let opcionesCarpetasMover = $derived([
+    ...opcionesCarpetas,
+    { value: "__NUEVA__", label: "+ Escribir otra carpeta nueva..." },
+  ]);
+
+  function uint8ABase64(bytes) {
+    let bin = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(bin);
+  }
+
+  async function manejarArchivoImportInput(e) {
+    const file = e.currentTarget.files?.[0];
+    e.currentTarget.value = "";
+    if (!file) return;
+    const buffer = await file.arrayBuffer();
+    const b64 = uint8ABase64(new Uint8Array(buffer));
+    await onSeleccionarArchivoImportar?.(file.name, b64);
+  }
+
   async function cerrarDefensoresYGuardarPendiente() {
     if (
       defensorTargetArchivo &&
@@ -83,12 +159,37 @@
   }
 </script>
 
+{#snippet selectorColorCarpeta(valor, onSelect)}
+  <div class="field-group">
+    <span class="field-label">Color de la carpeta</span>
+    <div class="folder-color-grid" role="radiogroup" aria-label="Color de carpeta">
+      {#each COLORES_CARPETA as c (c.id)}
+        {@const seleccionado = (valor || "") === c.id}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={seleccionado}
+          class="folder-color-swatch {seleccionado ? 'active' : ''}"
+          onclick={() => onSelect(c.id)}
+        >
+          <span class="swatch-dot" style="--swatch-color: {c.cssVar}">
+            {#if seleccionado}
+              <Check size={11} strokeWidth={3} />
+            {/if}
+          </span>
+          <span class="swatch-label">{c.label}</span>
+        </button>
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
 {#if modalActivo}
   <dialog
     bind:this={dialogEl}
-    class={modalActivo === "defensores"
+    class={modalActivo === "defensores" || modalActivo === "portabilidad"
       ? "modal-wide"
-      : modalActivo === "crear"
+      : ["crear", "crear_carpeta", "mover_archivo"].includes(modalActivo)
         ? "modal-overflow-visible"
         : ""}
     aria-labelledby="dialog-heading"
@@ -145,19 +246,46 @@
               Defensor Público asignado (opcional)
             </label>
           </div>
+          <span id="nuevo-archivo-defensor-hint" class="shortcut-hint">
+            {#if defensores.length > 0}
+              Elige un defensor de tu lista guardada o escribe un nombre nuevo.
+            {:else}
+              Opcional: escribe el nombre del defensor y se guardará en tu directorio.
+            {/if}
+          </span>
           <AutocompleteInput
             id="nuevo-archivo-defensor"
             bind:value={defensorNuevoArchivo}
             suggestions={defensores}
+            showDropdownButton={defensores.length > 0}
+            headerText="Defensores guardados en tu directorio"
+            allowEmptyOption={true}
+            emptyOptionLabel="Dejar sin defensor asignado"
+            describedBy="nuevo-archivo-defensor-hint"
+            maxSuggestions={100}
+            autocorrect="off"
+            spellcheck="false"
             placeholder={defensores.length > 0
-              ? "Selecciona de tu directorio o escribe un nombre nuevo"
-              : "Escribe el nombre y se guardará para próximas planillas"}
+              ? "Elige de tu lista o escribe un nombre nuevo"
+              : "Opcional: escribe el nombre del defensor"}
             onEnter={onCrearNuevoArchivo}
           />
-          <span class="shortcut-hint">
-            Si ingresas un nombre nuevo se guardará en tu directorio de defensores.
-          </span>
         </div>
+
+        {#if carpetasDisponibles.length > 0 || carpetaNuevoArchivo}
+          <div class="field-group">
+            <label class="field-label" for="nuevo-archivo-carpeta">
+              Carpeta de ubicación (opcional)
+            </label>
+            <CustomSelect
+              id="nuevo-archivo-carpeta"
+              bind:value={carpetaNuevoArchivo}
+              options={opcionesCarpetas}
+              placeholder="Carpeta principal (raíz)"
+              searchPlaceholder="Filtrar carpeta..."
+            />
+          </div>
+        {/if}
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
@@ -166,6 +294,539 @@
         <button type="button" class="btn btn-solid" onclick={onCrearNuevoArchivo}>
           Crear archivo
         </button>
+      </div>
+
+    {:else if modalActivo === "crear_carpeta"}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <FolderPlus size={15} />
+          <span>Nueva carpeta</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body scroller">
+        {#if carpetasDisponibles.length > 0 || carpetaPadreNueva}
+          <div class="field-group">
+            <label class="field-label" for="carpeta-padre-select">
+              Crear dentro de
+            </label>
+            <CustomSelect
+              id="carpeta-padre-select"
+              bind:value={carpetaPadreNueva}
+              options={opcionesCarpetas}
+              placeholder="Carpeta principal (raíz)"
+              searchPlaceholder="Filtrar carpeta..."
+            />
+          </div>
+        {/if}
+        <div class="field-group">
+          <label class="field-label" for="nueva-carpeta-input">
+            Nombre de la carpeta o subruta
+          </label>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            id="nueva-carpeta-input"
+            type="text"
+            class="input {errorModalCarpeta ? 'is-invalid' : ''}"
+            bind:value={nombreNuevaCarpeta}
+            autofocus
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="Ej: 2026 o 2026/Enero"
+            onkeydown={(e) => {
+              if (!e.isComposing && e.key === "Enter") {
+                e.preventDefault();
+                onCrearCarpeta();
+              }
+            }}
+          />
+          {#if errorModalCarpeta}
+            <p style="color: var(--status-no); font-size: 12px">{errorModalCarpeta}</p>
+          {:else}
+            <span class="shortcut-hint">
+              Puedes crear varios niveles a la vez separando con <code>/</code> (ej: <code>2026/Febrero</code>).
+            </span>
+          {/if}
+        </div>
+        {@render selectorColorCarpeta(
+          colorNuevaCarpeta,
+          (id) => (colorNuevaCarpeta = id),
+        )}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
+          Cancelar
+        </button>
+        <button type="button" class="btn btn-solid" onclick={onCrearCarpeta}>
+          Crear carpeta
+        </button>
+      </div>
+
+    {:else if modalActivo === "renombrar_carpeta"}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <Pencil size={15} />
+          <span>Renombrar o mover carpeta</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body scroller">
+        <p class="shortcut-hint">
+          Carpeta actual: <strong>{carpetaRenombrarActual}</strong>
+        </p>
+        <div class="field-group">
+          <label class="field-label" for="renombrar-carpeta-input">
+            Nuevo nombre o ruta de carpeta
+          </label>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            id="renombrar-carpeta-input"
+            type="text"
+            class="input {errorModalCarpeta ? 'is-invalid' : ''}"
+            bind:value={carpetaRenombrarNueva}
+            autofocus
+            autocorrect="off"
+            spellcheck="false"
+            onkeydown={(e) => {
+              if (!e.isComposing && e.key === "Enter") {
+                e.preventDefault();
+                onRenombrarCarpeta();
+              }
+            }}
+          />
+          {#if errorModalCarpeta}
+            <p style="color: var(--status-no); font-size: 12px">{errorModalCarpeta}</p>
+          {/if}
+        </div>
+        {@render selectorColorCarpeta(
+          colorCarpetaRenombrar,
+          (id) => (colorCarpetaRenombrar = id),
+        )}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
+          Cancelar
+        </button>
+        <button type="button" class="btn btn-solid" onclick={onRenombrarCarpeta}>
+          Guardar cambios
+        </button>
+      </div>
+
+    {:else if modalActivo === "color_carpeta" && colorCarpetaTarget}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <Palette size={15} />
+          <span>Color de carpeta</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body scroller">
+        <p class="shortcut-hint">
+          Carpeta: <strong>{colorCarpetaTarget}</strong>
+        </p>
+        {@render selectorColorCarpeta(
+          colorCarpetaEditando,
+          (id) => (colorCarpetaEditando = id),
+        )}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
+          Cancelar
+        </button>
+        <button type="button" class="btn btn-solid" onclick={onGuardarColorCarpeta}>
+          Guardar color
+        </button>
+      </div>
+
+    {:else if modalActivo === "mover_archivo"}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <FolderInput size={15} />
+          <span>Mover planilla de carpeta</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body scroller">
+        <p class="shortcut-hint">
+          Planilla: <strong>{archivoMoverTarget}</strong>
+        </p>
+        <div class="field-group">
+          <label class="field-label" for="mover-carpeta-select">
+            Carpeta de destino
+          </label>
+          <CustomSelect
+            id="mover-carpeta-select"
+            bind:value={carpetaDestinoMover}
+            options={opcionesCarpetasMover}
+            placeholder="Carpeta principal (raíz)"
+            searchPlaceholder="Filtrar carpeta..."
+          />
+        </div>
+        {#if carpetaDestinoMover === "__NUEVA__"}
+          <div class="field-group">
+            <label class="field-label" for="mover-carpeta-nueva-input">
+              Nombre de la carpeta nueva
+            </label>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input
+              id="mover-carpeta-nueva-input"
+              type="text"
+              class="input {errorModalMover ? 'is-invalid' : ''}"
+              bind:value={carpetaDestinoNueva}
+              autofocus
+              autocorrect="off"
+              spellcheck="false"
+              placeholder="Ej: 2026/Marzo"
+              onkeydown={(e) => {
+                if (!e.isComposing && e.key === "Enter") {
+                  e.preventDefault();
+                  onMoverArchivo();
+                }
+              }}
+            />
+          </div>
+        {/if}
+        {#if errorModalMover}
+          <p style="color: var(--status-no); font-size: 12px">{errorModalMover}</p>
+        {/if}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
+          Cancelar
+        </button>
+        <button type="button" class="btn btn-solid" onclick={onMoverArchivo}>
+          Mover aquí
+        </button>
+      </div>
+
+    {:else if modalActivo === "eliminar_archivo" && eliminarTargetNombre}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">Eliminar planilla Excel</h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body scroller">
+        <p style="color: var(--text-secondary)">
+          ¿Eliminar permanentemente <strong>{eliminarTargetNombre}</strong>? Esta acción borrará el archivo Excel y no se puede deshacer.
+        </p>
+        {#if eliminarTargetResumen}
+          <div class="delete-stats-summary">
+            <span>{eliminarTargetResumen.num_registros} audiencias registradas</span>
+            <span>· {eliminarTargetResumen.total_si} realizadas · {eliminarTargetResumen.total_no} aplazadas</span>
+          </div>
+        {/if}
+        <label class="delete-archive-check">
+          <input type="checkbox" bind:checked={conservarEstadisticasAlEliminar} />
+          <div>
+            <strong>Conservar sus estadísticas en el historial global</strong>
+            <div class="shortcut-hint">
+              Sus totales por mes, defensor y causal seguirán apareciendo en Estadísticas aunque elimines el Excel.
+            </div>
+          </div>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <!-- svelte-ignore a11y_autofocus -->
+        <button
+          type="button"
+          class="btn btn-subtle"
+          autofocus
+          onclick={() => (modalActivo = null)}
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          class="btn btn-danger"
+          onclick={onConfirmarEliminarArchivo}
+        >
+          Eliminar planilla
+        </button>
+      </div>
+
+    {:else if modalActivo === "eliminar_carpeta" && eliminarCarpetaTarget}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <AlertTriangle size={15} style="color: var(--status-no)" />
+          <span>Eliminar carpeta con contenido</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body scroller">
+        <div class="folder-delete-warning">
+          <strong>¡Advertencia!</strong> La carpeta
+          <strong>{eliminarCarpetaTarget.carpeta}</strong> no está vacía:
+          {#if eliminarCarpetaTarget.totalArchivos > 0}
+            contiene <strong>{eliminarCarpetaTarget.totalArchivos}</strong>
+            {eliminarCarpetaTarget.totalArchivos === 1 ? "planilla Excel" : "planillas Excel"}
+          {/if}
+          {#if eliminarCarpetaTarget.totalSubcarpetas > 0}
+            {eliminarCarpetaTarget.totalArchivos > 0 ? " y " : "contiene "}
+            <strong>{eliminarCarpetaTarget.totalSubcarpetas}</strong>
+            {eliminarCarpetaTarget.totalSubcarpetas === 1 ? "subcarpeta" : "subcarpetas"}
+          {/if}.
+          Al confirmar se borrarán permanentemente todos esos archivos y sus respaldos.
+        </div>
+        {#if eliminarCarpetaTarget.totalArchivos > 0}
+          <label class="delete-archive-check">
+            <input type="checkbox" bind:checked={conservarEstadisticasAlEliminar} />
+            <div>
+              <strong>Conservar las estadísticas de estas planillas en el historial global</strong>
+              <div class="shortcut-hint">
+                Sus totales por mes, defensor y causales seguirán contando en Estadísticas aunque se borren los Excel.
+              </div>
+            </div>
+          </label>
+        {/if}
+      </div>
+      <div class="modal-footer">
+        <!-- svelte-ignore a11y_autofocus -->
+        <button
+          type="button"
+          class="btn btn-subtle"
+          autofocus
+          onclick={() => (modalActivo = null)}
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          class="btn btn-danger"
+          onclick={onConfirmarEliminarCarpeta}
+        >
+          Eliminar carpeta y contenido
+        </button>
+      </div>
+
+    {:else if modalActivo === "portabilidad"}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <Package size={15} />
+          <span>Exportar e Importar datos</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body scroller">
+        <div class="segmented-control" role="tablist" aria-label="Exportar o Importar">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={portabilidadTab === "exportar"}
+            class="segmented-option {portabilidadTab === 'exportar' ? 'is-si' : ''}"
+            onclick={() => (portabilidadTab = "exportar")}
+          >
+            <Download size={14} />
+            <span>Exportar</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={portabilidadTab === "importar"}
+            class="segmented-option {portabilidadTab === 'importar' ? 'is-si' : ''}"
+            onclick={() => (portabilidadTab = "importar")}
+          >
+            <Upload size={14} />
+            <span>Importar</span>
+          </button>
+        </div>
+
+        {#if portabilidadTab === "exportar"}
+          <p class="shortcut-hint">
+            Elige qué deseas guardar en tu carpeta de Descargas. Cada planilla conserva su identificador único para no contar duplicados al reimportar.
+          </p>
+
+          <div class="portabilidad-options">
+            <label class="portabilidad-card-option {tipoExportacion === 'completo' ? 'selected' : ''}">
+              <input type="radio" name="tipo-exp" value="completo" bind:group={tipoExportacion} />
+              <div>
+                <div class="portabilidad-card-title">
+                  <FileSpreadsheet size={14} class="excel-icon" />
+                  <strong>Copia completa de Lokus (.lokus)</strong>
+                </div>
+                <p class="shortcut-hint">
+                  Incluye todas tus carpetas, planillas Excel, estadísticas archivadas y tus listas (defensores, juzgados y tipos de audiencia). Nunca incluye tus claves API.
+                </p>
+              </div>
+            </label>
+
+            <label class="portabilidad-card-option {tipoExportacion === 'estadisticas' ? 'selected' : ''}">
+              <input type="radio" name="tipo-exp" value="estadisticas" bind:group={tipoExportacion} />
+              <div>
+                <div class="portabilidad-card-title">
+                  <Archive size={14} />
+                  <strong>Solo estadísticas (.lokus.json)</strong>
+                </div>
+                <p class="shortcut-hint">
+                  Archivo liviano con los totales por mes, defensor y causal sin incluir los archivos Excel. Ideal para consolidar o compartir indicadores sin duplicar registros.
+                </p>
+              </div>
+            </label>
+          </div>
+        {:else}
+          <div class="field-group">
+            <label class="import-drop-btn">
+              <Upload size={15} />
+              <span>
+                {archivoImportNombre
+                  ? `Archivo elegido: ${archivoImportNombre}`
+                  : "Seleccionar respaldo (.lokus) o estadísticas (.lokus.json)..."}
+              </span>
+              <input
+                type="file"
+                accept=".lokus,.json,application/json,application/gzip"
+                hidden
+                onchange={manejarArchivoImportInput}
+              />
+            </label>
+          </div>
+
+          {#if errorImportacion}
+            <p style="color: var(--status-no); font-size: 12.5px">{errorImportacion}</p>
+          {/if}
+
+          {#if inspeccionImportacion}
+            <div class="import-preview-box">
+              <div class="import-preview-head">
+                <strong>
+                  {inspeccionImportacion.tipo_paquete === "completo"
+                    ? "Paquete detectado: Copia completa"
+                    : "Paquete detectado: Solo estadísticas"}
+                </strong>
+                <span class="shortcut-hint">v{inspeccionImportacion.version_app}</span>
+              </div>
+
+              <div class="import-preview-stats">
+                {#if inspeccionImportacion.tipo_paquete === "completo"}
+                  <span>• Carpetas en el respaldo: <strong>{inspeccionImportacion.total_carpetas}</strong></span>
+                  <span>
+                    • Planillas Excel: <strong>{inspeccionImportacion.planillas_nuevas}</strong> nuevas
+                    {#if inspeccionImportacion.planillas_conflicto_id + inspeccionImportacion.planillas_conflicto_ruta > 0}
+                      · <strong>{inspeccionImportacion.planillas_conflicto_id + inspeccionImportacion.planillas_conflicto_ruta}</strong> ya existen aquí
+                    {/if}
+                  </span>
+                {/if}
+
+                {#if inspeccionImportacion.total_resumenes > 0}
+                  <span>
+                    • Resúmenes estadísticos: <strong>{inspeccionImportacion.resumenes_nuevos}</strong> nuevos
+                    {#if inspeccionImportacion.resumenes_ya_en_disco > 0}
+                      · <strong>{inspeccionImportacion.resumenes_ya_en_disco}</strong> ya están activos en tus Excel (no se duplicarán)
+                    {/if}
+                    {#if inspeccionImportacion.resumenes_ya_archivados > 0}
+                      · <strong>{inspeccionImportacion.resumenes_ya_archivados}</strong> ya archivados
+                    {/if}
+                  </span>
+                {/if}
+              </div>
+
+              {#if inspeccionImportacion.planillas_conflicto_id + inspeccionImportacion.planillas_conflicto_ruta + inspeccionImportacion.resumenes_ya_archivados > 0}
+                <div class="field-group" style="margin-top: 6px">
+                  <span class="field-label">Si algún archivo o resumen ya existe aquí:</span>
+                  <div class="import-conflict-modes">
+                    <label class="import-mode-row">
+                      <input type="radio" name="modo-conflicto" value="omitir" bind:group={modoConflictoImport} />
+                      <span><strong>Omitir repetidos (Recomendado)</strong> — agrega solo lo nuevo y evita duplicados</span>
+                    </label>
+                    <label class="import-mode-row">
+                      <input type="radio" name="modo-conflicto" value="reemplazar" bind:group={modoConflictoImport} />
+                      <span><strong>Reemplazar existentes</strong> — actualiza los repetidos guardando respaldo previo</span>
+                    </label>
+                    <label class="import-mode-row">
+                      <input type="radio" name="modo-conflicto" value="conservar_ambas" bind:group={modoConflictoImport} />
+                      <span><strong>Conservar ambas copias</strong> — guarda los repetidos como <code>_importado</code></span>
+                    </label>
+                  </div>
+                </div>
+              {/if}
+
+              {#if inspeccionImportacion.trae_configuracion}
+                <label class="delete-archive-check" style="margin-top: 4px">
+                  <input type="checkbox" bind:checked={importarConfigPaquete} />
+                  <div>
+                    <strong>Fusionar listas guardadas</strong>
+                    <div class="shortcut-hint">
+                      Agrega sin borrar tus actuales: {inspeccionImportacion.defensores_en_paquete} defensores, {inspeccionImportacion.juzgados_en_paquete} juzgados y {inspeccionImportacion.tipos_en_paquete} tipos de audiencia.
+                    </div>
+                  </div>
+                </label>
+              {/if}
+            </div>
+          {/if}
+        {/if}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
+          Cerrar
+        </button>
+        {#if portabilidadTab === "exportar"}
+          <button
+            type="button"
+            class="btn btn-solid"
+            disabled={exportandoPaquete}
+            onclick={onExportarPaquete}
+          >
+            <Download size={14} />
+            <span>{exportandoPaquete ? "Exportando..." : "Exportar a Descargas"}</span>
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="btn btn-solid"
+            disabled={!inspeccionImportacion || importandoPaquete}
+            onclick={onEjecutarImportacion}
+          >
+            <Upload size={14} />
+            <span>{importandoPaquete ? "Importando..." : "Confirmar importación"}</span>
+          </button>
+        {/if}
       </div>
 
     {:else if modalActivo === "ia"}
@@ -491,6 +1152,9 @@
                   id="defensor-planilla-input"
                   bind:value={defensorPlanillaDraft}
                   suggestions={defensores}
+                  showDropdownButton={defensores.length > 0}
+                  maxSuggestions={100}
+                  headerText="Defensores guardados en tu directorio"
                   placeholder="Escribe, corrige o elige el defensor de esta planilla"
                   onEnter={() => onAsignarDefensor(defensorPlanillaDraft)}
                 />

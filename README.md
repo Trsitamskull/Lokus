@@ -5,9 +5,6 @@ Aplicación de escritorio nativa multiplataforma (**Windows** y **Linux**) const
 ---
 
 ## Descarga Directa (Sin instalar dependencias)
-
-👉 **[Ir a la página de Descargas (GitHub Releases)](https://github.com/Trsitamskull/Lokus/releases)**
-
 Los ejecutables compilados para **Windows** y **Linux** se publican automáticamente en [`https://github.com/Trsitamskull/Lokus/releases`](https://github.com/Trsitamskull/Lokus/releases):
 
 - **Windows:**

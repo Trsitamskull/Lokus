@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { FileText, List, PanelLeft, BarChart3, Share2 } from "@lucide/svelte";
+  import { FileText, List, PanelLeft, BarChart3, Share2, Package, FileSpreadsheet } from "@lucide/svelte";
   import {
     TIPOS_AUDIENCIA,
     MOTIVOS_LABELS,
@@ -18,6 +18,9 @@
   let sidebarMobileOpen = $state(false);
   let archivoActual = $state(null);
   let archivosDisponibles = $state([]);
+  let carpetasDisponibles = $state([]);
+  let ordenCarpetas = $state([]);
+  let coloresCarpetas = $state({});
   let registros = $state([]);
   let defensorArchivo = $state("");
   let defensores = $state([]);
@@ -84,7 +87,35 @@
   let modalActivo = $state(null);
   let nombreNuevoArchivo = $state("");
   let defensorNuevoArchivo = $state("");
+  let carpetaNuevoArchivo = $state("");
   let errorModalCrear = $state("");
+  let carpetaPadreNueva = $state("");
+  let nombreNuevaCarpeta = $state("");
+  let colorNuevaCarpeta = $state("");
+  let carpetaRenombrarActual = $state("");
+  let carpetaRenombrarNueva = $state("");
+  let colorCarpetaRenombrar = $state("");
+  let colorCarpetaTarget = $state("");
+  let colorCarpetaEditando = $state("");
+  let errorModalCarpeta = $state("");
+  let archivoMoverTarget = $state("");
+  let carpetaDestinoMover = $state("");
+  let carpetaDestinoNueva = $state("");
+  let errorModalMover = $state("");
+  let eliminarTargetNombre = $state("");
+  let eliminarTargetResumen = $state(null);
+  let eliminarCarpetaTarget = $state(null);
+  let conservarEstadisticasAlEliminar = $state(true);
+  let portabilidadTab = $state("exportar");
+  let tipoExportacion = $state("completo");
+  let exportandoPaquete = $state(false);
+  let archivoImportNombre = $state("");
+  let archivoImportB64 = $state("");
+  let inspeccionImportacion = $state(null);
+  let errorImportacion = $state("");
+  let modoConflictoImport = $state("omitir");
+  let importarConfigPaquete = $state(true);
+  let importandoPaquete = $state(false);
   let confirmacionPendiente = $state(null);
   let ejecutandoConfirmacion = $state(false);
   let duplicadoDetectado = $state(null);
@@ -185,7 +216,16 @@
 
   async function refrescarListaArchivos() {
     try {
-      archivosDisponibles = await invoke("cmd_listar_archivos");
+      const [archivos, carpetas, orden, colores] = await Promise.all([
+        invoke("cmd_listar_archivos"),
+        invoke("cmd_listar_carpetas"),
+        invoke("cmd_obtener_orden_carpetas"),
+        invoke("cmd_obtener_colores_carpetas"),
+      ]);
+      archivosDisponibles = archivos;
+      carpetasDisponibles = carpetas;
+      ordenCarpetas = orden;
+      coloresCarpetas = colores || {};
     } catch (_) {}
   }
 
@@ -236,8 +276,37 @@
   }
 
   async function abrirPlanillaDesdeStats(nombreArchivo) {
+    if (!archivosDisponibles.includes(nombreArchivo)) {
+      mostrarToast(
+        "Planilla archivada: solo se conservan sus estadísticas en el historial (el archivo Excel fue eliminado).",
+        "info",
+        3800
+      );
+      return;
+    }
     await seleccionarArchivo(nombreArchivo);
     vistaActiva = "listado";
+  }
+
+  function solicitarEliminarArchivada(arch) {
+    abrirConfirmacion(
+      "Eliminar estadística archivada",
+      `¿Eliminar del historial el resumen archivado de '${arch.archivo}' (${arch.num_registros} audiencias)?`,
+      "Eliminar del historial",
+      true,
+      async () => {
+        try {
+          await invoke("cmd_eliminar_estadistica_archivada", { id: arch.id });
+          if (statsArchivoFiltro === arch.archivo) {
+            statsArchivoFiltro = "";
+          }
+          await cargarEstadisticas();
+          mostrarToast("Resumen archivado eliminado del historial", "info");
+        } catch (e) {
+          mostrarToast(String(e), "error");
+        }
+      }
+    );
   }
 
   async function copiarResumenEstadisticas() {
@@ -388,9 +457,10 @@
     }
   }
 
-  function abrirCrearArchivoModal() {
+  function abrirCrearArchivoModal(carpetaInicial = "") {
     nombreNuevoArchivo = "";
     defensorNuevoArchivo = "";
+    carpetaNuevoArchivo = typeof carpetaInicial === "string" ? carpetaInicial : "";
     errorModalCrear = "";
     modalActivo = "crear";
   }
@@ -401,10 +471,12 @@
       return;
     }
     const defensorTrim = defensorNuevoArchivo.trim();
+    const carpetaTrim = carpetaNuevoArchivo.trim();
     try {
       const creado = await invoke("cmd_crear_archivo", {
         nombre: nombreNuevoArchivo.trim(),
         defensor: defensorTrim || null,
+        carpeta: carpetaTrim || null,
       });
       if (defensorTrim) {
         try {
@@ -418,11 +490,382 @@
       modalActivo = null;
       nombreNuevoArchivo = "";
       defensorNuevoArchivo = "";
+      carpetaNuevoArchivo = "";
       errorModalCrear = "";
       mostrarToast(`Archivo '${creado}' creado`, "success");
     } catch (e) {
       errorModalCrear = String(e);
     }
+  }
+
+  function abrirCrearCarpetaModal(carpetaPadre = "") {
+    carpetaPadreNueva = typeof carpetaPadre === "string" ? carpetaPadre : "";
+    nombreNuevaCarpeta = "";
+    colorNuevaCarpeta = "";
+    errorModalCarpeta = "";
+    modalActivo = "crear_carpeta";
+  }
+
+  async function crearNuevaCarpeta() {
+    const limpio = nombreNuevaCarpeta.trim().replace(/^\/+|\/+$/g, "");
+    if (!limpio) {
+      errorModalCarpeta = "Ingresa el nombre de la carpeta";
+      return;
+    }
+    const rutaCompleta = carpetaPadreNueva ? `${carpetaPadreNueva}/${limpio}` : limpio;
+    try {
+      const creada = await invoke("cmd_crear_carpeta", {
+        ruta: rutaCompleta,
+        color: colorNuevaCarpeta || null,
+      });
+      await refrescarListaArchivos();
+      modalActivo = null;
+      nombreNuevaCarpeta = "";
+      colorNuevaCarpeta = "";
+      errorModalCarpeta = "";
+      mostrarToast(`Carpeta '${creada}' creada`, "success");
+    } catch (e) {
+      errorModalCarpeta = String(e);
+    }
+  }
+
+  function abrirRenombrarCarpetaModal(carpeta) {
+    carpetaRenombrarActual = carpeta;
+    carpetaRenombrarNueva = carpeta;
+    colorCarpetaRenombrar = coloresCarpetas[carpeta] || "";
+    errorModalCarpeta = "";
+    modalActivo = "renombrar_carpeta";
+  }
+
+  async function renombrarCarpetaExistente() {
+    const nueva = carpetaRenombrarNueva.trim();
+    if (!nueva) {
+      errorModalCarpeta = "Ingresa el nuevo nombre de la carpeta";
+      return;
+    }
+    const colorActual = coloresCarpetas[carpetaRenombrarActual] || "";
+    const colorNuevo = colorCarpetaRenombrar || "";
+    if (nueva === carpetaRenombrarActual) {
+      if (colorNuevo === colorActual) {
+        modalActivo = null;
+        return;
+      }
+      try {
+        coloresCarpetas = await invoke("cmd_guardar_color_carpeta", {
+          ruta: carpetaRenombrarActual,
+          color: colorNuevo,
+        });
+        modalActivo = null;
+        errorModalCarpeta = "";
+        mostrarToast("Color de carpeta actualizado", "success");
+      } catch (e) {
+        errorModalCarpeta = String(e);
+      }
+      return;
+    }
+    try {
+      const renombrada = await aplicarMovimientoCarpeta(
+        carpetaRenombrarActual,
+        nueva,
+        colorNuevo,
+      );
+      modalActivo = null;
+      errorModalCarpeta = "";
+      mostrarToast(`Carpeta movida/renombrada a '${renombrada}'`, "success");
+    } catch (e) {
+      errorModalCarpeta = String(e);
+    }
+  }
+
+  function abrirColorCarpetaModal(carpeta) {
+    colorCarpetaTarget = carpeta;
+    colorCarpetaEditando = coloresCarpetas[carpeta] || "";
+    modalActivo = "color_carpeta";
+  }
+
+  async function guardarColorCarpetaModal() {
+    if (!colorCarpetaTarget) return;
+    try {
+      coloresCarpetas = await invoke("cmd_guardar_color_carpeta", {
+        ruta: colorCarpetaTarget,
+        color: colorCarpetaEditando || "",
+      });
+      modalActivo = null;
+      mostrarToast("Color de carpeta actualizado", "success");
+    } catch (e) {
+      mostrarToast(`No se pudo guardar el color: ${e}`, "error");
+    }
+  }
+
+  async function aplicarMovimientoCarpeta(actual, nueva, color = null) {
+    const renombrada = await invoke("cmd_renombrar_carpeta", {
+      actual,
+      nueva,
+      color,
+    });
+    const prefijo = `${actual}/`;
+    if (archivoActual && archivoActual.startsWith(prefijo)) {
+      archivoActual = `${renombrada}/${archivoActual.slice(prefijo.length)}`;
+    }
+    if (statsArchivoFiltro && statsArchivoFiltro.startsWith(prefijo)) {
+      statsArchivoFiltro = `${renombrada}/${statsArchivoFiltro.slice(prefijo.length)}`;
+    }
+    await refrescarListaArchivos();
+    return renombrada;
+  }
+
+  async function aplicarMovimientoArchivo(nombre, destino) {
+    const nuevaRuta = await invoke("cmd_mover_archivo", {
+      nombre,
+      carpetaDestino: destino,
+    });
+    if (archivoActual === nombre) {
+      archivoActual = nuevaRuta;
+    }
+    if (statsArchivoFiltro === nombre) {
+      statsArchivoFiltro = nuevaRuta;
+    }
+    await refrescarListaArchivos();
+    return nuevaRuta;
+  }
+
+  async function finalizarEliminacionCarpeta(
+    carpeta,
+    eliminarContenido,
+    conservarEstadisticas
+  ) {
+    try {
+      await invoke("cmd_eliminar_carpeta", {
+        ruta: carpeta,
+        eliminarContenido,
+        conservarEstadisticas,
+      });
+      const prefijo = `${carpeta}/`;
+      await refrescarListaArchivos();
+      if (archivoActual && archivoActual.startsWith(prefijo)) {
+        archivoActual = archivosDisponibles[0] || null;
+        if (archivoActual) {
+          await recargarArchivoActual();
+        } else {
+          registros = [];
+          defensorArchivo = "";
+          totales = {
+            num_registros: 0,
+            total_si: 0,
+            total_no: 0,
+            totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
+          };
+        }
+      }
+      if (statsArchivoFiltro && statsArchivoFiltro.startsWith(prefijo)) {
+        statsArchivoFiltro = "";
+      }
+      if (vistaActiva === "estadisticas") {
+        cargarEstadisticas();
+      }
+      mostrarToast(
+        eliminarContenido && conservarEstadisticas
+          ? `Carpeta '${carpeta}' eliminada (estadísticas conservadas)`
+          : `Carpeta '${carpeta}' eliminada`,
+        "info"
+      );
+    } catch (e) {
+      mostrarToast(String(e), "error", 4200);
+    }
+  }
+
+  function eliminarCarpetaSolicitada(carpeta) {
+    const prefijo = `${carpeta}/`;
+    const totalArchivos = archivosDisponibles.filter((a) =>
+      a.startsWith(prefijo)
+    ).length;
+    const totalSubcarpetas = carpetasDisponibles.filter((c) =>
+      c.startsWith(prefijo)
+    ).length;
+
+    if (totalArchivos === 0 && totalSubcarpetas === 0) {
+      abrirConfirmacion(
+        "Eliminar carpeta",
+        `¿Eliminar la carpeta vacía '${carpeta}'?`,
+        "Eliminar carpeta",
+        true,
+        () => finalizarEliminacionCarpeta(carpeta, false, false)
+      );
+      return;
+    }
+
+    eliminarCarpetaTarget = { carpeta, totalArchivos, totalSubcarpetas };
+    conservarEstadisticasAlEliminar = true;
+    modalActivo = "eliminar_carpeta";
+  }
+
+  async function confirmarEliminacionCarpeta() {
+    if (!eliminarCarpetaTarget) return;
+    const { carpeta, totalArchivos } = eliminarCarpetaTarget;
+    const conservar = totalArchivos > 0 ? conservarEstadisticasAlEliminar : false;
+    modalActivo = null;
+    eliminarCarpetaTarget = null;
+    await finalizarEliminacionCarpeta(carpeta, true, conservar);
+  }
+
+  function abrirModalPortabilidad(tabInicial = "exportar") {
+    portabilidadTab = tabInicial;
+    archivoImportNombre = "";
+    archivoImportB64 = "";
+    inspeccionImportacion = null;
+    errorImportacion = "";
+    modoConflictoImport = "omitir";
+    importarConfigPaquete = true;
+    modalActivo = "portabilidad";
+  }
+
+  async function exportarPaqueteLokus() {
+    if (exportandoPaquete) return;
+    exportandoPaquete = true;
+    try {
+      const ruta = await invoke("cmd_exportar_paquete", {
+        tipoPaquete: tipoExportacion,
+      });
+      modalActivo = null;
+      mostrarToast(
+        tipoExportacion === "completo"
+          ? `Respaldo completo guardado en: ${ruta}`
+          : `Estadísticas exportadas en: ${ruta}`,
+        "success",
+        5000
+      );
+    } catch (e) {
+      mostrarToast(String(e), "error", 4500);
+    } finally {
+      exportandoPaquete = false;
+    }
+  }
+
+  async function seleccionarArchivoImportar(nombre, b64) {
+    archivoImportNombre = nombre;
+    archivoImportB64 = b64;
+    inspeccionImportacion = null;
+    errorImportacion = "";
+    try {
+      inspeccionImportacion = await invoke("cmd_inspeccionar_importacion", {
+        contenidoB64: b64,
+      });
+    } catch (e) {
+      archivoImportB64 = "";
+      errorImportacion = String(e);
+    }
+  }
+
+  async function ejecutarImportacionPaquete() {
+    if (!archivoImportB64 || importandoPaquete) return;
+    importandoPaquete = true;
+    errorImportacion = "";
+    try {
+      const res = await invoke("cmd_importar_paquete", {
+        contenidoB64: archivoImportB64,
+        modoConflicto: modoConflictoImport,
+        importarConfig: Boolean(importarConfigPaquete),
+      });
+      await refrescarListaArchivos();
+      await cargarConfigInicial();
+      if (!archivoActual && archivosDisponibles.length > 0) {
+        archivoActual = archivosDisponibles[0];
+        await recargarArchivoActual();
+      } else if (archivoActual) {
+        await recargarArchivoActual();
+      }
+      if (vistaActiva === "estadisticas") {
+        await cargarEstadisticas();
+      }
+      modalActivo = null;
+
+      const partes = [];
+      const planillasTocadas = res.planillas_importadas + res.planillas_reemplazadas;
+      const resumenesTocados = res.resumenes_importados + res.resumenes_reemplazados;
+      if (planillasTocadas > 0) {
+        partes.push(`${planillasTocadas} planilla(s)`);
+      }
+      if (resumenesTocados > 0) {
+        partes.push(`${resumenesTocados} resumen(es) estadístico(s)`);
+      }
+      if (res.planillas_omitidas + res.resumenes_omitidos > 0) {
+        partes.push(`${res.planillas_omitidas + res.resumenes_omitidos} repetido(s) omitido(s)`);
+      }
+      mostrarToast(
+        partes.length > 0
+          ? `Importación lista: ${partes.join(" · ")}`
+          : "Importación completada sin cambios (todo ya existía)",
+        "success",
+        4800
+      );
+    } catch (e) {
+      errorImportacion = String(e);
+    } finally {
+      importandoPaquete = false;
+    }
+  }
+
+  function abrirMoverArchivoModal(arch) {
+    archivoMoverTarget = arch;
+    const idx = arch.lastIndexOf("/");
+    carpetaDestinoMover = idx >= 0 ? arch.slice(0, idx) : "";
+    carpetaDestinoNueva = "";
+    errorModalMover = "";
+    modalActivo = "mover_archivo";
+  }
+
+  async function moverArchivoACarpeta() {
+    const destino =
+      carpetaDestinoMover === "__NUEVA__"
+        ? carpetaDestinoNueva.trim()
+        : carpetaDestinoMover.trim();
+    if (carpetaDestinoMover === "__NUEVA__" && !destino) {
+      errorModalMover = "Escribe el nombre de la nueva carpeta";
+      return;
+    }
+    try {
+      const nuevaRuta = await aplicarMovimientoArchivo(archivoMoverTarget, destino);
+      modalActivo = null;
+      errorModalMover = "";
+      mostrarToast(`Planilla movida a '${nuevaRuta}'`, "success");
+    } catch (e) {
+      errorModalMover = String(e);
+    }
+  }
+
+  async function moverPorArrastre(elemento, destinoCarpeta) {
+    try {
+      if (elemento.tipo === "archivo") {
+        const nuevaRuta = await aplicarMovimientoArchivo(
+          elemento.ruta,
+          destinoCarpeta
+        );
+        mostrarToast(`Planilla movida a '${nuevaRuta}'`, "success", 2600);
+        return nuevaRuta;
+      } else if (elemento.tipo === "carpeta") {
+        const partes = elemento.ruta.split("/");
+        const nombreBase = partes[partes.length - 1];
+        const nuevaRuta = destinoCarpeta
+          ? `${destinoCarpeta}/${nombreBase}`
+          : nombreBase;
+        if (nuevaRuta === elemento.ruta) return elemento.ruta;
+        const movida = await aplicarMovimientoCarpeta(elemento.ruta, nuevaRuta);
+        mostrarToast(`Carpeta movida a '${movida}'`, "success", 2600);
+        return movida;
+      }
+    } catch (e) {
+      mostrarToast(String(e), "error", 4000);
+    }
+    return null;
+  }
+
+  async function guardarOrdenCarpetas(nuevoOrden) {
+    ordenCarpetas = nuevoOrden;
+    try {
+      ordenCarpetas = await invoke("cmd_guardar_orden_carpetas", {
+        orden: nuevoOrden,
+      });
+    } catch (_) {}
   }
 
   async function seleccionarArchivo(nombre) {
@@ -448,37 +891,78 @@
     }
   }
 
-  function eliminarArchivo(nombre) {
+  async function finalizarEliminacionArchivo(nombre, conservarEstadisticas) {
+    try {
+      await invoke("cmd_eliminar_archivo", {
+        nombre,
+        conservarEstadisticas,
+      });
+      await refrescarListaArchivos();
+      if (archivoActual === nombre) {
+        archivoActual = archivosDisponibles[0] || null;
+        if (archivoActual) {
+          await recargarArchivoActual();
+        } else {
+          registros = [];
+          defensorArchivo = "";
+          totales = {
+            num_registros: 0,
+            total_si: 0,
+            total_no: 0,
+            totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
+          };
+        }
+      }
+      if (vistaActiva === "estadisticas") {
+        cargarEstadisticas();
+      }
+      mostrarToast(
+        conservarEstadisticas
+          ? `Archivo '${nombre}' eliminado (estadísticas conservadas)`
+          : `Archivo '${nombre}' eliminado`,
+        "info"
+      );
+    } catch (e) {
+      mostrarToast(`Error al eliminar: ${e}`, "error");
+    }
+  }
+
+  async function eliminarArchivo(nombre) {
+    let resumen = null;
+    if (nombre === archivoActual) {
+      resumen = totales;
+    } else {
+      try {
+        const res = await invoke("cmd_leer_archivo", { nombre });
+        resumen = res.totales;
+      } catch (_) {}
+    }
+
+    if (resumen && resumen.num_registros > 0) {
+      eliminarTargetNombre = nombre;
+      eliminarTargetResumen = resumen;
+      conservarEstadisticasAlEliminar = true;
+      modalActivo = "eliminar_archivo";
+      return;
+    }
+
     abrirConfirmacion(
       "Eliminar planilla Excel",
       `¿Eliminar permanentemente '${nombre}'? Esta acción no se puede deshacer.`,
       "Eliminar archivo",
       true,
-      async () => {
-        try {
-          await invoke("cmd_eliminar_archivo", { nombre });
-          await refrescarListaArchivos();
-          if (archivoActual === nombre) {
-            archivoActual = archivosDisponibles[0] || null;
-            if (archivoActual) {
-              await recargarArchivoActual();
-            } else {
-              registros = [];
-              defensorArchivo = "";
-              totales = {
-                num_registros: 0,
-                total_si: 0,
-                total_no: 0,
-                totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
-              };
-            }
-          }
-          mostrarToast(`Archivo '${nombre}' eliminado`, "info");
-        } catch (e) {
-          mostrarToast(`Error al eliminar: ${e}`, "error");
-        }
-      }
+      () => finalizarEliminacionArchivo(nombre, false)
     );
+  }
+
+  async function confirmarEliminacionConOpciones() {
+    if (!eliminarTargetNombre) return;
+    const nombre = eliminarTargetNombre;
+    const conservar = conservarEstadisticasAlEliminar;
+    modalActivo = null;
+    eliminarTargetNombre = "";
+    eliminarTargetResumen = null;
+    await finalizarEliminacionArchivo(nombre, conservar);
   }
 
   async function descargarArchivo(nombre) {
@@ -1032,6 +1516,9 @@
 <div class="desktop-frame">
   <Sidebar
     {archivosDisponibles}
+    {carpetasDisponibles}
+    {ordenCarpetas}
+    {coloresCarpetas}
     {archivoActual}
     {totales}
     {aiStatus}
@@ -1039,6 +1526,13 @@
     mobileOpen={sidebarMobileOpen}
     onCloseMobile={() => (sidebarMobileOpen = false)}
     onCrearArchivo={abrirCrearArchivoModal}
+    onCrearCarpeta={abrirCrearCarpetaModal}
+    onRenombrarCarpeta={abrirRenombrarCarpetaModal}
+    onCambiarColorCarpeta={abrirColorCarpetaModal}
+    onEliminarCarpeta={eliminarCarpetaSolicitada}
+    onMoverArchivo={abrirMoverArchivoModal}
+    onMoverPorArrastre={moverPorArrastre}
+    onReordenarCarpetas={guardarOrdenCarpetas}
     onSeleccionarArchivo={seleccionarArchivo}
     onAbrirDefensorArchivo={abrirModalDefensoresArchivo}
     onAbrirRespaldos={abrirRespaldos}
@@ -1107,6 +1601,16 @@
         <button
           type="button"
           class="mini-icon-btn share-learning-btn"
+          onclick={() => abrirModalPortabilidad("exportar")}
+          title="Exportar o importar respaldos y estadísticas"
+          aria-label="Exportar o importar datos"
+        >
+          <Package size={15} />
+        </button>
+
+        <button
+          type="button"
+          class="mini-icon-btn share-learning-btn"
           onclick={exportarAprendizajeIa}
           disabled={exportandoAprendizaje}
           title={aprendizaje.total_correcciones > 0
@@ -1123,6 +1627,47 @@
         </button>
       </div>
     </header>
+
+    {#if vistaActiva !== "estadisticas"}
+      <div class="active-doc-bar">
+        <div class="active-doc-left">
+          <FileSpreadsheet size={14} strokeWidth={2} class="active-doc-icon" />
+          <span class="active-doc-prefix">Trabajando en:</span>
+          {#if archivoActual}
+            {@const idxSlash = archivoActual.lastIndexOf("/")}
+            {@const carpetaPart = idxSlash >= 0 ? archivoActual.slice(0, idxSlash) : ""}
+            {@const nombrePart = idxSlash >= 0 ? archivoActual.slice(idxSlash + 1) : archivoActual}
+            {#if carpetaPart}
+              <span class="active-doc-folder">{carpetaPart.replaceAll("/", " / ")} /</span>
+            {/if}
+            <strong class="active-doc-name" title={archivoActual}>
+              {nombrePart}
+            </strong>
+          {:else}
+            <span class="active-doc-empty">Ninguna planilla abierta</span>
+          {/if}
+        </div>
+
+        <div class="active-doc-right">
+          {#if archivoActual}
+            {#if defensorArchivo}
+              <span class="active-doc-meta active-doc-defensor" title="Defensor asignado: {defensorArchivo}">
+                {defensorArchivo}
+              </span>
+              <span class="active-doc-sep" aria-hidden="true">·</span>
+            {/if}
+            <span class="active-doc-meta">{totales.num_registros}/100 reg.</span>
+          {/if}
+          <button
+            type="button"
+            class="inline-action-link active-doc-switch"
+            onclick={() => (sidebarMobileOpen = true)}
+          >
+            Cambiar
+          </button>
+        </div>
+      </div>
+    {/if}
 
     <main class="workspace-scroll scroller">
       {#if vistaActiva === "formulario"}
@@ -1187,6 +1732,7 @@
           onFiltrarChange={cargarEstadisticas}
           onAbrirPlanilla={abrirPlanillaDesdeStats}
           onCopiarResumen={copiarResumenEstadisticas}
+          onEliminarArchivada={solicitarEliminarArchivada}
         />
       {/if}
     </main>
@@ -1198,11 +1744,39 @@
   {defensorTargetArchivo}
   {defensorTargetNombre}
   {defensores}
+  {carpetasDisponibles}
   bind:settings
   {aiStatus}
   bind:nombreNuevoArchivo
   bind:defensorNuevoArchivo
+  bind:carpetaNuevoArchivo
   {errorModalCrear}
+  bind:carpetaPadreNueva
+  bind:nombreNuevaCarpeta
+  bind:colorNuevaCarpeta
+  {carpetaRenombrarActual}
+  bind:carpetaRenombrarNueva
+  bind:colorCarpetaRenombrar
+  {colorCarpetaTarget}
+  bind:colorCarpetaEditando
+  {errorModalCarpeta}
+  {archivoMoverTarget}
+  bind:carpetaDestinoMover
+  bind:carpetaDestinoNueva
+  {errorModalMover}
+  {eliminarTargetNombre}
+  {eliminarTargetResumen}
+  {eliminarCarpetaTarget}
+  bind:conservarEstadisticasAlEliminar
+  bind:portabilidadTab
+  bind:tipoExportacion
+  {exportandoPaquete}
+  {archivoImportNombre}
+  {inspeccionImportacion}
+  {errorImportacion}
+  bind:modoConflictoImport
+  bind:importarConfigPaquete
+  {importandoPaquete}
   bind:textoIa
   {procesandoIa}
   {errorIa}
@@ -1223,6 +1797,15 @@
   {respaldosTarget}
   {cargandoRespaldos}
   onCrearNuevoArchivo={crearNuevoArchivo}
+  onCrearCarpeta={crearNuevaCarpeta}
+  onRenombrarCarpeta={renombrarCarpetaExistente}
+  onGuardarColorCarpeta={guardarColorCarpetaModal}
+  onMoverArchivo={moverArchivoACarpeta}
+  onConfirmarEliminarArchivo={confirmarEliminacionConOpciones}
+  onConfirmarEliminarCarpeta={confirmarEliminacionCarpeta}
+  onExportarPaquete={exportarPaqueteLokus}
+  onSeleccionarArchivoImportar={seleccionarArchivoImportar}
+  onEjecutarImportacion={ejecutarImportacionPaquete}
   onAbrirConfigIa={abrirConfiguracionIa}
   onProcesarConIa={procesarConIa}
   onGuardarConfigIa={guardarConfiguracionIa}

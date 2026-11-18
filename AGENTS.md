@@ -20,8 +20,8 @@ Este documento constituye la memoria persistente, la especificación operativa y
 
 | Categoría | Especificación del proyecto |
 | :--- | :--- |
-| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v3.0` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
-| **Pila tecnológica activa (`rust-tauri`)** | **Backend:** Rust 2021 + Tauri v2 (`umya-spreadsheet`, `reqwest` con `rustls-tls`, `tokio`, `serde`, `chrono`, `regex`)<br>**Frontend:** Svelte 5 (Runes: `$state`, `$derived`) + Vite 6 + CSS Variables nativas (puerto dev `5173`) |
+| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v3.1` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
+| **Pila tecnológica activa (`rust-tauri`)** | **Backend:** Rust 2021 + Tauri v2 (`umya-spreadsheet`, `reqwest` con `rustls-tls`, `tokio`, `serde`, `chrono`, `regex`, `base64`, `flate2`)<br>**Frontend:** Svelte 5 (Runes: `$state`, `$derived`) + Vite 6 + CSS Variables nativas (puerto dev `5173`) |
 | **Pila tecnológica legado (`legacy-python`)** | Python 3 + `flet==1.1.2` (`flet-desktop==1.1.2`, `flet-cli==1.1.2`) + `openpyxl==3.1.2` + `openai==1.98.0` |
 | **Proveedores de IA soportados** | **OpenAI** (`gpt-5-mini`, `gpt-4o-mini`, `gpt-4o`) y **Google Gemini** (`gemini-2.5-flash`, `gemini-2.0-flash`) para autocompletado de formulario a partir de texto libre |
 | **Comando de instalación** | `npm install` (frontend) y resolución automática de crates con `cargo` en `src-tauri/` |
@@ -38,7 +38,8 @@ Este documento constituye la memoria persistente, la especificación operativa y
    - `src/app.css`: Sistema de temas (`data-theme="dark"` Warm Obsidian y `data-theme="light"` Azul Niebla Sereno), barras de scroll integradas y CSS `@container` responsivo.
 2. **Backend y lógica de dominio en Rust (`src-tauri/src/`):**
    - `models.rs`: Estructuras `AudienciaInput`, `RegistroAudiencia`, `TotalesExcel`, catálogos oficiales (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`), mapeo de columnas `mapear_motivo_a_indice` y validadores.
-   - `excel.rs`: Motor de lectura/escritura sobre `umya-spreadsheet`, plantilla embebida con `include_bytes!`, ordenamiento cronológico descendente y cálculo de totales.
+   - `excel.rs`: Motor de lectura/escritura sobre `umya-spreadsheet`, plantilla embebida con `include_bytes!`, ordenamiento cronológico descendente, carpetas/subcarpetas, caché en memoria e índice de identidad estable (`.lokus_estadisticas.json`).
+   - `paquete.rs`: Exportación e importación portable de copias completas comprimidas (`.lokus`, sin API keys) y paquetes de solo estadísticas (`.lokus.json`), con inspección previa y deduplicación por ID.
    - `ai.rs`: Preprocesador de jerga/abreviaciones judiciales colombianas, cliente HTTP asíncrono dual (OpenAI + Gemini) y postprocesador de motivos y observaciones.
    - `aprendizaje.rs`: Aprendizaje por correcciones del autocompletado con IA. Compara la predicción de la IA con lo guardado por el usuario, almacena las correcciones en `ia_aprendizaje.json` (misma carpeta que `settings.json`, ignorado en Git) y exporta un paquete anonimizado a Descargas (ícono de compartir del topbar).
    - `config.rs`: Lectura/escritura de `config/settings.json` y enmascaramiento de API Keys para la interfaz.
