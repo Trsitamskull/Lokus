@@ -1,4 +1,4 @@
-name: Build Lokus v3 (Windows .exe & Linux)
+name: Build Lokus v4 (Windows .exe & Linux)
 
 on:
   workflow_dispatch:

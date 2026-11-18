@@ -45,3 +45,12 @@ build/
 dist/
 *.spec
 GestorAudiencias_v2.0/
+
+# Ignorar artefactos locales de Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Archivos de pruebas locales con notas de audiencias
+Archivo_con_audiencias_*.md

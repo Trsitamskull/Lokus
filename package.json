@@ -1,19 +1,21 @@
 {
   "name": "lokus-audiencias-ui",
   "private": true,
-  "version": "3.2.0",
+  "version": "4.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:ui": "playwright test"
   },
   "dependencies": {
     "@lucide/svelte": "^1.74.0",
     "@tauri-apps/api": "^2.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tauri-apps/cli": "^2.2.0",
     "svelte": "^5.16.0",

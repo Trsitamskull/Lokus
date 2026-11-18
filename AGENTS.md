@@ -20,7 +20,7 @@ Este documento constituye la memoria persistente, la especificación operativa y
 
 | Categoría | Especificación del proyecto |
 | :--- | :--- |
-| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v3.2` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
+| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v4.0` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
 | **Pila tecnológica activa (`rust-tauri`)** | **Backend:** Rust 2021 + Tauri v2 (`umya-spreadsheet`, `reqwest` con `rustls-tls`, `tokio`, `serde`, `chrono`, `regex`, `base64`, `flate2`)<br>**Frontend:** Svelte 5 (Runes: `$state`, `$derived`) + Vite 6 + CSS Variables nativas (puerto dev `5173`) |
 | **Pila tecnológica legado (`legacy-python`)** | Python 3 + `flet==1.1.2` (`flet-desktop==1.1.2`, `flet-cli==1.1.2`) + `openpyxl==3.1.2` + `openai==1.98.0` |
 | **Proveedores de IA soportados** | **OpenAI** (`gpt-5-mini`, `gpt-4o-mini`, `gpt-4o`) y **Google Gemini** (`gemini-2.5-flash`, `gemini-2.0-flash`) para autocompletado de formulario a partir de texto libre |
@@ -37,11 +37,12 @@ Este documento constituye la memoria persistente, la especificación operativa y
    - `src/lib/components/`: Componentes modulares Svelte 5 (`Sidebar.svelte`, `AudienciaForm.svelte`, `RegistrosTable.svelte`, `EstadisticasView.svelte`, `Modals.svelte`, `CustomSelect.svelte`, `AutocompleteInput.svelte`, `DatePickerInput.svelte`).
    - `src/app.css`: Sistema de temas (`data-theme="dark"` Warm Obsidian y `data-theme="light"` Azul Niebla Sereno), barras de scroll integradas y CSS `@container` responsivo.
 2. **Backend y lógica de dominio en Rust (`src-tauri/src/`):**
-   - `models.rs`: Estructuras `AudienciaInput`, `RegistroAudiencia`, `TotalesExcel`, catálogos oficiales (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`), mapeo de columnas `mapear_motivo_a_indice` y validadores.
-   - `excel.rs`: Motor de lectura/escritura sobre `umya-spreadsheet`, plantilla embebida con `include_bytes!`, ordenamiento cronológico descendente, carpetas/subcarpetas, caché en memoria e índice de identidad estable (`.lokus_estadisticas.json`).
-   - `paquete.rs`: Exportación e importación portable de copias completas comprimidas (`.lokus`, sin API keys) y paquetes de solo estadísticas (`.lokus.json`), con inspección previa y deduplicación por ID.
-   - `ai.rs`: Preprocesador de jerga/abreviaciones judiciales colombianas, cliente HTTP asíncrono dual (OpenAI + Gemini) y postprocesador de motivos y observaciones.
-   - `aprendizaje.rs`: Aprendizaje por correcciones del autocompletado con IA. Compara la predicción de la IA con lo guardado por el usuario, almacena las correcciones en `ia_aprendizaje.json` (misma carpeta que `settings.json`, ignorado en Git) y exporta un paquete anonimizado a Descargas (ícono de compartir del topbar).
+   - `models.rs`: Estructuras `AudienciaInput`, `RegistroAudiencia`, `TotalesExcel`, `IndicePriorsExcel`, catálogos oficiales (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`), mapeo de columnas `mapear_motivo_a_indice` y validadores.
+   - `excel.rs`: Motor de lectura/escritura sobre `umya-spreadsheet`, plantilla embebida con `include_bytes!`, ordenamiento cronológico descendente, carpetas/subcarpetas, caché en memoria, índice de identidad estable (`.lokus_estadisticas.json`) e índice incremental de priors (`.lokus_priors.json`).
+   - `paquete.rs`: Exportación e importación portable de copias completas comprimidas (`.lokus`, sin API keys) y paquetes de solo estadísticas (`.lokus.json`), con inspección previa, deduplicación por ID e invalidación de priors.
+   - `ai.rs`: Preprocesador de jerga/abreviaciones judiciales colombianas, cliente HTTP asíncrono dual (OpenAI + Gemini), arbitraje híbrido (invariantes Defensoría + estadística local), inducción agrupada de clústeres y postprocesador de motivos y observaciones.
+   - `aprendizaje.rs`: Memoria `v2` de autoaprendizaje (`ia_aprendizaje.json`), gobernanza bayesiana (`cuantil_beta`, Wilson, decaimiento híbrido por evento), evaluación en sombra, tokenizador judicial + BM25 + MMR, atribución causal de crédito sobre búfer balanceado, clústeres diferidos, detección de deriva Page-Hinkley y exportación anonimizada completa a Descargas.
+   - `estadistica_ia.rs`: Motor estadístico local en Rust puro (Regresión Logística Online L2 + AdaGrad, comparativa CNB, BM25 k-NN, resolutor de entidades/ordinales con tabla de alias Beta y `resources/juzgados_base.json`, y desambiguación AM/PM por jornada laboral).
    - `config.rs`: Lectura/escritura de `config/settings.json` y enmascaramiento de API Keys para la interfaz.
    - `lib.rs` y `main.rs`: Registro de comandos IPC (`#[tauri::command]`) y arranque de Tauri v2.
 3. **Plantilla oficial y datos de usuario:**
@@ -52,16 +53,18 @@ Este documento constituye la memoria persistente, la especificación operativa y
 
 ### 2.3 Convenciones de estilo, diseño y zonas protegidas
 
-1. **Convenciones de UI (Svelte 5 + CSS):**
-   - Usar exclusivamente **Svelte 5 Runes** (`$state`, `$derived`, `$effect`), nunca sintaxis heredada de Svelte 3/4 (`export let`, `$:`).
-   - Todos los colores deben referenciar variables de `src/app.css` (`var(--primary)`, `var(--surface-card)`, etc.) para garantizar paridad total entre Tema Oscuro y Tema Claro (`Ctrl+T`).
-2. **Estándar de código en Rust (Funciones Modelo):**
+1. **Fuente única de diseño (`DESIGN.md`):** Leer y mantener actualizado `DESIGN.md` en la raíz del repositorio para todos los colores, tipografía, espaciados, radios, elevaciones y componentes reutilizables en Svelte 5. Nunca dejar decisiones visuales o de arquitectura únicamente en el historial del chat.
+2. **Convenciones de UI (Svelte 5 + CSS + Stack fijo):**
+   - Usar exclusivamente **Svelte 5 Runes** (`$state`, `$derived`, `$effect`, `$props`, `$bindable`), **CSS Variables nativas** (`var(--...)` en `src/app.css`), **CSS Container Queries** (`@container`), iconos vectoriales **Lucide** (`@lucide/svelte`) y **Pointer Events** para Drag & Drop. Prohibido introducir Tailwind CSS, React, frameworks CSS externos o sintaxis heredada de Svelte 3/4 (`export let`, `$:`).
+   - Todos los colores deben referenciar tokens semánticos de `src/app.css` (`var(--accent-primary)`, `var(--bg-elevated)`, `var(--text-primary)`, etc.) para garantizar paridad total entre Tema Oscuro y Tema Claro (`Ctrl+T`).
+   - **Higiene anti-slop y seguridad en UI:** Prohibido usar emojis Unicode como iconos de interfaz, prohibido mezclar bordes y sombras arbitrarios fuera de las excepciones documentadas en `DESIGN.md`, mantener commits pequeños y acotados por vista, y nunca registrar ni incrustar API Keys de OpenAI/Gemini o secretos `.env` en código frontend.
+3. **Estándar de código en Rust (Funciones Modelo):**
    - Todo comando Tauri en `src-tauri/src/lib.rs` debe devolver `Result<T, String>` con mensajes de error claros en español listos para mostrarse al usuario.
    - Prohibido usar `.unwrap()` en rutas de entrada de usuario o lectura de archivos Excel/red; propagar errores con `?` y `.map_err(...)`.
-3. **Zonas restringidas e inmutables:**
+4. **Zonas restringidas e inmutables:**
    - Prohibido modificar `templates/plantilla_audiencias.xlsx`.
    - En el motor de Excel (`src-tauri/src/excel.rs`), la celda `B8` (`B8:Q8`) puede almacenar `"DEFENSOR PÚBLICO: <NOMBRE>"` sin alterar su estilo; las filas `11..=110` son exclusivamente para registros, la fila `111` para totales (`G111` = Total SI, `I111..P111` = Totales por motivo, `Q111` = Total NO) y las columnas `I..P` (`9..=16`) corresponden estrictamente en orden a: `[Juez, Fiscalía, Usuario, INPEC, Víctima, ICBF, Defensor Confianza, Defensor Público]`.
-4. **Archivos protegidos por pruebas de caracterización:**
+5. **Archivos protegidos por pruebas de caracterización:**
    - Ejecutar siempre `cd src-tauri && cargo test` después de cualquier cambio en `src-tauri/src/models.rs`, `src-tauri/src/excel.rs` o `src-tauri/src/ai.rs`.
 
 ---
@@ -109,8 +112,10 @@ Cuando el desarrollador deje comentarios `// TODO (AI): ...` o marque una funci�
 
 ## 6. Uso de Habilidades del Proyecto (*Skills*)
 
-Antes de modificar la lógica de Excel (`excel.rs`), las validaciones (`models.rs`) o el extractor de IA (`ai.rs`), el agente debe consultar la habilidad propietaria del proyecto en:
-- `.agents/skills/lokus-judicial-domain/SKILL.md`
+- **Dominio judicial y Excel / IA:** Antes de modificar la lógica de Excel (`excel.rs`), las validaciones (`models.rs`) o el extractor de IA (`ai.rs`), consultar:
+  - `.agents/skills/lokus-judicial-domain/SKILL.md`
+- **Interfaz y Sistema de Diseño (`lokus-ui-craft`):** Antes de auditar, reestilizar o construir cualquier vista, modal o componente en `src/`, activar y seguir:
+  - `.agents/skills/lokus-ui-craft/SKILL.md` (incluyendo `scripts/audit_ui.py` y `references/audit-checklist.md`) junto con `DESIGN.md`.
 
 ---
 
