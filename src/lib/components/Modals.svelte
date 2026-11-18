@@ -21,6 +21,9 @@
     FileSpreadsheet,
     Palette,
     Check,
+    Activity,
+    ChevronDown,
+    RefreshCw,
   } from "@lucide/svelte";
   import AutocompleteInput from "./AutocompleteInput.svelte";
   import CustomSelect from "./CustomSelect.svelte";
@@ -83,6 +86,9 @@
     respaldosArchivo = [],
     respaldosTarget = "",
     cargandoRespaldos = false,
+    diagnosticoIa = null,
+    cargandoDiagnosticoIa = false,
+    onRefrescarDiagnosticoIa = null,
     onCrearNuevoArchivo,
     onCrearCarpeta,
     onRenombrarCarpeta,
@@ -1040,6 +1046,187 @@
             </div>
           </div>
         {/if}
+
+        <details class="ia-diag-details">
+          <summary class="ia-diag-summary">
+            <span class="ia-diag-summary-left">
+              <Activity size={13} />
+              <span>Diagnóstico técnico de autoaprendizaje</span>
+            </span>
+            <span class="ia-diag-summary-badges">
+              {#if diagnosticoIa}
+                <span class="ia-diag-pill">
+                  {(diagnosticoIa.reglas_por_estado?.activa ?? 0) +
+                    (diagnosticoIa.reglas_por_estado?.prueba ?? 0)} activas
+                </span>
+                {#if diagnosticoIa.drift_campos_activos?.length > 0}
+                  <span class="ia-diag-pill is-warn">
+                    Drift ({diagnosticoIa.drift_campos_activos.length})
+                  </span>
+                {/if}
+              {/if}
+              <ChevronDown size={13} class="ia-diag-chevron" />
+            </span>
+          </summary>
+
+          <div class="ia-diag-body">
+            <div class="ia-diag-toolbar">
+              <span class="shortcut-hint">Telemetría local anonimizada para inspección técnica</span>
+              <button
+                type="button"
+                class="btn btn-subtle ia-diag-refresh-btn"
+                disabled={cargandoDiagnosticoIa}
+                onclick={() => onRefrescarDiagnosticoIa?.()}
+              >
+                <RefreshCw size={12} />
+                <span>{cargandoDiagnosticoIa ? "Cargando..." : "Actualizar"}</span>
+              </button>
+            </div>
+
+            {#if !diagnosticoIa}
+              <p class="ia-diag-empty">
+                {cargandoDiagnosticoIa
+                  ? "Cargando métricas de aprendizaje..."
+                  : "Aún no hay telemetría registrada en esta sesión."}
+              </p>
+            {:else}
+              <div class="ia-diag-metrics-row">
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Aciertos</span>
+                  <span class="ia-diag-metric-value">{diagnosticoIa.aciertos_totales}</span>
+                </div>
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Correcciones</span>
+                  <span class="ia-diag-metric-value">{diagnosticoIa.correcciones_totales}</span>
+                </div>
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Anclas pos.</span>
+                  <span class="ia-diag-metric-value">{diagnosticoIa.ejemplos_positivos_totales}</span>
+                </div>
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Inducciones LLM</span>
+                  <span class="ia-diag-metric-value">{diagnosticoIa.llamadas_induccion_llm_total}</span>
+                </div>
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Cola clúster</span>
+                  <span class="ia-diag-metric-value">
+                    {diagnosticoIa.clusters_pendientes}/{diagnosticoIa.clusters_listos}
+                  </span>
+                </div>
+              </div>
+
+              {#if diagnosticoIa.drift_campos_activos?.length > 0}
+                <div class="ia-diag-drift-banner" role="status">
+                  <AlertTriangle size={13} />
+                  <span>
+                    Deriva detectada (Page-Hinkley) en:
+                    <strong>{diagnosticoIa.drift_campos_activos.join(", ")}</strong>
+                  </span>
+                </div>
+              {/if}
+
+              {#if diagnosticoIa.metricas_por_campo?.length > 0}
+                <div class="ia-diag-section">
+                  <h3 class="ia-diag-subtitle">Fiabilidad por campo</h3>
+                  <div class="ia-diag-table-wrap">
+                    <table class="ia-diag-table">
+                      <thead>
+                        <tr>
+                          <th>Campo</th>
+                          <th>Eval.</th>
+                          <th>Aciertos</th>
+                          <th>EWMA</th>
+                          <th>Conf. q10</th>
+                          <th>Estado</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each diagnosticoIa.metricas_por_campo as m}
+                          <tr>
+                            <td>{m.campo}</td>
+                            <td class="num">{m.evaluaciones}</td>
+                            <td class="num">{m.aciertos}</td>
+                            <td class="num">{Math.round((m.precision_ewma ?? 0) * 100)}%</td>
+                            <td class="num">{Math.round((m.confianza_q10 ?? 0) * 100)}%</td>
+                            <td>
+                              {#if m.drift_activo}
+                                <span class="ia-diag-pill is-warn">Drift</span>
+                              {:else}
+                                <span class="ia-diag-pill is-ok">Estable</span>
+                              {/if}
+                            </td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              {/if}
+
+              {#if diagnosticoIa.metricas_por_modelo?.length > 0}
+                <div class="ia-diag-section">
+                  <h3 class="ia-diag-subtitle">Modelos evaluados</h3>
+                  <div class="ia-diag-chips">
+                    {#each diagnosticoIa.metricas_por_modelo as mod}
+                      <span class="ia-diag-pill">
+                        {mod.clave}: {Math.round((mod.precision_media ?? 0) * 100)}% ({mod.aciertos}/{mod.evaluaciones})
+                      </span>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+
+              {#if diagnosticoIa.preferencias_estilo}
+                <div class="ia-diag-section">
+                  <h3 class="ia-diag-subtitle">Heurísticas adaptables y alias</h3>
+                  <div class="ia-diag-chips">
+                    <span class="ia-diag-pill">
+                      Causas sec.: {Math.round((diagnosticoIa.preferencias_estilo.incluir_causas_secundarias_prob ?? 0) * 100)}%
+                    </span>
+                    <span class="ia-diag-pill">
+                      Reprogramada: {Math.round((diagnosticoIa.preferencias_estilo.incluir_reprogramacion_prob ?? 0) * 100)}%
+                    </span>
+                    <span class="ia-diag-pill">
+                      "Se fija" &rarr; NO: {Math.round((diagnosticoIa.preferencias_estilo.se_fija_aplazamiento_prob ?? 0) * 100)}%
+                    </span>
+                    <span class="ia-diag-pill">
+                      Alias validados: {diagnosticoIa.alias_validados?.length ?? 0}
+                    </span>
+                  </div>
+                </div>
+              {/if}
+
+              {#if diagnosticoIa.reglas_destacadas?.length > 0}
+                <div class="ia-diag-section">
+                  <h3 class="ia-diag-subtitle">Reglas en memoria ({diagnosticoIa.reglas_destacadas.length})</h3>
+                  <ul class="ia-diag-rules-list">
+                    {#each diagnosticoIa.reglas_destacadas as r}
+                      <li class="ia-diag-rule-item">
+                        <div class="ia-diag-rule-head">
+                          <span
+                            class="ia-diag-pill {r.estado === 'activa'
+                              ? 'is-ok'
+                              : r.estado === 'cuarentena'
+                                ? 'is-err'
+                                : r.estado === 'prueba'
+                                  ? 'is-warn'
+                                  : ''}"
+                          >
+                            {r.estado}
+                          </span>
+                          <span class="ia-diag-rule-meta">
+                            {r.campo_objetivo} · q10={Math.round((r.confianza_q10 ?? 0) * 100)}% · {r.aciertos_directos}/{r.impresiones}
+                          </span>
+                        </div>
+                        <p class="ia-diag-rule-text">{r.regla}</p>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+            {/if}
+          </div>
+        </details>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
@@ -1427,6 +1614,7 @@
           <div class="shortcut-row"><span>Limpiar campos</span><span class="kbd">Ctrl+L</span></div>
           <div class="shortcut-row"><span>Exportar copia</span><span class="kbd">Ctrl+Shift+S</span></div>
           <div class="shortcut-row"><span>Tema Azul / Oscuro</span><span class="kbd">Ctrl+T</span></div>
+          <div class="shortcut-row"><span>Mostrar / ocultar panel</span><span class="kbd">Ctrl+B</span></div>
           <div class="shortcut-row"><span>Refrescar / Cerrar</span><span class="kbd">F5 / Esc</span></div>
         </div>
       </div>

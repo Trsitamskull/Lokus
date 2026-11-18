@@ -1,7 +1,17 @@
 <script>
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { FileText, List, PanelLeft, BarChart3, Share2, Package, FileSpreadsheet } from "@lucide/svelte";
+  import {
+    FileText,
+    List,
+    PanelLeftClose,
+    PanelLeftOpen,
+    BarChart3,
+    Share2,
+    Package,
+    FileSpreadsheet,
+    UserCheck,
+  } from "@lucide/svelte";
   import {
     TIPOS_AUDIENCIA,
     MOTIVOS_LABELS,
@@ -16,6 +26,7 @@
   // Navegación y archivos
   let vistaActiva = $state("formulario"); // "formulario" | "listado" | "estadisticas"
   let sidebarMobileOpen = $state(false);
+  let sidebarColapsada = $state(false);
   let archivoActual = $state(null);
   let archivosDisponibles = $state([]);
   let carpetasDisponibles = $state([]);
@@ -65,6 +76,7 @@
   let motivoSeleccionado = $state("");
   let observaciones = $state("");
   let inputRadicadoEl = $state(null);
+  let formResetTick = $state(0);
 
   // Aprendizaje de la IA: foto de lo que propuso el autocompletado para compararlo al guardar
   let iaSnapshot = $state(null); // { texto, prediccion } | null
@@ -76,6 +88,8 @@
     aclaracion_pendiente: null,
   });
   let exportandoAprendizaje = $state(false);
+  let diagnosticoIa = $state(null);
+  let cargandoDiagnosticoIa = $state(false);
 
   // Edición
   let modoEdicion = $state(false);
@@ -360,6 +374,7 @@
     motivoSeleccionado = "";
     observaciones = "";
     iaSnapshot = null;
+    formResetTick += 1;
     inputRadicadoEl?.focus();
   }
 
@@ -1275,15 +1290,31 @@
     );
   }
 
+  async function cargarDiagnosticoIa() {
+    cargandoDiagnosticoIa = true;
+    try {
+      diagnosticoIa = await invoke("cmd_diagnostico_aprendizaje_ia");
+    } catch {
+      diagnosticoIa = null;
+    } finally {
+      cargandoDiagnosticoIa = false;
+    }
+  }
+
   function abrirConfiguracionIa() {
     nuevaOpenAiKey = "";
     nuevaGeminiKey = "";
     mostrarOpenAiKey = false;
     mostrarGeminiKey = false;
     modalActivo = "config_ia";
+    cargarDiagnosticoIa();
   }
 
   function abrirAutocompletarIa() {
+    if (modoEdicion) {
+      mostrarToast("Finaliza o cancela la edición actual antes de usar la IA", "info", 2800);
+      return;
+    }
     if (!aiStatus.configured) {
       abrirConfiguracionIa();
       return;
@@ -1300,6 +1331,9 @@
   }
 
   async function procesarConIa() {
+    if (modoEdicion) {
+      return;
+    }
     if (!textoIa.trim()) {
       errorIa = "Pega el texto de la audiencia";
       return;
@@ -1308,27 +1342,35 @@
     procesandoIa = true;
     try {
       const datos = await invoke("cmd_autocompletar_ia", { texto: textoIa });
-      if (datos.radicado) radicado = datos.radicado;
-      if (datos.tipo_audiencia) {
-        aplicarTipoAlFormulario(
-          datos.tipo_audiencia === "Otra"
-            ? datos.tipo_otra || "Otra"
-            : datos.tipo_audiencia,
-          datos.tipo_otra
-        );
-      }
-      if (datos.fecha) fecha = datos.fecha;
+      radicado = datos.radicado || "";
+      aplicarTipoAlFormulario(
+        datos.tipo_audiencia === "Otra"
+          ? datos.tipo_otra || "Otra"
+          : datos.tipo_audiencia || "",
+        datos.tipo_otra || ""
+      );
+      fecha = datos.fecha || "";
       hora = datos.hora || "";
       minuto = datos.minuto || "";
-      if (datos.juzgado) aplicarJuzgadoAlFormulario(datos.juzgado);
+      aplicarJuzgadoAlFormulario(datos.juzgado || "");
       if (datos.se_realizo === "SI" || datos.se_realizo === "NO") {
         realizada = datos.se_realizo;
         motivoSeleccionado = datos.se_realizo === "NO" ? datos.motivo || "" : "";
+      } else {
+        realizada = "";
+        motivoSeleccionado = "";
       }
-      if (datos.observaciones) observaciones = datos.observaciones;
+      observaciones = datos.observaciones || "";
+      formResetTick += 1;
 
       // Foto de lo que quedó en el formulario tras la IA, para aprender de las correcciones
-      iaSnapshot = { texto: textoIa, prediccion: construirPayloadFormulario() };
+      iaSnapshot = {
+        texto: textoIa,
+        prediccion: construirPayloadFormulario(),
+        reglas_inyectadas: datos.reglas_inyectadas || [],
+        ejemplos_inyectados: datos.ejemplos_inyectados || [],
+        prediccion_local: datos.prediccion_local || null,
+      };
 
       modalActivo = null;
       vistaActiva = "formulario";
@@ -1348,6 +1390,7 @@
         texto: snapshot.texto,
         prediccion: snapshot.prediccion,
         finalUsuario: datosFinales,
+        reglasInyectadas: snapshot.reglas_inyectadas || [],
       });
     } catch (e) {
       console.warn("No se pudo registrar el aprendizaje de la IA:", e);
@@ -1497,10 +1540,29 @@
     } else if (key === "t") {
       e.preventDefault();
       toggleTema();
+    } else if (key === "b") {
+      e.preventDefault();
+      toggleSidebar();
     }
   }
 
+  function toggleSidebar() {
+    const esPantallaEstrecha =
+      typeof window !== "undefined" && window.matchMedia("(max-width: 960px)").matches;
+    if (esPantallaEstrecha) {
+      sidebarMobileOpen = !sidebarMobileOpen;
+      return;
+    }
+    sidebarColapsada = !sidebarColapsada;
+    try {
+      localStorage.setItem("sidebar-collapsed", String(sidebarColapsada));
+    } catch (_) {}
+  }
+
   onMount(async () => {
+    try {
+      sidebarColapsada = localStorage.getItem("sidebar-collapsed") === "true";
+    } catch (_) {}
     await cargarConfigInicial();
     cargarResumenAprendizaje();
     await refrescarListaArchivos();
@@ -1513,7 +1575,7 @@
 
 <svelte:window onkeydown={manejarTecladoGlobal} />
 
-<div class="desktop-frame">
+<div class="desktop-frame {sidebarColapsada ? 'sidebar-collapsed' : ''}">
   <Sidebar
     {archivosDisponibles}
     {carpetasDisponibles}
@@ -1548,12 +1610,21 @@
       <div class="header-nav-wrap">
         <button
           type="button"
-          class="mini-icon-btn mobile-menu-btn"
-          onclick={() => (sidebarMobileOpen = true)}
-          title="Mostrar lista de planillas"
-          aria-label="Mostrar panel de planillas"
+          class="mini-icon-btn sidebar-toggle-btn"
+          onclick={toggleSidebar}
+          aria-expanded={!sidebarColapsada}
+          title={sidebarColapsada
+            ? "Mostrar panel de planillas (Ctrl+B)"
+            : "Ocultar panel de planillas (Ctrl+B)"}
+          aria-label={sidebarColapsada
+            ? "Mostrar panel de planillas"
+            : "Ocultar panel de planillas"}
         >
-          <PanelLeft size={16} />
+          {#if sidebarColapsada}
+            <PanelLeftOpen size={16} />
+          {:else}
+            <PanelLeftClose size={16} />
+          {/if}
         </button>
 
         <div class="topbar-nav" role="tablist" aria-label="Secciones principales">
@@ -1650,12 +1721,18 @@
 
         <div class="active-doc-right">
           {#if archivoActual}
-            {#if defensorArchivo}
-              <span class="active-doc-meta active-doc-defensor" title="Defensor asignado: {defensorArchivo}">
-                {defensorArchivo}
-              </span>
-              <span class="active-doc-sep" aria-hidden="true">·</span>
-            {/if}
+            <button
+              type="button"
+              class="active-doc-defensor-btn {defensorArchivo ? '' : 'is-empty'}"
+              onclick={() => abrirModalDefensoresArchivo(archivoActual)}
+              title={defensorArchivo
+                ? `Defensor asignado: ${defensorArchivo} (clic para cambiar)`
+                : "Asignar Defensor Público a esta planilla"}
+            >
+              <UserCheck size={12} />
+              <span>{defensorArchivo || "Asignar defensor"}</span>
+            </button>
+            <span class="active-doc-sep" aria-hidden="true">·</span>
             <span class="active-doc-meta">{totales.num_registros}/100 reg.</span>
           {/if}
           <button
@@ -1696,6 +1773,7 @@
           bind:motivoSeleccionado
           bind:observaciones
           bind:inputRadicadoEl
+          {formResetTick}
           onSubmit={() => guardarOActualizar(false)}
           onCancelarEdicion={cancelarEdicion}
           onLimpiar={limpiarFormulario}
@@ -1796,6 +1874,9 @@
   {respaldosArchivo}
   {respaldosTarget}
   {cargandoRespaldos}
+  {diagnosticoIa}
+  {cargandoDiagnosticoIa}
+  onRefrescarDiagnosticoIa={cargarDiagnosticoIa}
   onCrearNuevoArchivo={crearNuevoArchivo}
   onCrearCarpeta={crearNuevaCarpeta}
   onRenombrarCarpeta={renombrarCarpetaExistente}

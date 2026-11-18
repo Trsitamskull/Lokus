@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "aciertos": 0,
   "reglas": [
     {
@@ -7,21 +7,45 @@
       "tipo_error": "abreviacion",
       "regla": "Mantener la abreviación 'CTO' / 'Cto' tal cual en el nombre del juzgado sin expandirla, porque puede significar Circuito o Conocimiento.",
       "refuerzos": 5,
-      "actualizada": "2025-09-21T00:00:00-05:00"
+      "actualizada": "2025-09-21T00:00:00-05:00",
+      "estado": "activa",
+      "campo_objetivo": "juzgado",
+      "triggers": ["cto", "mpal", "pcto", "juzgado", "circuito", "conocimiento"],
+      "alpha": 6.0,
+      "beta": 1.0,
+      "origen": "base_invariante",
+      "modelo_alcance": "*",
+      "ultima_actualizacion": "2025-09-21T00:00:00-05:00"
     },
     {
       "id": "base-jerarquia-causas-reacciones",
       "tipo_error": "motivo",
       "regla": "Cuando concurran una causa principal (Fiscalía, Juez, INPEC, Usuario) y una reacción en primera persona del defensor ('por eso solicité reprogramar'), el motivo es la causa principal y la reacción va en observaciones.",
       "refuerzos": 5,
-      "actualizada": "2025-09-21T00:00:00-05:00"
+      "actualizada": "2025-09-21T00:00:00-05:00",
+      "estado": "activa",
+      "campo_objetivo": "motivo",
+      "triggers": ["solicite", "pedi", "reprogram", "fiscal", "juez", "inpec", "fracas", "fracsa"],
+      "alpha": 6.0,
+      "beta": 1.0,
+      "origen": "base_invariante",
+      "modelo_alcance": "*",
+      "ultima_actualizacion": "2025-09-21T00:00:00-05:00"
     },
     {
       "id": "base-defensor-confianza-contractual",
       "tipo_error": "motivo",
       "regla": "Expresiones como 'abogado contractual', 'abogado privado', 'def. confianza' o 'el abogado del procesado' corresponden siempre a 'Defensor Confianza' y nunca a 'Defensor Público'.",
       "refuerzos": 5,
-      "actualizada": "2025-09-21T00:00:00-05:00"
+      "actualizada": "2025-09-21T00:00:00-05:00",
+      "estado": "activa",
+      "campo_objetivo": "motivo",
+      "triggers": ["contractual", "privado", "confianza", "abogado"],
+      "alpha": 6.0,
+      "beta": 1.0,
+      "origen": "base_invariante",
+      "modelo_alcance": "*",
+      "ultima_actualizacion": "2025-09-21T00:00:00-05:00"
     }
   ],
   "correcciones": [

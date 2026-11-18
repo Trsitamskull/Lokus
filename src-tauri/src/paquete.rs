@@ -606,6 +606,9 @@ pub fn importar_paquete_en(
     }
 
     guardar_registro_estadisticas_en(carpeta_archivos, &reg)?;
+    if res.planillas_importadas > 0 || res.planillas_reemplazadas > 0 {
+        crate::excel::invalidar_priors_en(carpeta_archivos);
+    }
 
     // 4. Fusionar listas de usuario (sin borrar las actuales ni sobrescribir API keys)
     if importar_config {

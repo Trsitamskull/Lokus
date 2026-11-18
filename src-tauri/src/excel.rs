@@ -10,13 +10,15 @@ use serde::{Deserialize, Serialize};
 use umya_spreadsheet::{reader, writer, Spreadsheet, Worksheet};
 
 use crate::models::{
-    buscar_posible_duplicado, mapear_motivo_a_indice, AudienciaInput, EstadisticasGlobales,
-    MesDisponible, PlanillaResumen, RegistroAudiencia, ResumenDefensor, ResumenMesPlanilla,
-    ResumenPlanillaArchivada, TotalesExcel, MOTIVOS_LABELS,
+    buscar_posible_duplicado, extraer_numeros_radicado, mapear_motivo_a_indice, AudienciaInput,
+    EstadisticasGlobales, IndicePriorsExcel, MesDisponible, PlanillaResumen, ProcesoHabitual,
+    RegistroAudiencia, ResumenDefensor, ResumenMesPlanilla, ResumenPlanillaArchivada,
+    TotalesExcel, MOTIVOS_LABELS,
 };
 
 const PLANTILLA_BYTES: &[u8] = include_bytes!("../../templates/plantilla_audiencias.xlsx");
 pub const NOMBRE_INDICE_ESTADISTICAS: &str = ".lokus_estadisticas.json";
+pub const NOMBRE_INDICE_PRIORS: &str = ".lokus_priors.json";
 
 pub const FILA_DEFENSOR: u32 = 8;
 pub const COL_DEFENSOR: u32 = 2; // B8
@@ -380,7 +382,9 @@ pub fn eliminar_carpeta_con_opciones_en(
     if let Ok(mut c) = cache_planillas().lock() {
         c.clear();
     }
-    fs::remove_dir_all(&ruta).map_err(|e| format!("No se pudo eliminar la carpeta: {}", e))
+    fs::remove_dir_all(&ruta).map_err(|e| format!("No se pudo eliminar la carpeta: {}", e))?;
+    invalidar_priors_en(base);
+    Ok(())
 }
 
 pub fn eliminar_carpeta_con_opciones(
@@ -612,6 +616,7 @@ pub fn eliminar_archivo_en(
 
     fs::remove_file(&ruta).map_err(|e| format!("No se pudo eliminar el archivo: {}", e))?;
     invalidar_cache(&ruta);
+    invalidar_priors_en(carpeta);
     Ok(())
 }
 
@@ -804,7 +809,9 @@ fn restaurar_respaldo_en(ruta_excel: &Path, archivo_respaldo: &str) -> Result<()
 
 pub fn restaurar_respaldo(nombre_archivo: &str, archivo_respaldo: &str) -> Result<(), String> {
     let ruta = ruta_archivo(nombre_archivo)?;
-    restaurar_respaldo_en(&ruta, archivo_respaldo)
+    restaurar_respaldo_en(&ruta, archivo_respaldo)?;
+    invalidar_priors_en(&obtener_carpeta_archivos());
+    Ok(())
 }
 
 /// Escribe el libro Excel de forma atómica usando un archivo temporal en la misma carpeta.
@@ -1269,7 +1276,10 @@ pub fn guardar_nueva_audiencia(
     permitir_duplicado: bool,
 ) -> Result<TotalesExcel, String> {
     let ruta = ruta_archivo(nombre_archivo)?;
-    guardar_nueva_audiencia_en(&ruta, datos, permitir_duplicado)
+    let totales = guardar_nueva_audiencia_en(&ruta, datos, permitir_duplicado)?;
+    let base = obtener_carpeta_archivos();
+    let _ = actualizar_priors_incremental_en(&base, None, Some(datos));
+    Ok(totales)
 }
 
 fn validar_fila_y_radicado(ws: &Worksheet, fila_excel: u32, radicado_esperado: &str) -> Result<(), String> {
@@ -1286,13 +1296,51 @@ fn validar_fila_y_radicado(ws: &Worksheet, fila_excel: u32, radicado_esperado: &
     Ok(())
 }
 
-fn actualizar_audiencia_en(
+fn leer_registro_en_fila_para_priors(ws: &Worksheet, row: u32) -> Option<AudienciaInput> {
+    let radicado = leer_celda(ws, 2, row);
+    if radicado.is_empty() {
+        return None;
+    }
+    let tipo = leer_celda(ws, 3, row);
+    let fecha = leer_celda_fecha(ws, 4, row);
+    let hora = leer_celda_hora(ws, 5, row);
+    let juzgado = leer_celda(ws, 6, row);
+    let col_si = leer_celda(ws, 7, row).to_uppercase();
+    let col_no = leer_celda(ws, 8, row).to_uppercase();
+    let realizada = if col_si == "SI" {
+        "SI".to_string()
+    } else if col_no == "NO" {
+        "NO".to_string()
+    } else {
+        String::new()
+    };
+    let mut motivo = String::new();
+    for i in 0..8 {
+        if !leer_celda(ws, 9 + i as u32, row).is_empty() {
+            motivo = MOTIVOS_LABELS[i].to_string();
+            break;
+        }
+    }
+    let observaciones = leer_celda(ws, 17, row);
+    Some(AudienciaInput {
+        radicado,
+        tipo,
+        fecha,
+        hora,
+        juzgado,
+        realizada,
+        motivo,
+        observaciones,
+    })
+}
+
+fn actualizar_audiencia_en_con_anterior(
     ruta: &Path,
     fila_excel: u32,
     radicado_esperado: &str,
     datos: &AudienciaInput,
     permitir_duplicado: bool,
-) -> Result<TotalesExcel, String> {
+) -> Result<(TotalesExcel, Option<AudienciaInput>), String> {
     if !(FILA_INICIO_DATOS..=FILA_MAXIMA_DATOS).contains(&fila_excel) {
         return Err(format!("Número de fila inválido: {}", fila_excel));
     }
@@ -1307,6 +1355,7 @@ fn actualizar_audiencia_en(
         .ok_or_else(|| "No se pudo acceder a la hoja de trabajo".to_string())?;
 
     validar_fila_y_radicado(ws, fila_excel, radicado_esperado)?;
+    let anterior = leer_registro_en_fila_para_priors(ws, fila_excel);
 
     if !permitir_duplicado {
         let existentes = extraer_registros_de_hoja(ws);
@@ -1324,7 +1373,25 @@ fn actualizar_audiencia_en(
 
     let totales = reordenar_y_recalcular(ws);
     guardar_libro(&book, ruta)?;
-    Ok(totales)
+    Ok((totales, anterior))
+}
+
+#[cfg(test)]
+fn actualizar_audiencia_en(
+    ruta: &Path,
+    fila_excel: u32,
+    radicado_esperado: &str,
+    datos: &AudienciaInput,
+    permitir_duplicado: bool,
+) -> Result<TotalesExcel, String> {
+    actualizar_audiencia_en_con_anterior(
+        ruta,
+        fila_excel,
+        radicado_esperado,
+        datos,
+        permitir_duplicado,
+    )
+    .map(|(t, _)| t)
 }
 
 pub fn actualizar_audiencia_existente(
@@ -1335,14 +1402,23 @@ pub fn actualizar_audiencia_existente(
     permitir_duplicado: bool,
 ) -> Result<TotalesExcel, String> {
     let ruta = ruta_archivo(nombre_archivo)?;
-    actualizar_audiencia_en(&ruta, fila_excel, radicado_esperado, datos, permitir_duplicado)
+    let (totales, anterior) = actualizar_audiencia_en_con_anterior(
+        &ruta,
+        fila_excel,
+        radicado_esperado,
+        datos,
+        permitir_duplicado,
+    )?;
+    let base = obtener_carpeta_archivos();
+    let _ = actualizar_priors_incremental_en(&base, anterior.as_ref(), Some(datos));
+    Ok(totales)
 }
 
-fn eliminar_registro_en(
+fn eliminar_registro_en_con_anterior(
     ruta: &Path,
     fila_excel: u32,
     radicado_esperado: &str,
-) -> Result<TotalesExcel, String> {
+) -> Result<(TotalesExcel, Option<AudienciaInput>), String> {
     if !(FILA_INICIO_DATOS..=FILA_MAXIMA_DATOS).contains(&fila_excel) {
         return Err(format!("Número de fila inválido: {}", fila_excel));
     }
@@ -1357,6 +1433,7 @@ fn eliminar_registro_en(
         .ok_or_else(|| "No se pudo acceder a la hoja de trabajo".to_string())?;
 
     validar_fila_y_radicado(ws, fila_excel, radicado_esperado)?;
+    let anterior = leer_registro_en_fila_para_priors(ws, fila_excel);
 
     let _ = crear_respaldo_en(ruta);
 
@@ -1364,7 +1441,16 @@ fn eliminar_registro_en(
 
     let totales = reordenar_y_recalcular(ws);
     guardar_libro(&book, ruta)?;
-    Ok(totales)
+    Ok((totales, anterior))
+}
+
+#[cfg(test)]
+fn eliminar_registro_en(
+    ruta: &Path,
+    fila_excel: u32,
+    radicado_esperado: &str,
+) -> Result<TotalesExcel, String> {
+    eliminar_registro_en_con_anterior(ruta, fila_excel, radicado_esperado).map(|(t, _)| t)
 }
 
 pub fn eliminar_registro_audiencia(
@@ -1373,7 +1459,11 @@ pub fn eliminar_registro_audiencia(
     radicado_esperado: &str,
 ) -> Result<TotalesExcel, String> {
     let ruta = ruta_archivo(nombre_archivo)?;
-    eliminar_registro_en(&ruta, fila_excel, radicado_esperado)
+    let (totales, anterior) =
+        eliminar_registro_en_con_anterior(&ruta, fila_excel, radicado_esperado)?;
+    let base = obtener_carpeta_archivos();
+    let _ = actualizar_priors_incremental_en(&base, anterior.as_ref(), None);
+    Ok(totales)
 }
 
 fn nombre_mes_es(mes: u32) -> &'static str {
@@ -1795,6 +1885,11 @@ pub fn calcular_estadisticas_en(
     let mut meses_map: BTreeMap<(i32, u32), u32> = BTreeMap::new();
     let mut defensores_map: HashMap<String, AcumuladorDefensor> = HashMap::new();
     let mut defensores_disponibles_map: HashMap<String, String> = HashMap::new();
+    let mut priors_acum = IndicePriorsExcel {
+        formato: 1,
+        actualizada: Local::now().to_rfc3339(),
+        ..Default::default()
+    };
 
     for nombre in &nombres {
         let (id, creado) = asegurar_id_ruta(&mut reg_est, nombre);
@@ -1806,6 +1901,17 @@ pub fn calcular_estadisticas_en(
         let ruta = carpeta.join(nombre);
         let (registros, _totales, defensor) = leer_archivo_en(&ruta)
             .map_err(|e| format!("Error leyendo '{}': {}", nombre, e))?;
+        for r in &registros {
+            acumular_registro_en_priors(
+                &mut priors_acum,
+                &r.radicado,
+                &r.tipo,
+                &r.hora,
+                &r.juzgado,
+                &r.realizada,
+                &r.motivo,
+            );
+        }
 
         let defensor_norm = defensor.split_whitespace().collect::<Vec<_>>().join(" ");
         if !defensor_norm.is_empty() {
@@ -1840,6 +1946,7 @@ pub fn calcular_estadisticas_en(
     if cambio_indice {
         let _ = guardar_registro_estadisticas_en(carpeta, &reg_est);
     }
+    let _ = guardar_priors_en(carpeta, &priors_acum);
 
     for arch in &reg_est.archivadas {
         if ids_activos.contains(&arch.id) {
@@ -1953,6 +2060,207 @@ pub fn obtener_estadisticas_globales(
         archivo.as_deref(),
         defensor.as_deref(),
     )
+}
+
+fn extraer_hora_num(hora: &str) -> Option<u32> {
+    let h_str = hora.trim().split(':').next()?.trim();
+    let h = h_str.parse::<u32>().ok()?;
+    if h <= 23 {
+        Some(h)
+    } else {
+        None
+    }
+}
+
+pub fn acumular_registro_en_priors(
+    priors: &mut IndicePriorsExcel,
+    radicado: &str,
+    tipo: &str,
+    hora: &str,
+    juzgado: &str,
+    realizada: &str,
+    motivo: &str,
+) {
+    priors.total_registros = priors.total_registros.saturating_add(1);
+    let juz_limpio = juzgado.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !juz_limpio.is_empty() {
+        *priors.juzgados_freq.entry(juz_limpio.clone()).or_insert(0) += 1;
+    }
+    let tipo_limpio = tipo.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !tipo_limpio.is_empty() {
+        *priors.tipos_freq.entry(tipo_limpio.clone()).or_insert(0) += 1;
+    }
+    if let Some(h) = extraer_hora_num(hora) {
+        *priors.horas_freq.entry(h).or_insert(0) += 1;
+    }
+    if realizada.trim().eq_ignore_ascii_case("SI") {
+        priors.realizada_si = priors.realizada_si.saturating_add(1);
+    } else if realizada.trim().eq_ignore_ascii_case("NO") {
+        priors.realizada_no = priors.realizada_no.saturating_add(1);
+        if let Some(idx) = mapear_motivo_a_indice(motivo) {
+            priors.motivos_freq[idx] = priors.motivos_freq[idx].saturating_add(1);
+        }
+    }
+    let rad_limpio = radicado.split_whitespace().collect::<Vec<_>>().join(" ");
+    for num in extraer_numeros_radicado(&rad_limpio) {
+        let entry = priors
+            .procesos_por_numero
+            .entry(num)
+            .or_insert_with(ProcesoHabitual::default);
+        entry.frecuencia = entry.frecuencia.saturating_add(1);
+        if !rad_limpio.is_empty() && rad_limpio.len() >= entry.radicado_completo.len() {
+            entry.radicado_completo = rad_limpio.clone();
+        }
+        if !juz_limpio.is_empty() {
+            entry.juzgado_habitual = juz_limpio.clone();
+        }
+        if !tipo_limpio.is_empty() {
+            entry.tipo_habitual = tipo_limpio.clone();
+        }
+    }
+}
+
+fn restar_registro_de_priors(priors: &mut IndicePriorsExcel, reg: &AudienciaInput) {
+    priors.total_registros = priors.total_registros.saturating_sub(1);
+    let juz_limpio = reg.juzgado.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !juz_limpio.is_empty() {
+        if let Some(c) = priors.juzgados_freq.get_mut(&juz_limpio) {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                priors.juzgados_freq.remove(&juz_limpio);
+            }
+        }
+    }
+    let tipo_limpio = reg.tipo.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !tipo_limpio.is_empty() {
+        if let Some(c) = priors.tipos_freq.get_mut(&tipo_limpio) {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                priors.tipos_freq.remove(&tipo_limpio);
+            }
+        }
+    }
+    if let Some(h) = extraer_hora_num(&reg.hora) {
+        if let Some(c) = priors.horas_freq.get_mut(&h) {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                priors.horas_freq.remove(&h);
+            }
+        }
+    }
+    if reg.realizada.trim().eq_ignore_ascii_case("SI") {
+        priors.realizada_si = priors.realizada_si.saturating_sub(1);
+    } else if reg.realizada.trim().eq_ignore_ascii_case("NO") {
+        priors.realizada_no = priors.realizada_no.saturating_sub(1);
+        if let Some(idx) = mapear_motivo_a_indice(&reg.motivo) {
+            priors.motivos_freq[idx] = priors.motivos_freq[idx].saturating_sub(1);
+        }
+    }
+    for num in extraer_numeros_radicado(&reg.radicado) {
+        if let Some(p) = priors.procesos_por_numero.get_mut(&num) {
+            p.frecuencia = p.frecuencia.saturating_sub(1);
+            if p.frecuencia == 0 {
+                priors.procesos_por_numero.remove(&num);
+            }
+        }
+    }
+}
+
+pub fn cargar_priors_en(carpeta: &Path) -> Option<IndicePriorsExcel> {
+    let ruta = carpeta.join(NOMBRE_INDICE_PRIORS);
+    let contenido = fs::read_to_string(&ruta).ok()?;
+    serde_json::from_str::<IndicePriorsExcel>(&contenido).ok()
+}
+
+pub fn guardar_priors_en(carpeta: &Path, priors: &IndicePriorsExcel) -> Result<(), String> {
+    fs::create_dir_all(carpeta)
+        .map_err(|e| format!("No se pudo preparar carpeta para índice de priors: {}", e))?;
+    let ruta = carpeta.join(NOMBRE_INDICE_PRIORS);
+    let json = serde_json::to_string_pretty(priors)
+        .map_err(|e| format!("Error serializando índice de priors: {}", e))?;
+    let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = carpeta.join(format!(
+        ".{}.{}.{}.tmp",
+        NOMBRE_INDICE_PRIORS,
+        std::process::id(),
+        seq
+    ));
+    fs::write(&tmp, json)
+        .map_err(|e| format!("Error escribiendo índice de priors: {}", e))?;
+    if let Err(e) = fs::rename(&tmp, &ruta) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Error guardando índice de priors: {}", e));
+    }
+    Ok(())
+}
+
+pub fn reconstruir_priors_en(carpeta: &Path) -> Result<IndicePriorsExcel, String> {
+    let nombres = listar_archivos_en(carpeta)?;
+    let mut priors = IndicePriorsExcel {
+        formato: 1,
+        actualizada: Local::now().to_rfc3339(),
+        ..Default::default()
+    };
+    for nombre in &nombres {
+        let ruta = carpeta.join(nombre);
+        if let Ok((registros, _, _)) = leer_archivo_en(&ruta) {
+            for r in &registros {
+                acumular_registro_en_priors(
+                    &mut priors,
+                    &r.radicado,
+                    &r.tipo,
+                    &r.hora,
+                    &r.juzgado,
+                    &r.realizada,
+                    &r.motivo,
+                );
+            }
+        }
+    }
+    guardar_priors_en(carpeta, &priors)?;
+    Ok(priors)
+}
+
+pub fn cargar_o_inicializar_priors_en(carpeta: &Path) -> IndicePriorsExcel {
+    if let Some(priors) = cargar_priors_en(carpeta) {
+        return priors;
+    }
+    reconstruir_priors_en(carpeta).unwrap_or_default()
+}
+
+pub fn actualizar_priors_incremental_en(
+    carpeta: &Path,
+    anterior: Option<&AudienciaInput>,
+    nuevo: Option<&AudienciaInput>,
+) -> Result<IndicePriorsExcel, String> {
+    let Some(mut priors) = cargar_priors_en(carpeta) else {
+        return reconstruir_priors_en(carpeta);
+    };
+    if let Some(ant) = anterior {
+        restar_registro_de_priors(&mut priors, ant);
+    }
+    if let Some(n) = nuevo {
+        acumular_registro_en_priors(
+            &mut priors,
+            &n.radicado,
+            &n.tipo,
+            &n.hora,
+            &n.juzgado,
+            &n.realizada,
+            &n.motivo,
+        );
+    }
+    priors.actualizada = Local::now().to_rfc3339();
+    guardar_priors_en(carpeta, &priors)?;
+    Ok(priors)
+}
+
+pub(crate) fn invalidar_priors_en(carpeta: &Path) {
+    let _ = fs::remove_file(carpeta.join(NOMBRE_INDICE_PRIORS));
+}
+
+pub fn cargar_priors_actuales() -> IndicePriorsExcel {
+    cargar_o_inicializar_priors_en(&obtener_carpeta_archivos())
 }
 
 #[cfg(test)]
@@ -2392,6 +2700,91 @@ mod tests {
 
         eliminar_carpeta_con_opciones_en(&dir, "2027", true, false).unwrap();
         assert!(obtener_colores_carpetas_en(&dir).is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_priors_excel_reconstruccion_y_actualizacion_incremental() {
+        let dir = preparar_temp_dir("priors_incremental");
+        let sub = dir.join("2025/Agosto");
+        fs::create_dir_all(&sub).unwrap();
+        let ruta = sub.join("agosto.xlsx");
+        crear_copia_plantilla_en(&ruta, None).unwrap();
+
+        let mut reg1 = ejemplo_audiencia(
+            "JUAN PEREZ - 200016001075202500123",
+            "15/08/2025",
+            "14:30",
+            "NO",
+            "Fiscalía",
+        );
+        reg1.juzgado = "Juzgado 3 Cto Penal".into();
+        reg1.tipo = "Audiencia concentrada".into();
+        guardar_nueva_audiencia_en(&ruta, &reg1, false).unwrap();
+
+        let priors_init = cargar_o_inicializar_priors_en(&dir);
+        assert_eq!(priors_init.total_registros, 1);
+        assert_eq!(priors_init.realizada_no, 1);
+        assert_eq!(priors_init.motivos_freq[1], 1);
+        assert_eq!(priors_init.horas_freq.get(&14).copied(), Some(1));
+        assert_eq!(
+            priors_init
+                .juzgados_freq
+                .get("Juzgado 3 Cto Penal")
+                .copied(),
+            Some(1)
+        );
+        assert!(priors_init
+            .procesos_por_numero
+            .contains_key("200016001075202500123"));
+        assert!(dir.join(NOMBRE_INDICE_PRIORS).exists());
+
+        // Actualización incremental: cambia a SI / 09:00 / otro juzgado
+        let mut reg2 = reg1.clone();
+        reg2.hora = "09:00".into();
+        reg2.juzgado = "Juzgado 1 Penal".into();
+        reg2.realizada = "SI".into();
+        reg2.motivo = String::new();
+        let priors_upd =
+            actualizar_priors_incremental_en(&dir, Some(&reg1), Some(&reg2)).unwrap();
+        assert_eq!(priors_upd.total_registros, 1);
+        assert_eq!(priors_upd.realizada_no, 0);
+        assert_eq!(priors_upd.realizada_si, 1);
+        assert_eq!(priors_upd.motivos_freq[1], 0);
+        assert!(!priors_upd.horas_freq.contains_key(&14));
+        assert_eq!(priors_upd.horas_freq.get(&9).copied(), Some(1));
+        assert_eq!(
+            priors_upd.juzgados_freq.get("Juzgado 1 Penal").copied(),
+            Some(1)
+        );
+        assert!(!priors_upd.juzgados_freq.contains_key("Juzgado 3 Cto Penal"));
+
+        // Eliminación incremental limpia contadores y proceso
+        let priors_del = actualizar_priors_incremental_en(&dir, Some(&reg2), None).unwrap();
+        assert_eq!(priors_del.total_registros, 0);
+        assert_eq!(priors_del.realizada_si, 0);
+        assert!(priors_del.procesos_por_numero.is_empty());
+
+        // Al eliminar el archivo Excel completo, .lokus_priors.json se invalida y se reconstruye limpio
+        let ruta2 = dir.join("otro.xlsx");
+        crear_copia_plantilla_en(&ruta2, None).unwrap();
+        let mut reg_otro = reg1.clone();
+        reg_otro.radicado = "MARIA LOPEZ - 200016001075202500999".into();
+        guardar_nueva_audiencia_en(&ruta2, &reg_otro, false).unwrap();
+        let p_con_otro = actualizar_priors_incremental_en(&dir, None, Some(&reg_otro)).unwrap();
+        assert_eq!(p_con_otro.total_registros, 1);
+        assert!(p_con_otro
+            .procesos_por_numero
+            .contains_key("200016001075202500999"));
+        assert!(dir.join(NOMBRE_INDICE_PRIORS).exists());
+        eliminar_archivo_en(&dir, "otro.xlsx", false).unwrap();
+        assert!(!dir.join(NOMBRE_INDICE_PRIORS).exists());
+        let p_reconstruido = cargar_o_inicializar_priors_en(&dir);
+        assert!(!p_reconstruido
+            .procesos_por_numero
+            .contains_key("200016001075202500999"));
+        assert_eq!(p_reconstruido.total_registros, 1);
 
         let _ = fs::remove_dir_all(&dir);
     }

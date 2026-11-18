@@ -6,9 +6,21 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::aprendizaje::{obtener_contexto_prompt, AnalisisCorreccionIa, CorreccionIa};
+use crate::aprendizaje::{
+    cargar_memoria_local_snapshot, memoria_base_embebida, obtener_contexto_prompt_con_traza,
+    quitar_tildes, AnalisisCorreccionIa, CorreccionIa, MemoriaAprendizaje,
+    PrediccionLocalResumen, PreferenciasEstilo,
+};
 use crate::config::{cargar_settings, guardar_settings};
-use crate::models::{mapear_motivo_a_indice, MOTIVOS_LABELS, TIPOS_AUDIENCIA};
+use crate::estadistica_ia::{
+    resolver_alias_exacto_validado, resolver_hora_con_prior, seleccionar_candidatos_prompt,
+    CandidatosPrompt, MotorEstadisticoLocal,
+};
+use crate::excel::cargar_priors_actuales;
+use crate::models::{
+    extraer_numeros_radicado, mapear_motivo_a_indice, IndicePriorsExcel, MOTIVOS_LABELS,
+    TIPOS_AUDIENCIA,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AiAudienciaOutput {
@@ -22,6 +34,12 @@ pub struct AiAudienciaOutput {
     pub se_realizo: String,
     pub motivo: String,
     pub observaciones: String,
+    #[serde(default)]
+    pub reglas_inyectadas: Vec<String>,
+    #[serde(default)]
+    pub ejemplos_inyectados: Vec<String>,
+    #[serde(default)]
+    pub prediccion_local: Option<PrediccionLocalResumen>,
 }
 
 fn http_client() -> &'static reqwest::Client {
@@ -183,39 +201,39 @@ fn detectar_defensor_confianza(texto_lower: &str) -> bool {
     indicadores.iter().any(|ind| texto_lower.contains(ind))
 }
 
-fn detectar_primera_persona_defensor_publico(texto_lower: &str) -> bool {
+fn detectar_primera_persona_defensor_publico(texto_norm: &str) -> bool {
     let patrones = [
-        "solicité",
-        "pedí",
+        "solicite",
+        "pedi",
         "solicito",
         "pido",
-        "soliciré",
+        "solicire",
         "no pude",
         "no he tenido",
-        "no logré",
+        "no logre",
         "me fue imposible",
         "no he logrado",
-        "no había podido",
-        "realicé conexión",
+        "no habia podido",
+        "realice conexion",
     ];
-    patrones.iter().any(|p| texto_lower.contains(p))
+    patrones.iter().any(|p| texto_norm.contains(p))
 }
 
 fn inferir_motivos(texto_original: &str) -> (String, Vec<String>) {
-    let texto_lower = texto_original.to_lowercase();
-    let es_confianza = detectar_defensor_confianza(&texto_lower);
-    let es_primera_persona = detectar_primera_persona_defensor_publico(&texto_lower);
+    let texto_norm = quitar_tildes(&texto_original.to_lowercase());
+    let es_confianza = detectar_defensor_confianza(&texto_norm);
+    let es_primera_persona = detectar_primera_persona_defensor_publico(&texto_norm);
 
     let frases_motivos: &[(&str, &str)] = &[
         // Juez (mayor prioridad en problemas del despacho)
-        ("el juez entró en periodo de vacaciones", "Juez"),
+        ("el juez entro en periodo de vacaciones", "Juez"),
         ("vacaciones", "Juez"),
-        ("no habían nombrado titular de despacho", "Juez"),
+        ("no habian nombrado titular de despacho", "Juez"),
         ("titular de despacho", "Juez"),
-        ("juez no compareció", "Juez"),
+        ("juez no comparecio", "Juez"),
         ("ausencia del juez", "Juez"),
         ("juzgado cerrado", "Juez"),
-        ("juez en comisión", "Juez"),
+        ("juez en comision", "Juez"),
         ("despacho en otra audiencia", "Juez"),
         ("depacho en otra audiencia", "Juez"),
         ("estar el despacho en audiencia", "Juez"),
@@ -224,49 +242,49 @@ fn inferir_motivos(texto_original: &str) -> (String, Vec<String>) {
         ("ambos despachos en audiencia", "Juez"),
         ("error en la agenda", "Juez"),
         // Fiscalía
-        ("la fiscal no se conectó", "Fiscalía"),
-        ("fiscal no se conectó", "Fiscalía"),
+        ("la fiscal no se conecto", "Fiscalía"),
+        ("fiscal no se conecto", "Fiscalía"),
         ("fiscal fue reemplazad", "Fiscalía"),
         ("fiscal fue reemplazdao", "Fiscalía"),
         ("no conocer la carpeta", "Fiscalía"),
-        ("por solicitud de la fiscalía", "Fiscalía"),
-        ("solicitud de fiscalía", "Fiscalía"),
-        ("solicitud de la fiscalía", "Fiscalía"),
-        ("fiscalía no compareció", "Fiscalía"),
-        ("la fiscalía solicitó reprogramación", "Fiscalía"),
-        ("fiscal solicitó reprogramación", "Fiscalía"),
-        ("fiscalía solicitó reprogramación", "Fiscalía"),
+        ("por solicitud de la fiscalia", "Fiscalía"),
+        ("solicitud de fiscalia", "Fiscalía"),
+        ("solicitud de la fiscalia", "Fiscalía"),
+        ("fiscalia no comparecio", "Fiscalía"),
+        ("la fiscalia solicito reprogramacion", "Fiscalía"),
+        ("fiscal solicito reprogramacion", "Fiscalía"),
+        ("fiscalia solicito reprogramacion", "Fiscalía"),
         ("la fiscal no vino", "Fiscalía"),
         ("fiscal no vino", "Fiscalía"),
-        ("la fiscal no asistió", "Fiscalía"),
-        ("fiscal no asistió", "Fiscalía"),
+        ("la fiscal no asistio", "Fiscalía"),
+        ("fiscal no asistio", "Fiscalía"),
         ("ausencia de la fiscal", "Fiscalía"),
         ("ausencia del fiscal", "Fiscalía"),
         ("posible preacuerdo", "Fiscalía"),
         // Defensor Confianza (abogado contractual / privado)
-        ("defensor de confianza no compareció", "Defensor Confianza"),
-        ("abogado no compareció", "Defensor Confianza"),
-        ("abogado contractual no compareció", "Defensor Confianza"),
-        ("abogado contractual no se presentó", "Defensor Confianza"),
+        ("defensor de confianza no comparecio", "Defensor Confianza"),
+        ("abogado no comparecio", "Defensor Confianza"),
+        ("abogado contractual no comparecio", "Defensor Confianza"),
+        ("abogado contractual no se presento", "Defensor Confianza"),
         ("abogado contractual ausente", "Defensor Confianza"),
         ("defensor de confianza ausente", "Defensor Confianza"),
         ("inasistencia del defensor de confianza", "Defensor Confianza"),
         ("inasistencia del abogado contractual", "Defensor Confianza"),
         ("inasistencia del abogado", "Defensor Confianza"),
-        ("defensor de confianza solicitó", "Defensor Confianza"),
+        ("defensor de confianza solicito", "Defensor Confianza"),
         ("defensor de confianza solicita", "Defensor Confianza"),
-        ("abogado contractual solicitó", "Defensor Confianza"),
-        ("abogado contractual pidió", "Defensor Confianza"),
-        ("abogado solicitó reprogramación", "Defensor Confianza"),
-        ("el abogado privado solicitó", "Defensor Confianza"),
-        ("el abogado no se presentó", "Defensor Confianza"),
-        ("el abogado del procesado no compareció", "Defensor Confianza"),
+        ("abogado contractual solicito", "Defensor Confianza"),
+        ("abogado contractual pidio", "Defensor Confianza"),
+        ("abogado solicito reprogramacion", "Defensor Confianza"),
+        ("el abogado privado solicito", "Defensor Confianza"),
+        ("el abogado no se presento", "Defensor Confianza"),
+        ("el abogado del procesado no comparecio", "Defensor Confianza"),
         ("falta del defensor de confianza", "Defensor Confianza"),
         ("falta del abogado contractual", "Defensor Confianza"),
         ("ausencia de defensor de confianza", "Defensor Confianza"),
         ("ausencia de abogado contractual", "Defensor Confianza"),
-        ("defensor privado no compareció", "Defensor Confianza"),
-        ("abogado privado no compareció", "Defensor Confianza"),
+        ("defensor privado no comparecio", "Defensor Confianza"),
+        ("abogado privado no comparecio", "Defensor Confianza"),
         ("solicitud del abogado contractual", "Defensor Confianza"),
         ("defensor de confianza inasistente", "Defensor Confianza"),
         ("abogado contractual inasistente", "Defensor Confianza"),
@@ -281,61 +299,61 @@ fn inferir_motivos(texto_original: &str) -> (String, Vec<String>) {
         ("def de confianza", "Defensor Confianza"),
         ("defensor confianza", "Defensor Confianza"),
         // Defensor Público (incluye primera persona del defensor)
-        ("defensor público no compareció", "Defensor Público"),
-        ("inasistencia del defensor público", "Defensor Público"),
-        ("defensor público solicitó", "Defensor Público"),
-        ("solicité reprogram", "Defensor Público"),
-        ("soliciré reprogram", "Defensor Público"),
+        ("defensor publico no comparecio", "Defensor Público"),
+        ("inasistencia del defensor publico", "Defensor Público"),
+        ("defensor publico solicito", "Defensor Público"),
+        ("solicite reprogram", "Defensor Público"),
+        ("solicire reprogram", "Defensor Público"),
         ("solicito reprogram", "Defensor Público"),
         ("solicito la reprogram", "Defensor Público"),
-        ("pedí reprogram", "Defensor Público"),
-        ("pedí la reprogram", "Defensor Público"),
+        ("pedi reprogram", "Defensor Público"),
+        ("pedi la reprogram", "Defensor Público"),
         ("pido reprogram", "Defensor Público"),
         ("pido la reprogram", "Defensor Público"),
-        ("pedí aplazamiento", "Defensor Público"),
+        ("pedi aplazamiento", "Defensor Público"),
         ("no pude contactar", "Defensor Público"),
         ("no he tenido contacto", "Defensor Público"),
-        ("no había tenido contacto con el procesado", "Defensor Público"),
+        ("no habia tenido contacto con el procesado", "Defensor Público"),
         ("no he logrado contactar", "Defensor Público"),
         ("me fue imposible", "Defensor Público"),
-        ("no logré comunicarme", "Defensor Público"),
-        ("realicé conexión virtual", "Defensor Público"),
+        ("no logre comunicarme", "Defensor Público"),
+        ("realice conexion virtual", "Defensor Público"),
         // Usuario / Procesado
         ("no notificaron al procesado", "Usuario"),
-        ("procesado no compareció", "Usuario"),
-        ("usuario no se presentó", "Usuario"),
+        ("procesado no comparecio", "Usuario"),
+        ("usuario no se presento", "Usuario"),
         ("procesado ausente", "Usuario"),
-        ("problemas técnicos", "Usuario"),
+        ("problemas tecnicos", "Usuario"),
         ("fallas de conectividad", "Usuario"),
         // INPEC
-        ("inpec no trasladó", "INPEC"),
+        ("inpec no traslado", "INPEC"),
         ("problemas de traslado", "INPEC"),
-        ("inpec reportó", "INPEC"),
+        ("inpec reporto", "INPEC"),
         ("inpec", "INPEC"),
         // Víctima
-        ("víctima no compareció", "Víctima"),
-        ("ausencia de la víctima", "Víctima"),
+        ("victima no comparecio", "Víctima"),
+        ("ausencia de la victima", "Víctima"),
         // ICBF
-        ("icbf no compareció", "ICBF"),
+        ("icbf no comparecio", "ICBF"),
         ("representante icbf ausente", "ICBF"),
         ("icbf", "ICBF"),
     ];
 
     let mut encontrados: Vec<String> = Vec::new();
     for (frase, motivo) in frases_motivos {
-        if texto_lower.contains(frase) && !encontrados.contains(&motivo.to_string()) {
+        if texto_norm.contains(frase) && !encontrados.contains(&motivo.to_string()) {
             encontrados.push(motivo.to_string());
         }
     }
 
     // Patrones genéricos de reprogramación que se reasignan según el contexto (de legacy-python)
     let frases_genericas = [
-        "solicita reprogramación",
-        "solicitó la reprogramación",
-        "reprogramación solicitada",
-        "solicitó reprogramar",
+        "solicita reprogramacion",
+        "solicito la reprogramacion",
+        "reprogramacion solicitada",
+        "solicito reprogramar",
     ];
-    if encontrados.is_empty() && frases_genericas.iter().any(|f| texto_lower.contains(f)) {
+    if encontrados.is_empty() && frases_genericas.iter().any(|f| texto_norm.contains(f)) {
         if es_confianza {
             encontrados.push("Defensor Confianza".to_string());
         } else if es_primera_persona {
@@ -446,10 +464,10 @@ fn mapear_tipo_audiencia(tipo_ia: &str) -> (String, String) {
 
 fn extraer_fechas_reprogramacion(texto: &str) -> String {
     let patrones = [
-        r"(?i)reprogramada?\s+para\s+el?\s+d[íi]a\s+(\d{1,2}\s+de\s+[a-záéíóú]+(?:\s+de\s+\d{4})?)",
-        r"(?i)reprogramada?\s+para\s+el?\s+(\d{1,2}\s+de\s+[a-záéíóú]+)",
+        r"(?i)reprogram(?:ad[oa]?|ar)\s+para\s+el?\s+d[íi]a\s+(\d{1,2}\s+de\s+[a-záéíóú]+(?:\s+de\s+\d{4})?)",
+        r"(?i)reprogram(?:ad[oa]?|ar)\s+para\s+el?\s+(\d{1,2}\s+de\s+[a-záéíóú]+(?:\s+de\s+\d{4})?)",
         r"(?i)nueva\s+fecha[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"(?i)se\s+fij[óo]\s+(?:nueva\s+fecha\s+)?para\s+el?\s+(\d{1,2}\s+de\s+[a-záéíóú]+)",
+        r"(?i)se\s+fij[óo]\s+(?:nueva\s+fecha\s+)?para\s+el?\s+(\d{1,2}\s+de\s+[a-záéíóú]+(?:\s+de\s+\d{4})?)",
     ];
     let mut halladas: Vec<String> = Vec::new();
     for pat in patrones {
@@ -467,11 +485,155 @@ fn extraer_fechas_reprogramacion(texto: &str) -> String {
     halladas.join(", ")
 }
 
+fn re_ningun_motivo_contextual() -> Option<&'static Regex> {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)(?:motivo(?:\s*\([^)]*\))?\s*[:\-]\s*(?:ningun[oa]|n/?a|no\s+aplica)\b|\bsin\s+motivo\s+de\s+(?:aplazamiento|suspensi[oó]n)\b)",
+        )
+        .ok()
+    })
+    .as_ref()
+}
+
+fn detectar_dice_ningun_motivo(texto_lower: &str) -> bool {
+    re_ningun_motivo_contextual().is_some_and(|re| re.is_match(texto_lower))
+}
+
+#[cfg(test)]
+fn detectar_patron_fracaso_contextual(texto_lower: &str) -> bool {
+    detectar_patron_fracaso_con_preferencias(texto_lower, &PreferenciasEstilo::default())
+}
+
+fn detectar_patron_fracaso_con_preferencias(
+    texto_lower: &str,
+    pref: &PreferenciasEstilo,
+) -> bool {
+    let texto_norm = quitar_tildes(texto_lower);
+    let patrones_fracaso = [
+        "se reprogramo",
+        "sera reprogramada",
+        "se reprograma",
+        "reprogramacion",
+        "solicito reprogramacion",
+        "pide reprogramacion",
+        "solicita aplazamiento",
+        "se aplaza",
+        "sera aplazada",
+        "se suspende",
+        "suspendida",
+        "nueva fecha",
+        "se fijo nueva fecha",
+        "se fija nueva fecha",
+        "se fija fecha de reprogramacion",
+        "fracsa",
+        "fracasa",
+        "no se realizo",
+        "no se hizo",
+    ];
+
+    if patrones_fracaso.iter().any(|p| texto_norm.contains(p))
+        || (texto_norm.contains("fracaso")
+            && !texto_norm.contains("no fracaso")
+            && !texto_norm.contains("sin fracaso"))
+    {
+        return true;
+    }
+
+    // "se fija" ambiguo es adaptable estadísticamente según PreferenciasEstilo:
+    // si el defensor suele marcarlo como realización/continuación, su probabilidad baja de 0.45.
+    if texto_norm.contains("se fija") || texto_norm.contains("se fijo") {
+        let senales_realizacion = [
+            "se realizo",
+            "se efectuo",
+            "se instalo",
+            "se llevo a cabo",
+            "se emitio sentido de fallo",
+            "se dio lectura",
+            "se fija lectura",
+            "se fijo lectura",
+            "para lectura",
+            "para continuar",
+            "sin novedad",
+        ];
+        if !senales_realizacion.iter().any(|s| texto_norm.contains(s)) {
+            let denom =
+                (pref.se_fija_aplazamiento_alpha + pref.se_fija_aplazamiento_beta).max(1.0);
+            let p_aplaza = pref.se_fija_aplazamiento_alpha / denom;
+            if p_aplaza >= 0.45 {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn limpiar_observacion_vacia(obs: String) -> String {
+    let limpio = obs.trim();
+    if limpio.eq_ignore_ascii_case("sin observaciones adicionales")
+        || limpio.eq_ignore_ascii_case("ninguna")
+        || limpio.eq_ignore_ascii_case("ninguno")
+        || limpio.eq_ignore_ascii_case("n/a")
+    {
+        String::new()
+    } else {
+        limpio.to_string()
+    }
+}
+
+fn formatear_candidatos_prompt(cands: Option<&CandidatosPrompt>) -> String {
+    let Some(c) = cands else {
+        return String::new();
+    };
+    let mut bloques: Vec<String> = Vec::new();
+    if let Some(ref proc_hab) = c.radicado_vinculado {
+        bloques.push(format!(
+            "- Proceso conocido por historial del radicado (frecuencia={}): radicado=\"{}\", juzgado_habitual=\"{}\", tipo_habitual=\"{}\". Úsalos como referencia de normalización salvo que el texto indique un cambio explícito.",
+            proc_hab.frecuencia,
+            proc_hab.radicado_completo,
+            proc_hab.juzgado_habitual,
+            proc_hab.tipo_habitual
+        ));
+    }
+    if !c.juzgados_top.is_empty() {
+        bloques.push(format!(
+            "- Juzgados candidatos más probables (normaliza hacia la forma exacta si coincide, respetando siglas como CTO/MPAL/PCTO): {}",
+            c.juzgados_top.join(" | ")
+        ));
+    }
+    if !c.tipos_top.is_empty() {
+        bloques.push(format!(
+            "- Tipos de audiencia candidatos del catálogo: {}",
+            c.tipos_top.join(" | ")
+        ));
+    }
+    if bloques.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nCANDIDATOS ESTADÍSTICOS LOCALES (PRIOR DE PLANILLAS):\n{}\n",
+            bloques.join("\n")
+        )
+    }
+}
+
+#[allow(dead_code)]
 fn construir_prompt(
     texto_preprocesado: &str,
     current_year: i32,
     contexto_aprendizaje: &str,
 ) -> String {
+    construir_prompt_con_candidatos(texto_preprocesado, current_year, contexto_aprendizaje, None)
+}
+
+fn construir_prompt_con_candidatos(
+    texto_preprocesado: &str,
+    current_year: i32,
+    contexto_aprendizaje: &str,
+    candidatos: Option<&CandidatosPrompt>,
+) -> String {
+    let seccion_candidatos = formatear_candidatos_prompt(candidatos);
     let seccion_aprendizaje = if contexto_aprendizaje.trim().is_empty() {
         String::new()
     } else {
@@ -491,7 +653,7 @@ Analiza el texto (que puede venir en estilo ESTRUCTURADO descriptivo o en estilo
   "juzgado": "Nombre del juzgado o despacho judicial",
   "se_realizo": "SI o NO",
   "motivo": "Si se_realizo es NO, elegir SOLO UNO entre: Juez, Fiscalía, Usuario, INPEC, Víctima, ICBF, Defensor Confianza, Defensor Público. Si es SI, dejar vacío",
-  "observaciones": "Resumen breve y profesional de detalles relevantes, fechas de reprogramación o incidencias"
+  "observaciones": "Resumen breve y profesional de detalles relevantes, fechas de reprogramación o incidencias (o vacío si no hay detalles adicionales)"
 }}
 
 REGLAS CRÍTICAS DE EXTRACCIÓN:
@@ -506,8 +668,8 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
    - "ACUSACION" -> "Audiencia de acusación"
    - "PREPARATORIA" -> "Audiencia preparatoria"
 4. REALIZACIÓN Y JERARQUÍA DE MOTIVOS:
-   - FRACASO (SIEMPRE "se_realizo": "NO"): "se reprogramó", "será reprogramada", "se aplaza", "solicita aplazamiento", "se suspende", "nueva fecha", "se fija", "FRACSA", "FRACASA".
-   - ÉXITO ("se_realizo": "SI", "motivo": ""): "se realizó con normalidad", "sin novedad", "se efectuó", "se emitió sentido de fallo", "se dio lectura", o si dice "¿Se realizó?: Sí" y la audiencia continuó pese a la ausencia de un tercero.
+   - FRACASO (SIEMPRE "se_realizo": "NO"): "se reprogramó", "será reprogramada", "se aplaza", "solicita aplazamiento", "se suspende", "se fija nueva fecha", "FRACSA", "FRACASA".
+   - ÉXITO ("se_realizo": "SI", "motivo": ""): "se realizó con normalidad", "sin novedad", "se efectuó", "se emitió sentido de fallo", "se dio lectura", o si dice "¿Se realizó?: Sí" y la audiencia continuó pese a la ausencia de un tercero (incluso si se fija fecha posterior para continuar o leer fallo).
    - Si "se_realizo" es "NO", usa EXCLUSIVAMENTE uno de estos 8 valores en "motivo" (nunca pongas frases descriptivas en "motivo"):
      1) "Juez": despacho en otra audiencia, ambos despachos ocupados, juez en vacaciones/comisión, sin titular, error en la agenda.
      2) "Fiscalía": fiscal no se conectó / no compareció / no vino, fiscal reemplazado, no conoce la carpeta, solicitud de fiscalía, posible preacuerdo.
@@ -521,8 +683,8 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
 5. JUZGADOS Y ABREVIACIONES AMBIGUAS:
    - Para abreviaciones ambiguas como "CTO" / "Cto" (que puede significar Circuito o Conocimiento), MPAL o PCTO, MANTÉN la abreviación original tal cual ("Juzgado 3 Cto Penal" -> "Juzgado 3 Cto Penal"); no adivines su expansión.
 6. OBSERVACIONES:
-   - Incluye fechas de reprogramación, causas secundarias o incidencias técnicas. Si no hay detalles adicionales, escribe "Sin observaciones adicionales".
-{seccion_aprendizaje}
+   - Incluye fechas de reprogramación, causas secundarias o incidencias técnicas. Si no hay detalles adicionales, deja el campo vacío "".
+{seccion_candidatos}{seccion_aprendizaje}
 TEXTO A ANALIZAR:
 """
 {texto_preprocesado}
@@ -734,18 +896,71 @@ DIFERENCIAS DETECTADAS:
     )
 }
 
-/// Segunda llamada a la IA (solo cuando existen diferencias entre la predicción y lo guardado)
-/// para deducir qué falló y convertirlo en una regla reutilizable.
-pub async fn analizar_correccion_ia(
-    correccion: &CorreccionIa,
+fn construir_prompt_analisis_cluster(correcciones: &[CorreccionIa]) -> String {
+    if correcciones.len() == 1 {
+        return construir_prompt_analisis_correccion(&correcciones[0]);
+    }
+    let casos: Vec<String> = correcciones
+        .iter()
+        .enumerate()
+        .take(4)
+        .map(|(idx, corr)| {
+            let cambios: Vec<String> = corr
+                .campos
+                .iter()
+                .map(|c| format!("{} ({:?} -> {:?})", c.campo, c.valor_ia, c.valor_usuario))
+                .collect();
+            let nota = if corr.nota_usuario.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" | Aclaración: {:?}", corr.nota_usuario.trim())
+            };
+            format!(
+                "Caso {}:\n  Texto: \"{}\"\n  Correcciones: {}{}",
+                idx + 1,
+                corr.texto_original,
+                cambios.join("; "),
+                nota
+            )
+        })
+        .collect();
+
+    format!(
+        r#"Analiza este clúster coherente de {} correcciones repetidas hechas por el usuario a las extracciones de IA en audiencias judiciales colombianas.
+Induce UNA sola regla general y reutilizable que capture el patrón común sin sobreajustar a nombres propios ni números de radicado concretos.
+Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura:
+
+{{
+  "es_error_de_ia": true,
+  "tipo_error": "abreviacion | fecha | hora | realizacion | motivo | tipo | juzgado | estilo_observaciones | otro",
+  "regla": "Instrucción general, breve y reutilizable (máximo 1 oración) aplicable a futuros textos similares",
+  "confianza": 0.9,
+  "necesita_aclaracion": false,
+  "pregunta": "Solo si existe una contradicción real imposible de deducir, pregunta corta y directa"
+}}
+
+CASOS AGRUPADOS:
+{}"#,
+        correcciones.len(),
+        casos.join("\n\n")
+    )
+}
+
+/// Inducción diferida por clústeres (`N >= 2` ejemplos coherentes): deduce una regla general
+/// en una sola llamada al LLM en lugar de llamar por cada corrección aislada.
+pub async fn analizar_cluster_correcciones_ia(
+    correcciones: &[CorreccionIa],
 ) -> Result<AnalisisCorreccionIa, String> {
-    let prompt = construir_prompt_analisis_correccion(correccion);
+    if correcciones.is_empty() {
+        return Err("No hay correcciones en el clúster para analizar.".to_string());
+    }
+    let prompt = construir_prompt_analisis_cluster(correcciones);
     let raw = consultar_json_proveedor(&prompt).await?;
 
     let es_error_de_ia = raw
         .get("es_error_de_ia")
         .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+        .unwrap_or(false);
     let tipo_error = raw
         .get("tipo_error")
         .and_then(|v| v.as_str())
@@ -761,7 +976,7 @@ pub async fn analizar_correccion_ia(
     let confianza = raw
         .get("confianza")
         .and_then(|v| v.as_f64())
-        .unwrap_or(0.85)
+        .unwrap_or(0.5)
         .clamp(0.0, 1.0);
     let necesita_aclaracion = raw
         .get("necesita_aclaracion")
@@ -784,17 +999,22 @@ pub async fn analizar_correccion_ia(
     })
 }
 
-pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput, String> {
-    if texto.trim().is_empty() {
-        return Err("Ingresa el texto de la audiencia para procesar.".to_string());
-    }
+/// Segunda llamada a la IA para una corrección puntual (p. ej. tras aclaración manual del usuario).
+pub async fn analizar_correccion_ia(
+    correccion: &CorreccionIa,
+) -> Result<AnalisisCorreccionIa, String> {
+    analizar_cluster_correcciones_ia(std::slice::from_ref(correccion)).await
+}
 
-    let current_year = Local::now().year();
-    let texto_pre = expandir_abreviaciones_y_compacto(texto, current_year);
-    let contexto_aprendizaje = obtener_contexto_prompt(texto);
-    let prompt = construir_prompt(&texto_pre, current_year, &contexto_aprendizaje);
-    let raw_json = consultar_json_proveedor(&prompt).await?;
-
+pub(crate) fn arbitrar_salida_hibrida(
+    texto: &str,
+    raw_json: &Value,
+    memoria_local: &MemoriaAprendizaje,
+    priors: &IndicePriorsExcel,
+    reglas_inyectadas: Vec<String>,
+    ejemplos_inyectados: Vec<String>,
+    motor: &MotorEstadisticoLocal,
+) -> AiAudienciaOutput {
     let get_str = |key: &str| -> String {
         raw_json
             .get(key)
@@ -804,69 +1024,118 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
             .to_string()
     };
 
-    let radicado = get_str("radicado");
-    let raw_tipo = get_str("tipo_audiencia");
-    let (tipo_audiencia, tipo_otra) = mapear_tipo_audiencia(&raw_tipo);
-    let fecha = normalizar_fecha_ia(&get_str("fecha"));
-    let (hora, minuto) = normalizar_hora_minuto_ia(&get_str("hora"), &get_str("minuto"));
+    let motor_pred = motor.predecir(texto, memoria_local, priors);
 
-    let juzgado = get_str("juzgado");
+    let mut radicado = get_str("radicado");
+    let mut proc_vinculado = None;
+    for num in extraer_numeros_radicado(if radicado.is_empty() { texto } else { &radicado }) {
+        if let Some(p) = priors.procesos_por_numero.get(&num) {
+            proc_vinculado = Some(p.clone());
+            break;
+        }
+    }
+    if let Some(ref rad_sug) = motor_pred.radicado_sugerido {
+        let nums_raw = extraer_numeros_radicado(&radicado);
+        let nums_sug = extraer_numeros_radicado(rad_sug);
+        if radicado.is_empty()
+            || (!radicado.contains(" - ")
+                && rad_sug.contains(" - ")
+                && nums_raw.iter().any(|n| nums_sug.contains(n) || rad_sug.contains(n)))
+        {
+            radicado = rad_sug.clone();
+        }
+    }
+
+    let raw_tipo = get_str("tipo_audiencia");
+    let tipo_resuelto = resolver_alias_exacto_validado(memoria_local, "tipo", &raw_tipo, 0.35)
+        .unwrap_or_else(|| {
+            if raw_tipo.is_empty() {
+                proc_vinculado
+                    .as_ref()
+                    .map(|p| p.tipo_habitual.clone())
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| motor_pred.tipo_sugerido.clone())
+                    .unwrap_or_default()
+            } else {
+                raw_tipo.clone()
+            }
+        });
+    let (tipo_audiencia, tipo_otra) = mapear_tipo_audiencia(&tipo_resuelto);
+
+    let fecha = normalizar_fecha_ia(&get_str("fecha"));
+    let (hora_norm, minuto_norm) = normalizar_hora_minuto_ia(&get_str("hora"), &get_str("minuto"));
+    let (hora, minuto, _) = resolver_hora_con_prior(&hora_norm, &minuto_norm, texto, priors);
+
+    let raw_juzgado = get_str("juzgado");
+    // Preserva abreviaciones CTO/MPAL/PCTO por defecto; solo sustituye si existe un alias validado (q10 >= 0.35).
+    let juzgado = if raw_juzgado.is_empty() {
+        proc_vinculado
+            .as_ref()
+            .map(|p| p.juzgado_habitual.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| motor_pred.juzgado_sugerido.clone())
+            .unwrap_or_default()
+    } else {
+        resolver_alias_exacto_validado(memoria_local, "juzgado", &raw_juzgado, 0.35)
+            .unwrap_or(raw_juzgado)
+    };
+
     let mut se_realizo = get_str("se_realizo").to_uppercase();
     if se_realizo == "SÍ" {
         se_realizo = "SI".to_string();
     }
 
-    let texto_lower = texto.to_lowercase();
+    let texto_norm = quitar_tildes(&texto.to_lowercase());
     let dice_si_realizada = [
-        "¿se realizó?: sí",
-        "¿se realizó? sí",
-        "se realizó: sí",
+        "¿se realizo?: si",
+        "¿se realizo? si",
+        "se realizo?: si",
         "se realizo: si",
     ]
     .iter()
-    .any(|p| texto_lower.contains(p));
-    let dice_ningun_motivo = texto_lower.contains("motivo (si no se realizó): ninguno")
-        || texto_lower.replace("ninguna", "ninguno").contains("ninguno");
+    .any(|p| texto_norm.contains(p));
+    let dice_ningun_motivo = detectar_dice_ningun_motivo(&texto_norm);
     let tiene_motivo_explicito_fracaso = [
         "la fiscal no vino",
-        "fiscal no compareció",
-        "fiscal no se conectó",
-        "defensor no compareció",
+        "fiscal no comparecio",
+        "fiscal no se conecto",
+        "defensor no comparecio",
         "juez ausente",
         "inasistente",
-        "solicité reprogramación",
+        "solicite reprogramacion",
     ]
     .iter()
-    .any(|p| texto_lower.contains(p));
+    .any(|p| texto_norm.contains(p));
 
-    let patrones_fracaso = [
-        "se reprogramó",
-        "será reprogramada",
-        "se reprograma",
-        "reprogramación",
-        "solicitó reprogramación",
-        "pide reprogramación",
-        "solicita aplazamiento",
-        "se aplaza",
-        "será aplazada",
-        "se suspende",
-        "suspendida",
-        "nueva fecha",
-        "se fija",
-        "se fijó nueva fecha",
-        "fracsa",
-        "fracasa",
-        "no se realizó",
-        "no se hizo",
-    ];
-
+    let mut regla_realizacion_fijada = false;
     if dice_si_realizada && (!tiene_motivo_explicito_fracaso || dice_ningun_motivo) {
         se_realizo = "SI".to_string();
+        regla_realizacion_fijada = true;
     } else if dice_si_realizada && tiene_motivo_explicito_fracaso {
         // Caso contradictorio de legacy-python: dice "Sí" pero narra que fracasó
         se_realizo = "NO".to_string();
-    } else if patrones_fracaso.iter().any(|p| texto_lower.contains(p)) {
+        regla_realizacion_fijada = true;
+    } else if detectar_patron_fracaso_con_preferencias(
+        &texto_norm,
+        &memoria_local.preferencias_estilo,
+    ) {
         se_realizo = "NO".to_string();
+        regla_realizacion_fijada = true;
+    }
+
+    if !regla_realizacion_fijada {
+        let valido_llm = se_realizo == "SI" || se_realizo == "NO";
+        if let Some(ref pred_r) = motor_pred.realizada {
+            let override_seguro = !motor_pred.drift_realizada
+                && motor_pred.muestras_entrenamiento >= 20
+                && motor_pred.realizadas_clases_vistas >= 2
+                && motor_pred.realizada_soporte_clase >= 5
+                && motor_pred.realizada_confianza >= 0.90
+                && motor_pred.knn_realizada_acuerdo;
+            if (!valido_llm && motor_pred.realizada_confianza >= 0.55) || override_seguro {
+                se_realizo = pred_r.clone();
+            }
+        }
     }
 
     let raw_motivo = if !get_str("motivo").is_empty() {
@@ -883,16 +1152,63 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
             motivo_final = MOTIVOS_LABELS[idx].to_string();
         } else if let Some(idx) = mapear_motivo_a_indice(&motivo_inferido) {
             motivo_final = MOTIVOS_LABELS[idx].to_string();
+        } else if motor_pred.motivo_confianza >= 0.60 {
+            if let Some(ref pred_m) = motor_pred.motivo {
+                if let Some(idx) = mapear_motivo_a_indice(pred_m) {
+                    motivo_final = MOTIVOS_LABELS[idx].to_string();
+                }
+            }
         }
 
-        // Corrección contextual para Defensor Confianza vs Defensor Público
-        if motivo_final == "Defensor Público" && detectar_defensor_confianza(&texto_lower) {
+        // Arbitraje local sobre un motivo ya válido del LLM: exige consenso LogReg + k-NN,
+        // soporte balanceado en varias clases y ausencia de drift en el campo.
+        let override_motivo_seguro = !motor_pred.drift_motivo
+            && motor_pred.motivos_clases_vistas >= 2
+            && motor_pred.motivo_soporte_clase >= 3
+            && motor_pred.motivo_confianza >= 0.90
+            && motor_pred.knn_motivo_acuerdo;
+        if override_motivo_seguro {
+            if let Some(ref pred_m) = motor_pred.motivo {
+                if let Some(idx) = mapear_motivo_a_indice(pred_m) {
+                    let candidato = MOTIVOS_LABELS[idx];
+                    let es_reaccion =
+                        matches!(candidato, "Defensor Público" | "Defensor Confianza");
+                    let hay_causa_principal_expl = matches!(
+                        motivo_inferido.as_str(),
+                        "Juez" | "Fiscalía" | "Usuario" | "INPEC" | "Víctima" | "ICBF"
+                    );
+                    if !(es_reaccion && hay_causa_principal_expl) {
+                        motivo_final = candidato.to_string();
+                    }
+                }
+            }
+        }
+
+        // Invariante Defensoría 1: abogado contractual/privado/def. confianza -> Defensor Confianza
+        if motivo_final == "Defensor Público" && detectar_defensor_confianza(&texto_norm) {
             motivo_final = "Defensor Confianza".to_string();
+        }
+
+        // Invariante Defensoría 2: causa principal prevalece sobre reacción del defensor
+        if matches!(
+            motivo_final.as_str(),
+            "Defensor Público" | "Defensor Confianza"
+        ) && matches!(
+            motivo_inferido.as_str(),
+            "Juez" | "Fiscalía" | "Usuario" | "INPEC" | "Víctima" | "ICBF"
+        ) {
+            motivo_final = motivo_inferido.clone();
         }
     }
 
-    let mut observaciones = get_str("observaciones");
-    if !motivos_secundarios.is_empty() {
+    let pref = &memoria_local.preferencias_estilo;
+    let p_causas_sec = pref.incluir_causas_secundarias_alpha
+        / (pref.incluir_causas_secundarias_alpha + pref.incluir_causas_secundarias_beta).max(1.0);
+    let p_reprog = pref.incluir_reprogramacion_alpha
+        / (pref.incluir_reprogramacion_alpha + pref.incluir_reprogramacion_beta).max(1.0);
+
+    let mut observaciones = limpiar_observacion_vacia(get_str("observaciones"));
+    if p_causas_sec >= 0.45 && !motivos_secundarios.is_empty() {
         let extra = format!("Causas secundarias: {}", motivos_secundarios.join(", "));
         if observaciones.is_empty() {
             observaciones = extra;
@@ -900,10 +1216,12 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
             observaciones = format!("{}; {}", observaciones, extra);
         }
     }
-    if se_realizo == "NO" {
+    if se_realizo == "NO" && p_reprog >= 0.45 {
         let fechas_reprog = extraer_fechas_reprogramacion(texto);
         if !fechas_reprog.is_empty()
-            && !observaciones.to_lowercase().contains(&fechas_reprog.to_lowercase())
+            && !observaciones
+                .to_lowercase()
+                .contains(&fechas_reprog.to_lowercase())
         {
             let extra = format!("Reprogramada para: {}", fechas_reprog);
             if observaciones.is_empty() {
@@ -913,11 +1231,8 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
             }
         }
     }
-    if observaciones.is_empty() {
-        observaciones = "Sin observaciones adicionales".to_string();
-    }
 
-    Ok(AiAudienciaOutput {
+    AiAudienciaOutput {
         radicado,
         tipo_audiencia,
         tipo_otra,
@@ -928,12 +1243,52 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
         se_realizo,
         motivo: motivo_final,
         observaciones,
-    })
+        reglas_inyectadas,
+        ejemplos_inyectados,
+        prediccion_local: Some(motor_pred),
+    }
+}
+
+pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput, String> {
+    if texto.trim().is_empty() {
+        return Err("Ingresa el texto de la audiencia para procesar.".to_string());
+    }
+
+    let current_year = Local::now().year();
+    let texto_pre = expandir_abreviaciones_y_compacto(texto, current_year);
+    let (contexto_aprendizaje, reglas_inyectadas, ejemplos_inyectados) =
+        obtener_contexto_prompt_con_traza(texto);
+
+    let memoria_local = cargar_memoria_local_snapshot();
+    let memoria_base = memoria_base_embebida();
+    let settings = cargar_settings();
+    let priors = cargar_priors_actuales();
+    let candidatos = seleccionar_candidatos_prompt(&texto_pre, &memoria_local, &settings, &priors);
+    let motor = MotorEstadisticoLocal::entrenar_desde_memorias(memoria_base, &memoria_local);
+
+    let prompt = construir_prompt_con_candidatos(
+        &texto_pre,
+        current_year,
+        &contexto_aprendizaje,
+        Some(&candidatos),
+    );
+    let raw_json = consultar_json_proveedor(&prompt).await?;
+
+    Ok(arbitrar_salida_hibrida(
+        texto,
+        &raw_json,
+        &memoria_local,
+        &priors,
+        reglas_inyectadas,
+        ejemplos_inyectados,
+        &motor,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aprendizaje::obtener_contexto_prompt;
 
     #[test]
     fn test_inferencia_motivos_primera_persona_y_jerarquia() {
@@ -1012,5 +1367,686 @@ mod tests {
             crate::config::normalizar_modelo_gemini("models/gemini-3-flash-preview"),
             "gemini-3-flash-preview"
         );
+    }
+
+    #[test]
+    fn test_fase0_saneamiento_ninguna_se_fija_y_observaciones() {
+        // 1) "sin ninguna excusa" NO debe activar dice_ningun_motivo
+        assert!(!detectar_dice_ningun_motivo(
+            "la fiscal no compareció sin ninguna excusa"
+        ));
+        assert!(detectar_dice_ningun_motivo(
+            "¿se realizó?: sí. motivo (si no se realizó): ninguno"
+        ));
+
+        // 2) "se fija" contextual: cuando se realizó y se fija fecha para continuar/lectura, NO fuerza NO
+        assert!(!detectar_patron_fracaso_contextual(
+            "se realizó audiencia preparatoria y se fija fecha para juicio oral"
+        ));
+        assert!(!detectar_patron_fracaso_contextual(
+            "se efectuó acusación y se fija lectura de fallo"
+        ));
+        assert!(detectar_patron_fracaso_contextual(
+            "se fija nueva fecha para el día 20 de agosto"
+        ));
+        assert!(detectar_patron_fracaso_contextual(
+            "fracsa por solicitud de la fiscalía"
+        ));
+
+        // 3) No forzar "Sin observaciones adicionales"
+        assert_eq!(limpiar_observacion_vacia("Sin observaciones adicionales".into()), "");
+        assert_eq!(limpiar_observacion_vacia("Ninguna".into()), "");
+        assert_eq!(
+            limpiar_observacion_vacia("Reprogramada para mayo".into()),
+            "Reprogramada para mayo"
+        );
+    }
+
+    #[test]
+    fn test_fase2_invariantes_defensoria_vs_heuristicas_adaptables() {
+        use crate::aprendizaje::{AliasEstadistico, EjemploPositivo};
+        use crate::models::{AudienciaInput, ProcesoHabitual};
+
+        let mut mem = MemoriaAprendizaje::default();
+        // Llenar masa mínima para activar el motor local
+        for i in 0..6 {
+            mem.ejemplos_aciertos.push(EjemploPositivo {
+                id: format!("si-{}", i),
+                registrada: "2025-08-10T10:00:00-05:00".into(),
+                proveedor: "openai".into(),
+                modelo: "gpt-5-mini".into(),
+                texto_anonimizado: "Se realizó audiencia preparatoria sin novedad".into(),
+                salida_anonimizada: AudienciaInput {
+                    radicado: "PROC - 202500001".into(),
+                    tipo: "Audiencia preparatoria".into(),
+                    fecha: "10/08/2025".into(),
+                    hora: "09:00".into(),
+                    juzgado: "Juzgado 1 Penal".into(),
+                    realizada: "SI".into(),
+                    motivo: String::new(),
+                    observaciones: String::new(),
+                },
+                reglas_inyectadas: Vec::new(),
+            });
+            mem.ejemplos_aciertos.push(EjemploPositivo {
+                id: format!("no-{}", i),
+                registrada: "2025-08-10T10:00:00-05:00".into(),
+                proveedor: "openai".into(),
+                modelo: "gpt-5-mini".into(),
+                texto_anonimizado: "Fracasó audiencia porque el fiscal no se conectó".into(),
+                salida_anonimizada: AudienciaInput {
+                    radicado: "PROC - 202500002".into(),
+                    tipo: "Audiencia concentrada".into(),
+                    fecha: "10/08/2025".into(),
+                    hora: "14:00".into(),
+                    juzgado: "Juzgado 3 Cto Penal".into(),
+                    realizada: "NO".into(),
+                    motivo: "Fiscalía".into(),
+                    observaciones: String::new(),
+                },
+                reglas_inyectadas: Vec::new(),
+            });
+        }
+
+        let mut priors = IndicePriorsExcel::default();
+        priors.horas_freq.insert(15, 20);
+        priors.horas_freq.insert(3, 0);
+        priors.procesos_por_numero.insert(
+            "200016001075202599999".into(),
+            ProcesoHabitual {
+                radicado_completo: "JUAN PEREZ - 200016001075202599999".into(),
+                juzgado_habitual: "Juzgado 3 Cto Penal".into(),
+                tipo_habitual: "Audiencia de juicio oral".into(),
+                frecuencia: 4,
+            },
+        );
+
+        let motor = MotorEstadisticoLocal::entrenar_desde_memorias(&MemoriaAprendizaje::default(), &mem);
+
+        // 1) Invariantes Defensoría: causa principal (Fiscalía) vence a reacción (Defensor Público),
+        //    CTO se preserva y hora 03 sin AM se resuelve a 15 con prior laboral + radicado enriquecido
+        let raw_llm = json!({
+            "radicado": "200016001075202599999",
+            "tipo_audiencia": "Audiencia de juicio oral",
+            "fecha": "20/08/2025",
+            "hora": "03",
+            "minuto": "30",
+            "juzgado": "Juzgado 3 Cto Penal",
+            "se_realizo": "NO",
+            "motivo": "Defensor Público",
+            "observaciones": ""
+        });
+        let texto = "Audiencia 200016001075202599999 a las 3:30 en Juzgado 3 Cto Penal. La fiscal no se conectó y por ello solicité reprogramar para el día 26 de septiembre de 2025";
+        let out = arbitrar_salida_hibrida(
+            texto,
+            &raw_llm,
+            &mem,
+            &priors,
+            vec!["r1".into()],
+            Vec::new(),
+            &motor,
+        );
+        assert_eq!(out.motivo, "Fiscalía");
+        assert_eq!(out.juzgado, "Juzgado 3 Cto Penal");
+        assert_eq!(out.hora, "15");
+        assert_eq!(out.radicado, "JUAN PEREZ - 200016001075202599999");
+        assert!(out.observaciones.contains("Causas secundarias: Defensor Público"));
+        assert!(out.observaciones.contains("Reprogramada para: 26 de septiembre de 2025"));
+        assert!(out.prediccion_local.is_some());
+
+        // 2) Heurísticas estadísticamente adaptables: si el usuario rechaza sufijos y "se fija"->SI,
+        //    el sistema deja de imponerlos y aplica alias validado
+        mem.preferencias_estilo.incluir_causas_secundarias_alpha = 1.0;
+        mem.preferencias_estilo.incluir_causas_secundarias_beta = 8.0;
+        mem.preferencias_estilo.incluir_reprogramacion_alpha = 1.0;
+        mem.preferencias_estilo.incluir_reprogramacion_beta = 8.0;
+        mem.preferencias_estilo.se_fija_aplazamiento_alpha = 1.0;
+        mem.preferencias_estilo.se_fija_aplazamiento_beta = 6.0;
+        mem.tabla_alias.push(AliasEstadistico {
+            campo: "juzgado".into(),
+            entrada_norm: crate::estadistica_ia::normalizar_clave_entidad(
+                "Juzgado 3 Penal del Circuito",
+            ),
+            canonico: "Juzgado 3 Penal del Circuito Valledupar".into(),
+            alpha: 7.0,
+            beta: 1.0,
+            ultima_actualizacion: "2025-08-18T10:00:00-05:00".into(),
+        });
+
+        let raw_adapt = json!({
+            "radicado": "RAD-55",
+            "tipo_audiencia": "Audiencia concentrada",
+            "fecha": "21/08/2025",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "Juzgado Tercero Penal del Circuito",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let out_adapt = arbitrar_salida_hibrida(
+            "En Juzgado 3 Penal del Circuito se fija fecha próxima audiencia",
+            &raw_adapt,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+        );
+        assert_eq!(out_adapt.juzgado, "Juzgado 3 Penal del Circuito Valledupar");
+        assert_eq!(out_adapt.se_realizo, "SI");
+        assert_eq!(out_adapt.observaciones, "");
+
+        // Mismo texto anterior con sufijos desactivados ya no agrega "Causas secundarias" ni "Reprogramada"
+        let out_sin_sufijos = arbitrar_salida_hibrida(
+            texto,
+            &raw_llm,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+        );
+        assert!(!out_sin_sufijos.observaciones.contains("Causas secundarias:"));
+        assert!(!out_sin_sufijos.observaciones.contains("Reprogramada para:"));
+
+        // 3) Prompt enriquecido incluye top-5 juzgados/tipos y proceso conocido
+        let cands = CandidatosPrompt {
+            juzgados_top: vec!["Juzgado 3 Cto Penal".into()],
+            tipos_top: vec!["Audiencia de juicio oral".into()],
+            radicado_vinculado: priors.procesos_por_numero.get("200016001075202599999").cloned(),
+        };
+        let prompt = construir_prompt_con_candidatos(texto, 2025, "", Some(&cands));
+        assert!(prompt.contains("CANDIDATOS ESTADÍSTICOS LOCALES"));
+        assert!(prompt.contains("JUAN PEREZ - 200016001075202599999"));
+        assert!(prompt.contains("Juzgado 3 Cto Penal"));
+    }
+
+    #[test]
+    fn test_fase4_diagnostico_export_enriquecido_y_harness_prequential() {
+        use crate::aprendizaje::{
+            aplicar_analisis_cluster_en, cargar_memoria_en, exportar_aprendizaje_con_catalogos_en,
+            obtener_cluster_listo_para_inducir_en, obtener_diagnostico_aprendizaje_en,
+            registrar_resultado_con_traza_en, AnalisisCorreccionIa, NOMBRE_ARCHIVO_MEMORIA,
+        };
+        use crate::models::AudienciaInput;
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("lokus_fase4_e2e_{}", stamp));
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let descargas = dir.join("descargas");
+        fs::create_dir_all(&dir).unwrap();
+
+        // 1) Evaluación offline prequential (arranque en frío vs pos-aprendizaje)
+        //    Simulamos un LLM ruidoso que al inicio devuelve "" en realizada/motivo para casos locales,
+        //    midiendo mejora del árbitro híbrido tras aprender de las primeras iteraciones.
+        let mut casos_preq = Vec::new();
+        for i in 0..8 {
+            casos_preq.push((
+                format!("Audiencia concentrada proceso {} en Juzgado 3 CTO Penal se efectuó correctamente", i),
+                "SI",
+                "",
+            ));
+            casos_preq.push((
+                format!("Juicio oral proceso {} en Juzgado 2 Penal se reprogramó porque el INPEC no trasladó", i),
+                "NO",
+                "INPEC",
+            ));
+        }
+
+        let mut f1_frio_aciertos = 0usize;
+        let mut f1_post_aciertos = 0usize;
+        let priors = IndicePriorsExcel::default();
+
+        for (idx, (texto, real_esperada, mot_esperado)) in casos_preq.iter().enumerate() {
+            let mem_actual = cargar_memoria_en(&ruta);
+            let motor =
+                MotorEstadisticoLocal::entrenar_desde_memorias(memoria_base_embebida(), &mem_actual);
+            // LLM parcial/indeciso para medir aporte estadístico local
+            let raw_parcial = json!({
+                "radicado": format!("CARLOS MENDOZA - 20001600107520250088{}", idx % 10),
+                "tipo_audiencia": "Audiencia concentrada",
+                "fecha": "20/08/2025",
+                "hora": "09",
+                "minuto": "00",
+                "juzgado": "Juzgado 3 CTO Penal",
+                "se_realizo": if idx < 4 { "SI" } else { "" },
+                "motivo": "",
+                "observaciones": ""
+            });
+            let pred_out = arbitrar_salida_hibrida(
+                texto,
+                &raw_parcial,
+                &mem_actual,
+                &priors,
+                Vec::new(),
+                Vec::new(),
+                &motor,
+            );
+            let correcto = pred_out.se_realizo == *real_esperada
+                && (*real_esperada == "SI" || pred_out.motivo == *mot_esperado);
+            if idx < 4 {
+                if correcto {
+                    f1_frio_aciertos += 1;
+                }
+            } else if idx >= 10 && correcto {
+                f1_post_aciertos += 1;
+            }
+
+            let pred_in = AudienciaInput {
+                radicado: pred_out.radicado,
+                tipo: pred_out.tipo_audiencia,
+                fecha: pred_out.fecha,
+                hora: "09:00".into(),
+                juzgado: pred_out.juzgado,
+                realizada: pred_out.se_realizo,
+                motivo: pred_out.motivo,
+                observaciones: pred_out.observaciones,
+            };
+            let mut gt = pred_in.clone();
+            gt.radicado = "CARLOS MENDOZA - 200016001075202500888".into();
+            gt.realizada = (*real_esperada).into();
+            gt.motivo = (*mot_esperado).into();
+
+            registrar_resultado_con_traza_en(
+                &ruta,
+                texto,
+                &pred_in,
+                &gt,
+                "openai",
+                "gpt-5-mini",
+                &[],
+            )
+            .unwrap();
+
+            if let Some((cid, corrs)) = obtener_cluster_listo_para_inducir_en(&ruta) {
+                let ids: Vec<String> = corrs.iter().map(|c| c.id.clone()).collect();
+                aplicar_analisis_cluster_en(
+                    &ruta,
+                    &cid,
+                    &ids,
+                    &AnalisisCorreccionIa {
+                        es_error_de_ia: true,
+                        tipo_error: "realizacion".into(),
+                        regla: "Si INPEC no trasladó marcar NO con motivo INPEC".into(),
+                        confianza: 0.92,
+                        necesita_aclaracion: false,
+                        pregunta: String::new(),
+                    },
+                )
+                .unwrap();
+            }
+        }
+
+        // Tramo final (últimos 6 casos) debe superar ampliamente la línea base inicial
+        assert!(
+            f1_post_aciertos >= 5,
+            "Tramo post-aprendizaje esperados >=5/6 aciertos, hubo {} (frío={})",
+            f1_post_aciertos,
+            f1_frio_aciertos
+        );
+
+        // 2) Diagnóstico completo para desarrollador y exportación enriquecida 100% anonimizada
+        let diag = obtener_diagnostico_aprendizaje_en(&ruta);
+        assert!(diag.metricas_por_campo.len() == 8);
+        assert!(!diag.metricas_por_modelo.is_empty());
+        assert!(diag.aciertos_totales > 0);
+        assert!(diag.llamadas_induccion_llm_total <= 3);
+
+        let archivo_exp = exportar_aprendizaje_con_catalogos_en(
+            &ruta,
+            &descargas,
+            &["Juzgado 3 CTO Penal CARLOS MENDOZA".into()],
+            &[],
+        )
+        .unwrap();
+        let json_txt = fs::read_to_string(&archivo_exp).unwrap();
+        let parsed: Value = serde_json::from_str(&json_txt).unwrap();
+        assert!(parsed.get("metricas_por_campo").is_some());
+        assert!(parsed.get("metricas_por_modelo").is_some());
+        assert!(parsed.get("preferencias_estilo").is_some());
+        assert!(parsed.get("total_ejemplos_aciertos").is_some());
+        assert!(parsed.get("llamadas_induccion_llm_total").is_some());
+        assert!(!json_txt.contains("CARLOS MENDOZA"), "PII filtrada en export");
+        assert!(!json_txt.contains("200016001075202500888"), "Radicado filtrado en export");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_arbitraje_no_corrompe_llm_valido_con_historial_sesgado_y_tolera_sin_tildes() {
+        use crate::aprendizaje::EjemploPositivo;
+        use crate::models::{AudienciaInput, ProcesoHabitual};
+
+        // Historial fuertemente desbalanceado: 10 SI y 6 NO todos "Fiscalía"
+        let mut mem = MemoriaAprendizaje::default();
+        for i in 0..10 {
+            mem.ejemplos_aciertos.push(EjemploPositivo {
+                id: format!("si-{}", i),
+                registrada: String::new(),
+                proveedor: "openai".into(),
+                modelo: "gpt-5-mini".into(),
+                texto_anonimizado: "Audiencia de juicio oral instalada normalmente en juzgado penal".into(),
+                salida_anonimizada: AudienciaInput {
+                    radicado: "PROC - 202500001".into(),
+                    tipo: "Audiencia de juicio oral".into(),
+                    fecha: "10/08/2025".into(),
+                    hora: "09:00".into(),
+                    juzgado: "Juzgado 1 Penal".into(),
+                    realizada: "SI".into(),
+                    motivo: String::new(),
+                    observaciones: String::new(),
+                },
+                reglas_inyectadas: Vec::new(),
+            });
+        }
+        for i in 0..6 {
+            mem.ejemplos_aciertos.push(EjemploPositivo {
+                id: format!("fisc-{}", i),
+                registrada: String::new(),
+                proveedor: "openai".into(),
+                modelo: "gpt-5-mini".into(),
+                texto_anonimizado: "Audiencia aplazada porque la fiscal no asistio a sala".into(),
+                salida_anonimizada: AudienciaInput {
+                    radicado: "PROC - 202500002".into(),
+                    tipo: "Audiencia de juicio oral".into(),
+                    fecha: "10/08/2025".into(),
+                    hora: "14:00".into(),
+                    juzgado: "Juzgado 1 Penal".into(),
+                    realizada: "NO".into(),
+                    motivo: "Fiscalía".into(),
+                    observaciones: String::new(),
+                },
+                reglas_inyectadas: Vec::new(),
+            });
+        }
+
+        let mut priors = IndicePriorsExcel::default();
+        priors.procesos_por_numero.insert(
+            "200016001075202577777".into(),
+            ProcesoHabitual {
+                radicado_completo: "MARIA TORRES - 20001-60-01075-2025-77777".into(),
+                juzgado_habitual: "Juzgado 2 Cto Penal".into(),
+                tipo_habitual: "Audiencia preparatoria".into(),
+                frecuencia: 2,
+            },
+        );
+
+        let motor = MotorEstadisticoLocal::entrenar_desde_memorias(&MemoriaAprendizaje::default(), &mem);
+
+        // 1) Caso nuevo donde el LLM devuelve válidamente NO + Juez con redacción no listada en inferir_motivos:
+        //    el clasificador sesgado hacia SI / Fiscalía NO debe sobrescribir la salida válida del LLM.
+        let raw_llm = json!({
+            "radicado": "20001-60-01075-2025-77777",
+            "tipo_audiencia": "",
+            "fecha": "22/08/2025",
+            "hora": "03",
+            "minuto": "15",
+            "juzgado": "",
+            "se_realizo": "NO",
+            "motivo": "Juez",
+            "observaciones": ""
+        });
+        let out = arbitrar_salida_hibrida(
+            "Audiencia de juicio oral en juzgado penal 20001-60-01075-2025-77777. El titular tuvo cita medica impostergable.",
+            &raw_llm,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+        );
+        assert_eq!(out.se_realizo, "NO", "No debe sobrescribir NO válido con SI");
+        assert_eq!(out.motivo, "Juez", "No debe sobrescribir Juez válido con Fiscalía");
+        assert_eq!(out.radicado, "MARIA TORRES - 20001-60-01075-2025-77777");
+        assert_eq!(out.juzgado, "Juzgado 2 Cto Penal");
+        assert_eq!(out.tipo_audiencia, "Audiencia preparatoria");
+
+        // 2) Texto sin tildes debe respetar jerarquía Defensoría (Fiscalía > Defensor Público)
+        let (mot_sin_tilde, sec_sin_tilde) =
+            inferir_motivos("La fiscal no se conecto y por eso solicite reprogramar la diligencia");
+        assert_eq!(mot_sin_tilde, "Fiscalía");
+        assert!(sec_sin_tilde.contains(&"Defensor Público".to_string()));
+    }
+
+    #[test]
+    fn test_harness_prequential_multiclase_macro_f1_entidades_y_reduccion_llm() {
+        use crate::aprendizaje::{
+            aplicar_analisis_cluster_en, cargar_memoria_en,
+            obtener_cluster_listo_para_inducir_en, registrar_resultado_con_traza_en,
+            AnalisisCorreccionIa, NOMBRE_ARCHIVO_MEMORIA,
+        };
+        use crate::models::AudienciaInput;
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("lokus_preq_multi_{}", stamp));
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Banco sintético anonimizado multi-clase (SI + 4 causales distintas + normalización juzgado/tipo)
+        let plantilla_casos: Vec<(&str, &str, &str, &str, &str)> = vec![
+            (
+                "Audiencia concentrada en Juzgado 3 CTO Penal [PROCESADO] efectuada con normalidad",
+                "SI",
+                "",
+                "Juzgado 3 Cto Penal",
+                "Audiencia concentrada",
+            ),
+            (
+                "Juicio oral en Juzgado 2 Penal [PROCESADO] aplazado porque INPEC no realizo traslado",
+                "NO",
+                "INPEC",
+                "Juzgado 2 Penal",
+                "Audiencia de juicio oral",
+            ),
+            (
+                "Preparatoria en Juzgado 1 Penal [PROCESADO] suspendida porque fiscalia solicito preacuerdo",
+                "NO",
+                "Fiscalía",
+                "Juzgado 1 Penal",
+                "Audiencia preparatoria",
+            ),
+            (
+                "Control de legalidad en Juzgado 4 MPAL [PROCESADO] no asistio abogado contractual",
+                "NO",
+                "Defensor Confianza",
+                "Juzgado 4 MPAL",
+                "Audiencia de control de legalidad",
+            ),
+            (
+                "Acusacion en Juzgado 5 Penal [PROCESADO] fracasa porque titular esta en comision",
+                "NO",
+                "Juez",
+                "Juzgado 5 Penal",
+                "Audiencia de acusación",
+            ),
+            (
+                "Verificacion en Juzgado 4 MPAL [PROCESADO] efectuada correctamente",
+                "SI",
+                "",
+                "Juzgado 4 MPAL",
+                "Audiencia de verificación de cumplimiento",
+            ),
+        ];
+
+        let mut preds_frio: Vec<(String, String)> = Vec::new();
+        let mut reals_frio: Vec<(String, String)> = Vec::new();
+        let mut preds_post: Vec<(String, String)> = Vec::new();
+        let mut reals_post: Vec<(String, String)> = Vec::new();
+        let mut juz_exactos_post = 0usize;
+        let mut total_post = 0usize;
+        let mut total_correcciones_registradas = 0usize;
+        let priors = IndicePriorsExcel::default();
+
+        // 6 rondas prequential (36 casos) simulando un LLM que al inicio expande mal CTO/MPAL y omite realizada/motivo
+        for ronda in 0..6 {
+            for (idx_c, (texto, real_gt, mot_gt, juz_gt, tipo_gt)) in
+                plantilla_casos.iter().enumerate()
+            {
+                let mem_actual = cargar_memoria_en(&ruta);
+                let motor = MotorEstadisticoLocal::entrenar_desde_memorias(
+                    memoria_base_embebida(),
+                    &mem_actual,
+                );
+                let raw_juz = match *juz_gt {
+                    "Juzgado 3 Cto Penal" => "Juzgado 3 Circuito Penal",
+                    "Juzgado 4 MPAL" => "Juzgado 4 Municipal",
+                    other => other,
+                };
+                let raw_llm = json!({
+                    "radicado": "[PROCESADO] - [RADICADO]",
+                    "tipo_audiencia": *tipo_gt,
+                    "fecha": "18/08/2025",
+                    "hora": "09",
+                    "minuto": "00",
+                    "juzgado": raw_juz,
+                    "se_realizo": "",
+                    "motivo": "",
+                    "observaciones": ""
+                });
+                let out = arbitrar_salida_hibrida(
+                    &format!("{} caso r{} c{}", texto, ronda, idx_c),
+                    &raw_llm,
+                    &mem_actual,
+                    &priors,
+                    Vec::new(),
+                    Vec::new(),
+                    &motor,
+                );
+
+                if ronda == 0 {
+                    preds_frio.push((out.se_realizo.clone(), out.motivo.clone()));
+                    reals_frio.push(((*real_gt).into(), (*mot_gt).into()));
+                } else if ronda == 5 {
+                    preds_post.push((out.se_realizo.clone(), out.motivo.clone()));
+                    reals_post.push(((*real_gt).into(), (*mot_gt).into()));
+                    total_post += 1;
+                    if out.juzgado == *juz_gt {
+                        juz_exactos_post += 1;
+                    }
+                }
+
+                let pred_in = AudienciaInput {
+                    radicado: out.radicado,
+                    tipo: out.tipo_audiencia,
+                    fecha: out.fecha,
+                    hora: "09:00".into(),
+                    juzgado: out.juzgado,
+                    realizada: out.se_realizo,
+                    motivo: out.motivo,
+                    observaciones: out.observaciones,
+                };
+                let gt_in = AudienciaInput {
+                    radicado: "[PROCESADO] - [RADICADO]".into(),
+                    tipo: (*tipo_gt).into(),
+                    fecha: "18/08/2025".into(),
+                    hora: "09:00".into(),
+                    juzgado: (*juz_gt).into(),
+                    realizada: (*real_gt).into(),
+                    motivo: (*mot_gt).into(),
+                    observaciones: String::new(),
+                };
+
+                let (res_reg, _) = registrar_resultado_con_traza_en(
+                    &ruta,
+                    &format!("{} caso r{} c{}", texto, ronda, idx_c),
+                    &pred_in,
+                    &gt_in,
+                    "openai",
+                    "gpt-5-mini",
+                    &[],
+                )
+                .unwrap();
+                if res_reg.hubo_correccion {
+                    total_correcciones_registradas += 1;
+                }
+
+                if let Some((cid, corrs)) = obtener_cluster_listo_para_inducir_en(&ruta) {
+                    let ids: Vec<String> = corrs.iter().map(|c| c.id.clone()).collect();
+                    aplicar_analisis_cluster_en(
+                        &ruta,
+                        &cid,
+                        &ids,
+                        &AnalisisCorreccionIa {
+                            es_error_de_ia: true,
+                            tipo_error: "general".into(),
+                            regla: format!("Regla inducida para clúster {}", cid),
+                            confianza: 0.9,
+                            necesita_aclaracion: false,
+                            pregunta: String::new(),
+                        },
+                    )
+                    .unwrap();
+                }
+            }
+        }
+
+        let macro_f1_etiqueta = |preds: &[(String, String)], reals: &[(String, String)]| -> f64 {
+            let clases = ["SI", "INPEC", "Fiscalía", "Defensor Confianza", "Juez"];
+            let label = |p: &(String, String)| -> String {
+                if p.0 == "SI" {
+                    "SI".into()
+                } else {
+                    p.1.clone()
+                }
+            };
+            let mut sum = 0.0;
+            for cl in clases {
+                let tp = preds
+                    .iter()
+                    .zip(reals)
+                    .filter(|(p, r)| label(p) == cl && label(r) == cl)
+                    .count() as f64;
+                let fp = preds
+                    .iter()
+                    .zip(reals)
+                    .filter(|(p, r)| label(p) == cl && label(r) != cl)
+                    .count() as f64;
+                let fn_ = preds
+                    .iter()
+                    .zip(reals)
+                    .filter(|(p, r)| label(p) != cl && label(r) == cl)
+                    .count() as f64;
+                let denom = 2.0 * tp + fp + fn_;
+                if denom > 0.0 {
+                    sum += (2.0 * tp) / denom;
+                }
+            }
+            sum / clases.len() as f64
+        };
+
+        let f1_frio = macro_f1_etiqueta(&preds_frio, &reals_frio);
+        let f1_post = macro_f1_etiqueta(&preds_post, &reals_post);
+        assert!(
+            f1_post > f1_frio && f1_post >= 0.80,
+            "Macro-F1 debe mejorar tras aprendizaje prequential: frio={} post={}",
+            f1_frio,
+            f1_post
+        );
+        assert_eq!(juz_exactos_post, total_post, "Alias CTO aprendido debe resolver 100% en ronda final");
+
+        let mem_fin = cargar_memoria_en(&ruta);
+        let reduccion = 1.0
+            - (mem_fin.llamadas_induccion_llm_total as f64
+                / total_correcciones_registradas.max(1) as f64);
+        assert!(
+            reduccion >= 0.70,
+            "Reducción LLM esperada >= 70%, obtenida {:.1}% (llamadas={}, correcciones={})",
+            reduccion * 100.0,
+            mem_fin.llamadas_induccion_llm_total,
+            total_correcciones_registradas
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

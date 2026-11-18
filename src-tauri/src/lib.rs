@@ -1,15 +1,21 @@
 pub mod ai;
 pub mod aprendizaje;
 pub mod config;
+pub mod estadistica_ia;
 pub mod excel;
 pub mod models;
 pub mod paquete;
 
-use ai::{analizar_correccion_ia, extraer_datos_audiencia_ia, AiAudienciaOutput};
+use ai::{
+    analizar_cluster_correcciones_ia, analizar_correccion_ia, extraer_datos_audiencia_ia,
+    AiAudienciaOutput,
+};
 use aprendizaje::{
-    aplicar_analisis_en, descartar_aclaracion_en, exportar_aprendizaje_ia,
-    guardar_nota_aclaracion_en, obtener_pendientes_analisis_en, obtener_resumen_aprendizaje,
-    registrar_resultado_ia, ruta_memoria, ResumenAprendizaje,
+    aplicar_analisis_cluster_ia, aplicar_analisis_en, descartar_aclaracion_en,
+    exportar_aprendizaje_ia, guardar_nota_aclaracion_en, intentar_reservar_cluster_induccion,
+    liberar_cluster_induccion, obtener_cluster_listo_para_inducir_ia,
+    obtener_diagnostico_aprendizaje, obtener_resumen_aprendizaje,
+    registrar_resultado_ia_con_traza, ruta_memoria, DiagnosticoAprendizaje, ResumenAprendizaje,
 };
 use config::{
     actualizar_config, actualizar_tema, agregar_defensor, agregar_juzgado, agregar_tipo_audiencia,
@@ -289,41 +295,65 @@ fn cmd_eliminar_tipo_audiencia(nombre: String) -> Result<ConfigPublica, String> 
     eliminar_tipo_audiencia(&nombre)
 }
 
+struct ClusterInduccionGuard(String);
+
+impl Drop for ClusterInduccionGuard {
+    fn drop(&mut self) {
+        liberar_cluster_induccion(&self.0);
+    }
+}
+
 #[tauri::command]
 async fn cmd_autocompletar_ia(texto: String) -> Result<AiAudienciaOutput, String> {
     let resultado = extraer_datos_audiencia_ia(&texto).await?;
-    // Si quedó alguna corrección pendiente por falta de conexión previa, intentarla en segundo plano
+    // Si quedó algún clúster coherente listo (N >= 2) pendiente por falta de conexión previa,
+    // se induce en segundo plano con 1 sola llamada agrupada (nunca con casos aislados N = 1).
     tauri::async_runtime::spawn(async move {
-        let pendientes = obtener_pendientes_analisis_en(&ruta_memoria(), 1);
-        for corr in pendientes {
-            if let Ok(analisis) = analizar_correccion_ia(&corr).await {
-                let _ = aplicar_analisis_en(&ruta_memoria(), &corr.id, &analisis);
+        if let Some((cluster_id, corrs)) = obtener_cluster_listo_para_inducir_ia() {
+            if !intentar_reservar_cluster_induccion(&cluster_id) {
+                return;
+            }
+            let _guard = ClusterInduccionGuard(cluster_id.clone());
+            let ids: Vec<String> = corrs.iter().map(|c| c.id.clone()).collect();
+            if let Ok(analisis) = analizar_cluster_correcciones_ia(&corrs).await {
+                let _ = aplicar_analisis_cluster_ia(&cluster_id, &ids, &analisis);
             }
         }
     });
     Ok(resultado)
 }
 
-/// Compara lo que propuso la IA con lo que el usuario guardó, almacena la corrección si la hay
-/// y ejecuta la 2ª llamada de análisis únicamente cuando existen diferencias.
+/// Compara lo que propuso la IA con lo que el usuario guardó, almacena la corrección en cola
+/// de clústeres y ejecuta inducción agrupada con LLM únicamente cuando un patrón alcanza `N >= 2`.
 #[tauri::command]
 async fn cmd_registrar_resultado_ia(
     texto: String,
     prediccion: AudienciaInput,
     final_usuario: AudienciaInput,
+    reglas_inyectadas: Option<Vec<String>>,
 ) -> Result<ResumenAprendizaje, String> {
-    let (mut resumen, nueva_correccion) =
-        ejecutar_en_hilo_io(move || registrar_resultado_ia(&texto, &prediccion, &final_usuario))
-            .await?;
+    let reglas_ids = reglas_inyectadas.unwrap_or_default();
+    let (mut resumen, _) = ejecutar_en_hilo_io(move || {
+        registrar_resultado_ia_con_traza(&texto, &prediccion, &final_usuario, &reglas_ids)
+    })
+    .await?;
 
-    if let Some(corr) = nueva_correccion {
-        if let Ok(analisis) = analizar_correccion_ia(&corr).await {
-            let id = corr.id;
-            if let Ok(actualizado) =
-                ejecutar_en_hilo_io(move || aplicar_analisis_en(&ruta_memoria(), &id, &analisis))
-                    .await
-            {
-                resumen = actualizado;
+    // Inducción diferida por clústeres: solo llama al LLM si hay >= 2 correcciones coherentes
+    if let Some((cluster_id, corrs)) =
+        ejecutar_en_hilo_io(|| Ok(obtener_cluster_listo_para_inducir_ia())).await?
+    {
+        if intentar_reservar_cluster_induccion(&cluster_id) {
+            let _guard = ClusterInduccionGuard(cluster_id.clone());
+            let ids: Vec<String> = corrs.iter().map(|c| c.id.clone()).collect();
+            if let Ok(analisis) = analizar_cluster_correcciones_ia(&corrs).await {
+                let cid_move = cluster_id.clone();
+                if let Ok(actualizado) = ejecutar_en_hilo_io(move || {
+                    aplicar_analisis_cluster_ia(&cid_move, &ids, &analisis)
+                })
+                .await
+                {
+                    resumen = actualizado;
+                }
             }
         }
     }
@@ -367,6 +397,11 @@ async fn cmd_descartar_aclaracion_ia(correccion_id: String) -> Result<ResumenApr
 #[tauri::command]
 async fn cmd_resumen_aprendizaje_ia() -> Result<ResumenAprendizaje, String> {
     ejecutar_en_hilo_io(|| Ok(obtener_resumen_aprendizaje())).await
+}
+
+#[tauri::command]
+async fn cmd_diagnostico_aprendizaje_ia() -> Result<DiagnosticoAprendizaje, String> {
+    ejecutar_en_hilo_io(|| Ok(obtener_diagnostico_aprendizaje())).await
 }
 
 #[tauri::command]
@@ -447,6 +482,7 @@ pub fn run() {
             cmd_responder_aclaracion_ia,
             cmd_descartar_aclaracion_ia,
             cmd_resumen_aprendizaje_ia,
+            cmd_diagnostico_aprendizaje_ia,
             cmd_exportar_aprendizaje_ia,
             cmd_exportar_paquete,
             cmd_inspeccionar_importacion,

@@ -33,7 +33,7 @@ pub const TIPOS_AUDIENCIA: [&str; 18] = [
     "Otra",
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AudienciaInput {
     pub radicado: String,
     pub tipo: String,
@@ -146,6 +146,30 @@ pub struct EstadisticasGlobales {
     pub planillas: Vec<PlanillaResumen>,
     pub defensores_disponibles: Vec<String>,
     pub por_defensor: Vec<ResumenDefensor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ProcesoHabitual {
+    pub radicado_completo: String,
+    pub juzgado_habitual: String,
+    pub tipo_habitual: String,
+    pub frecuencia: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct IndicePriorsExcel {
+    pub formato: u32,
+    pub actualizada: String,
+    pub total_registros: u32,
+    pub juzgados_freq: std::collections::BTreeMap<String, u32>,
+    pub tipos_freq: std::collections::BTreeMap<String, u32>,
+    pub horas_freq: std::collections::BTreeMap<u32, u32>,
+    pub realizada_si: u32,
+    pub realizada_no: u32,
+    pub motivos_freq: [u32; 8],
+    pub procesos_por_numero: std::collections::BTreeMap<String, ProcesoHabitual>,
 }
 
 /// Mapea cualquier variante del nombre de un motivo a su índice exacto de columna (0..8 -> Columnas I..P)
