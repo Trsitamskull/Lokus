@@ -6,7 +6,9 @@ Aplicación de escritorio nativa multiplataforma (**Windows** y **Linux**) const
 
 ## Descarga Directa (Sin instalar dependencias)
 
-Los ejecutables compilados para **Windows** y **Linux** se publican automáticamente en la sección **[Releases](https://github.com/Trsitamskull/gestor_audiencias/releases)** de este repositorio:
+👉 **[Ir a la página de Descargas (GitHub Releases)](https://github.com/Trsitamskull/Lokus/releases)**
+
+Los ejecutables compilados para **Windows** y **Linux** se publican automáticamente en [`https://github.com/Trsitamskull/Lokus/releases`](https://github.com/Trsitamskull/Lokus/releases):
 
 - **Windows:**
   - `Lokus_3.0.0_x64-setup.exe`: Instalador recomendado de un solo archivo (incluye auto-instalación silenciosa de `WebView2` en caso de que el equipo no lo tenga).
@@ -38,7 +40,7 @@ Los ejecutables compilados para **Windows** y **Linux** se publican automáticam
 
 ## Requisitos y Dependencias (Requirements)
 
-> **Nota sobre versiones:** A partir de `v3.0`, Lokus migró de Python a **Rust + Tauri v2 + Svelte 5**, por lo que las dependencias se declaran en [`src-tauri/Cargo.toml`](src-tauri/Cargo.toml) y [`package.json`](package.json). El antiguo `requirements.txt` de la versión `v2.0` (Python + Flet) se conserva en la rama [`legacy-python`](https://github.com/Trsitamskull/gestor_audiencias/tree/legacy-python).
+> **Nota sobre versiones:** A partir de `v3.0`, Lokus migró de Python a **Rust + Tauri v2 + Svelte 5**, por lo que las dependencias se declaran en [`src-tauri/Cargo.toml`](src-tauri/Cargo.toml) y [`package.json`](package.json). El antiguo `requirements.txt` de la versión `v2.0` (Python + Flet) se conserva en la rama [`legacy-python`](https://github.com/Trsitamskull/Lokus/tree/legacy-python).
 
 ### 1. Requisitos para usuarios finales (Ejecutable compilado)
 
