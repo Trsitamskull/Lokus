@@ -5,9 +5,12 @@ on:
   push:
     branches:
       - main
-      - rust-tauri
     tags:
       - "v*"
+
+concurrency:
+  group: lokus-release-build
+  cancel-in-progress: true
 
 jobs:
   build-tauri:
