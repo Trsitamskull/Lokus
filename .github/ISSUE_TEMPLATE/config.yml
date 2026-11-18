@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Soporte y consultas generales
+    url: https://github.com/Trsitamskull/Lokus/issues/new?template=question.yml
+    about: Usa la plantilla de preguntas para solicitar ayuda o aclarar dudas.
+  - name: Código de conducta
+    url: https://github.com/Trsitamskull/Lokus/blob/main/CODE_OF_CONDUCT.md
+    about: Lee las normas de convivencia antes de participar.
