@@ -31,10 +31,10 @@ export const MOTIVOS_LABELS = [
 ];
 
 export const HORAS_RAPIDAS = [
-  ["08", "00"],
-  ["10", "00"],
-  ["14", "00"],
-  ["16", "00"],
+  { h24: "08", h12: "08", m: "00", periodo: "AM", label: "8:00 AM" },
+  { h24: "10", h12: "10", m: "00", periodo: "AM", label: "10:00 AM" },
+  { h24: "14", h12: "02", m: "00", periodo: "PM", label: "2:00 PM" },
+  { h24: "16", h12: "04", m: "00", periodo: "PM", label: "4:00 PM" },
 ];
 
 export const COLORES_CARPETA = [

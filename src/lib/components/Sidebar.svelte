@@ -1,5 +1,5 @@
 <script>
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import {
     Scale,
     Plus,
@@ -57,6 +57,13 @@
   let busquedaPlanillas = $state("");
   let carpetasExpandidas = $state({});
   let filesContainerEl = $state(null);
+
+  // Menú contextual personalizado (carpetas y planillas)
+  let contextMenu = $state(null); // { tipo: "carpeta" | "archivo", ruta, x, y, viaKeyboard, triggerEl }
+  let contextAnchorEl = $state(null);
+  let contextMenuEl = $state(null);
+  let contextMenuFocusgroupEl = $state(null);
+  let restaurarFocoAlCerrar = true;
 
   // Estado de arrastre mediante Pointer Events (Windows WebView2 y Linux WebKitGTK)
   let posibleArrastre = $state(null); // { tipo, ruta, nombre, carpetaOrigen, startX, startY, pointerId }
@@ -451,12 +458,181 @@
     finalizarEstadoArrastre();
   }
 
-  function manejarKeydownArrastre(e) {
+  function manejarKeydownVentana(e) {
     if (e.key === "Escape" && arrastreActivo) {
       e.preventDefault();
       e.stopPropagation();
       finalizarEstadoArrastre();
+      return;
     }
+    if (e.key === "Escape" && contextMenu) {
+      e.preventDefault();
+      e.stopPropagation();
+      cerrarMenuContextual({ restaurarFoco: true });
+    }
+  }
+
+  function esSoporteFocusgroup() {
+    return typeof HTMLElement !== "undefined" && "focusGroup" in HTMLElement.prototype;
+  }
+
+  function esSoportePopover() {
+    return typeof HTMLElement !== "undefined" && "popover" in HTMLElement.prototype;
+  }
+
+  function sincronizarFallbackMenu() {
+    if (!contextMenuFocusgroupEl || esSoporteFocusgroup()) return;
+    contextMenuFocusgroupEl.setAttribute("role", "menu");
+    contextMenuFocusgroupEl.querySelectorAll("button").forEach((btn) => {
+      if (!btn.getAttribute("role")) btn.setAttribute("role", "menuitem");
+    });
+  }
+
+  function posicionarMenuFallback(x, y) {
+    if (!contextMenuEl) return;
+    const soportaAnchor =
+      typeof CSS !== "undefined" && CSS.supports?.("position-area: block-end");
+    if (soportaAnchor && esSoportePopover()) {
+      contextMenuEl.style.left = "";
+      contextMenuEl.style.top = "";
+      return;
+    }
+    const rect = contextMenuEl.getBoundingClientRect();
+    const ancho = rect.width || 210;
+    const alto = rect.height || 210;
+    const maxX = Math.max(8, window.innerWidth - ancho - 8);
+    const left = Math.min(Math.max(8, x), maxX);
+    let top = y;
+    if (top + alto > window.innerHeight - 8) {
+      top = Math.max(8, y - alto);
+    }
+    contextMenuEl.style.left = `${left}px`;
+    contextMenuEl.style.top = `${top}px`;
+  }
+
+  async function abrirMenuContextual(e, tipo, ruta, triggerEl, viaKeyboard = false) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (arrastreActivo) return;
+
+    let x = e.clientX ?? 0;
+    let y = e.clientY ?? 0;
+    if (viaKeyboard && triggerEl) {
+      const rect = triggerEl.getBoundingClientRect();
+      x = Math.round(rect.left + 28);
+      y = Math.round(rect.bottom - 2);
+    }
+
+    restaurarFocoAlCerrar = true;
+    contextMenu = { tipo, ruta, x, y, viaKeyboard, triggerEl };
+    await tick();
+
+    if (contextAnchorEl) {
+      contextAnchorEl.style.left = `${x}px`;
+      contextAnchorEl.style.top = `${y}px`;
+    }
+    sincronizarFallbackMenu();
+
+    if (contextMenuEl && esSoportePopover()) {
+      if (contextMenuEl.matches(":popover-open")) {
+        restaurarFocoAlCerrar = false;
+        try {
+          contextMenuEl.hidePopover();
+        } catch (_) {}
+        restaurarFocoAlCerrar = true;
+      }
+      try {
+        contextMenuEl.showPopover({ source: contextAnchorEl || undefined });
+      } catch (_) {
+        try {
+          contextMenuEl.showPopover();
+        } catch (_) {}
+      }
+    }
+
+    posicionarMenuFallback(x, y);
+
+    if (viaKeyboard) {
+      const primero = contextMenuFocusgroupEl?.querySelector("button:not(:disabled)");
+      primero?.focus();
+    } else {
+      contextMenuFocusgroupEl?.focus({ focusVisible: false });
+    }
+  }
+
+  function cerrarMenuContextual({ restaurarFoco = false } = {}) {
+    const info = contextMenu;
+    restaurarFocoAlCerrar = restaurarFoco;
+    if (contextMenuEl && esSoportePopover() && contextMenuEl.matches(":popover-open")) {
+      try {
+        contextMenuEl.hidePopover();
+      } catch (_) {}
+    }
+    contextMenu = null;
+    if (restaurarFoco && info?.triggerEl) {
+      info.triggerEl.focus({ focusVisible: Boolean(info.viaKeyboard) });
+    }
+  }
+
+  function ejecutarAccionMenu(callback) {
+    const ruta = contextMenu?.ruta;
+    cerrarMenuContextual({ restaurarFoco: false });
+    if (ruta) callback?.(ruta);
+  }
+
+  function manejarToggleMenuContextual(e) {
+    if (e.newState !== "closed") return;
+    const info = contextMenu;
+    contextMenu = null;
+    if (restaurarFocoAlCerrar && info?.triggerEl) {
+      info.triggerEl.focus({ focusVisible: Boolean(info.viaKeyboard) });
+    }
+    restaurarFocoAlCerrar = true;
+  }
+
+  function manejarKeydownMenuContextual(e) {
+    if (!contextMenu) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cerrarMenuContextual({ restaurarFoco: true });
+      return;
+    }
+    if (e.key === "Tab") {
+      cerrarMenuContextual({ restaurarFoco: false });
+      return;
+    }
+    if (esSoporteFocusgroup()) return;
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const items = [
+      ...(contextMenuFocusgroupEl?.querySelectorAll("button:not(:disabled)") || []),
+    ];
+    if (items.length === 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const idx = items.indexOf(document.activeElement);
+    let next = 0;
+    if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = items.length - 1;
+    else if (idx < 0) next = e.key === "ArrowUp" ? items.length - 1 : 0;
+    else next = (idx + (e.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+    items[next]?.focus();
+  }
+
+  function manejarContextMenuLista(e) {
+    e.preventDefault();
+    if (!e.target?.closest?.("[data-context-item]") && contextMenu) {
+      cerrarMenuContextual({ restaurarFoco: false });
+    }
+  }
+
+  function manejarPointerDownVentana(e) {
+    if (!contextMenu) return;
+    if (contextMenuEl && contextMenuEl.contains(e.target)) return;
+    // En Linux/WebKitGTK el menú contextual abre antes de soltar el botón derecho;
+    // ignorar pointerdown derecho sobre filas del árbol para que oncontextmenu lo gestione.
+    if (e.button === 2 && e.target?.closest?.("[data-context-item]")) return;
+    cerrarMenuContextual({ restaurarFoco: false });
   }
 </script>
 
@@ -464,27 +640,45 @@
   onpointermove={manejarPointerMoveGlobal}
   onpointerup={manejarPointerUpGlobal}
   onpointercancel={finalizarEstadoArrastre}
-  onkeydown={manejarKeydownArrastre}
+  onpointerdown={manejarPointerDownVentana}
+  onkeydown={manejarKeydownVentana}
+  onblur={() => {
+    if (contextMenu) cerrarMenuContextual({ restaurarFoco: false });
+  }}
 />
 
 {#snippet renderArchivo(item, depth)}
   {@const isActive = archivoActual === item.ruta}
+  {@const isContextOpen =
+    contextMenu?.tipo === "archivo" && contextMenu?.ruta === item.ruta}
   {@const isDraggingThis =
     arrastreActivo?.tipo === "archivo" && arrastreActivo?.ruta === item.ruta}
   <div
-    class="sidebar-file-row {isActive ? 'active' : ''} {isDraggingThis ? 'is-dragging-source' : ''}"
+    class="sidebar-file-row {isActive ? 'active' : ''} {isContextOpen ? 'is-context-open' : ''} {isDraggingThis ? 'is-dragging-source' : ''}"
     style="--tree-depth: {depth}"
+    data-context-item="archivo"
+    data-context-file={item.ruta}
   >
     <button
       type="button"
       class="sidebar-file-btn"
-      title="{item.ruta} (arrastra para mover a otra carpeta)"
-      onpointerdown={(e) =>
+      title="{item.ruta} · clic derecho para opciones o arrastra para mover"
+      oncontextmenu={(e) => abrirMenuContextual(e, "archivo", item.ruta, e.currentTarget)}
+      onpointerdown={(e) => {
+        if (e.button === 0 && contextMenu) {
+          cerrarMenuContextual({ restaurarFoco: false });
+        }
         iniciarPosibleArrastre(e, {
           tipo: "archivo",
           ruta: item.ruta,
           nombre: item.nombre.replace(/\.xlsx$/i, ""),
-        })}
+        });
+      }}
+      onkeydown={(e) => {
+        if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+          abrirMenuContextual(e, "archivo", item.ruta, e.currentTarget, true);
+        }
+      }}
       onclick={() => {
         if (bloquearClickTemporal) return;
         onSeleccionarArchivo(item.ruta);
@@ -494,53 +688,6 @@
       <FileSpreadsheet size={15} strokeWidth={isActive ? 2.2 : 1.9} class="excel-icon" />
       <span class="file-name-truncate">{item.nombre.replace(/\.xlsx$/i, "")}</span>
     </button>
-    <div class="file-row-actions">
-      <button
-        type="button"
-        class="mini-icon-btn"
-        onclick={() => onMoverArchivo(item.ruta)}
-        title="Mover a otra carpeta"
-        aria-label="Mover a otra carpeta"
-      >
-        <FolderInput size={13} />
-      </button>
-      <button
-        type="button"
-        class="mini-icon-btn"
-        onclick={() => onAbrirDefensorArchivo(item.ruta)}
-        title="Asignar o editar defensor público"
-        aria-label="Asignar o editar defensor público"
-      >
-        <UserCheck size={13} />
-      </button>
-      <button
-        type="button"
-        class="mini-icon-btn"
-        onclick={() => onAbrirRespaldos(item.ruta)}
-        title="Historial de respaldos (últimas 3 versiones)"
-        aria-label="Historial de respaldos"
-      >
-        <History size={13} />
-      </button>
-      <button
-        type="button"
-        class="mini-icon-btn"
-        onclick={() => onDescargarArchivo(item.ruta)}
-        title="Exportar copia a Descargas"
-        aria-label="Exportar copia a Descargas"
-      >
-        <Download size={13} />
-      </button>
-      <button
-        type="button"
-        class="mini-icon-btn danger"
-        onclick={() => onEliminarArchivo(item.ruta)}
-        title="Eliminar archivo"
-        aria-label="Eliminar archivo"
-      >
-        <Trash2 size={13} />
-      </button>
-    </div>
   </div>
 {/snippet}
 
@@ -548,6 +695,8 @@
   {@const abierta = forzarAbierta || Boolean(carpetasExpandidas[nodo.ruta])}
   {@const folderColorStyle = estiloColorCarpeta(nodo.ruta)}
   {@const tieneActivoPlegado = !abierta && contieneArchivoActivo(nodo.ruta)}
+  {@const isContextOpen =
+    contextMenu?.tipo === "carpeta" && contextMenu?.ruta === nodo.ruta}
   {@const isDraggingThis =
     arrastreActivo?.tipo === "carpeta" && arrastreActivo?.ruta === nodo.ruta}
   {@const isDropHere = hoverDestino === nodo.ruta && arrastreActivo}
@@ -555,21 +704,33 @@
     isDropHere && esDestinoValido(arrastreActivo, nodo.ruta, hoverPosicion)}
   <div class="sidebar-folder-block">
     <div
-      class="sidebar-folder-row {tieneActivoPlegado ? 'has-active-child' : ''} {isDraggingThis ? 'is-dragging-source' : ''} {dropValido && hoverPosicion === 'dentro' ? 'is-drop-target' : ''} {dropValido && hoverPosicion === 'antes' ? 'is-drop-before' : ''} {dropValido && hoverPosicion === 'despues' ? 'is-drop-after' : ''}"
+      class="sidebar-folder-row {tieneActivoPlegado ? 'has-active-child' : ''} {isContextOpen ? 'is-context-open' : ''} {isDraggingThis ? 'is-dragging-source' : ''} {dropValido && hoverPosicion === 'dentro' ? 'is-drop-target' : ''} {dropValido && hoverPosicion === 'antes' ? 'is-drop-before' : ''} {dropValido && hoverPosicion === 'despues' ? 'is-drop-after' : ''}"
       style="--tree-depth: {depth}"
       data-drop-folder={nodo.ruta}
+      data-context-item="carpeta"
+      data-context-folder={nodo.ruta}
     >
       <button
         type="button"
         class="sidebar-folder-btn"
         aria-expanded={abierta}
-        title="{nodo.ruta}{tieneActivoPlegado ? ' (contiene la planilla activa)' : ''} · arrastra para reordenar o mover"
-        onpointerdown={(e) =>
+        title="{nodo.ruta}{tieneActivoPlegado ? ' (contiene la planilla activa)' : ''} · clic derecho para opciones o arrastra para reordenar"
+        oncontextmenu={(e) => abrirMenuContextual(e, "carpeta", nodo.ruta, e.currentTarget)}
+        onpointerdown={(e) => {
+          if (e.button === 0 && contextMenu) {
+            cerrarMenuContextual({ restaurarFoco: false });
+          }
           iniciarPosibleArrastre(e, {
             tipo: "carpeta",
             ruta: nodo.ruta,
             nombre: nodo.nombre,
-          })}
+          });
+        }}
+        onkeydown={(e) => {
+          if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+            abrirMenuContextual(e, "carpeta", nodo.ruta, e.currentTarget, true);
+          }
+        }}
         onclick={() => {
           if (bloquearClickTemporal) return;
           toggleCarpeta(nodo.ruta);
@@ -595,53 +756,6 @@
           <span class="folder-count">{nodo.totalArchivos}</span>
         {/if}
       </button>
-      <div class="file-row-actions">
-        <button
-          type="button"
-          class="mini-icon-btn"
-          onclick={() => onCrearArchivo(nodo.ruta)}
-          title="Nueva planilla en esta carpeta"
-          aria-label="Nueva planilla en {nodo.nombre}"
-        >
-          <Plus size={13} />
-        </button>
-        <button
-          type="button"
-          class="mini-icon-btn"
-          onclick={() => onCrearCarpeta(nodo.ruta)}
-          title="Nueva subcarpeta"
-          aria-label="Nueva subcarpeta en {nodo.nombre}"
-        >
-          <FolderPlus size={13} />
-        </button>
-        <button
-          type="button"
-          class="mini-icon-btn"
-          onclick={() => onCambiarColorCarpeta?.(nodo.ruta)}
-          title="Cambiar color de carpeta"
-          aria-label="Cambiar color de carpeta {nodo.nombre}"
-        >
-          <Palette size={12} />
-        </button>
-        <button
-          type="button"
-          class="mini-icon-btn"
-          onclick={() => onRenombrarCarpeta(nodo.ruta)}
-          title="Renombrar o mover carpeta"
-          aria-label="Renombrar carpeta {nodo.nombre}"
-        >
-          <Pencil size={12} />
-        </button>
-        <button
-          type="button"
-          class="mini-icon-btn danger"
-          onclick={() => onEliminarCarpeta(nodo.ruta)}
-          title="Eliminar carpeta"
-          aria-label="Eliminar carpeta {nodo.nombre}"
-        >
-          <Trash2 size={12} />
-        </button>
-      </div>
     </div>
 
     {#if abierta && (nodo.carpetas.length > 0 || nodo.archivos.length > 0)}
@@ -760,10 +874,12 @@
     </search>
   {/if}
 
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="sidebar-files scroller"
     bind:this={filesContainerEl}
     data-drop-folder=""
+    oncontextmenu={manejarContextMenuLista}
   >
     {#if arrastreActivo && arrastreActivo.carpetaOrigen !== ""}
       <div
@@ -881,3 +997,58 @@
     <span>{arrastreActivo.nombre}</span>
   </div>
 {/if}
+
+{#snippet itemMenuContextual(Icono, etiqueta, callback, peligro = false)}
+  <button
+    type="button"
+    class="folder-context-item {peligro ? 'is-danger' : ''}"
+    onpointermove={(e) => {
+      if (matchMedia("(hover: hover)").matches) {
+        e.currentTarget.focus({ focusVisible: false });
+      }
+    }}
+    onclick={() => ejecutarAccionMenu(callback)}
+  >
+    <span class="folder-context-icon" aria-hidden="true"><Icono size={14} /></span>
+    <span>{etiqueta}</span>
+  </button>
+{/snippet}
+
+<div class="context-menu-anchor" bind:this={contextAnchorEl} aria-hidden="true"></div>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="folder-context-menu {contextMenu && !esSoportePopover() ? 'is-fallback-open' : ''}"
+  bind:this={contextMenuEl}
+  popover="manual"
+  aria-label={contextMenu ? `Acciones para ${contextMenu.ruta}` : "Acciones"}
+  ontoggle={manejarToggleMenuContextual}
+  oncontextmenu={(e) => e.preventDefault()}
+>
+  {#if contextMenu}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="folder-context-list"
+      bind:this={contextMenuFocusgroupEl}
+      focusgroup="menu nomemory"
+      tabindex="-1"
+      aria-label={`Opciones de ${contextMenu.ruta}`}
+      onkeydown={manejarKeydownMenuContextual}
+    >
+      {#if contextMenu.tipo === "carpeta"}
+        {@render itemMenuContextual(Plus, "Nueva planilla aquí", onCrearArchivo)}
+        {@render itemMenuContextual(FolderPlus, "Nueva subcarpeta", onCrearCarpeta)}
+        {@render itemMenuContextual(Palette, "Cambiar color", onCambiarColorCarpeta)}
+        {@render itemMenuContextual(Pencil, "Renombrar o mover", onRenombrarCarpeta)}
+        <hr class="folder-context-sep" />
+        {@render itemMenuContextual(Trash2, "Eliminar carpeta", onEliminarCarpeta, true)}
+      {:else}
+        {@render itemMenuContextual(FolderInput, "Mover a otra carpeta", onMoverArchivo)}
+        {@render itemMenuContextual(UserCheck, "Asignar o editar defensor", onAbrirDefensorArchivo)}
+        {@render itemMenuContextual(History, "Historial de respaldos", onAbrirRespaldos)}
+        {@render itemMenuContextual(Download, "Exportar copia a Descargas", onDescargarArchivo)}
+        <hr class="folder-context-sep" />
+        {@render itemMenuContextual(Trash2, "Eliminar planilla", onEliminarArchivo, true)}
+      {/if}
+    </div>
+  {/if}
+</div>

@@ -1,5 +1,5 @@
 <script>
-  import { Calendar, ChevronLeft, ChevronRight, ChevronDown, Check } from "@lucide/svelte";
+  import { Calendar, ChevronLeft, ChevronRight, ChevronDown } from "@lucide/svelte";
 
   let {
     id = "fecha",
@@ -7,6 +7,9 @@
     value = $bindable(""),
     registros = [],
     placeholder = "DD/MM/AAAA",
+    invalid = false,
+    describedBy = undefined,
+    onBlur = undefined,
   } = $props();
 
   const MESES = [
@@ -23,16 +26,39 @@
     "Noviembre",
     "Diciembre",
   ];
-  const ANIOS = Array.from({ length: 2050 - 2018 + 1 }, (_, i) => 2018 + i);
+  const MESES_CORTOS = [
+    "Ene",
+    "Feb",
+    "Mar",
+    "Abr",
+    "May",
+    "Jun",
+    "Jul",
+    "Ago",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dic",
+  ];
+  const ANIO_MIN = 2018;
+  const ANIO_MAX = 2050;
+  const ANIOS_POR_PAGINA = 12;
+  const MAX_YEAR_PAGE_START =
+    ANIO_MIN + Math.floor((ANIO_MAX - ANIO_MIN) / ANIOS_POR_PAGINA) * ANIOS_POR_PAGINA;
   const DIAS_SEMANA = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"];
 
   let open = $state(false);
-  let menuAbierto = $state(null); // "mes" | "anio" | null
-  let yearListEl = $state(null);
+  let vistaCalendario = $state("dias"); // "dias" | "meses" | "anios"
   let containerEl = $state(null);
   let hoy = new Date();
   let viewYear = $state(hoy.getFullYear());
   let viewMonth = $state(hoy.getMonth()); // 0..11
+  let yearPageStart = $state(
+    ANIO_MIN + Math.floor((hoy.getFullYear() - ANIO_MIN) / ANIOS_POR_PAGINA) * ANIOS_POR_PAGINA
+  );
+  let wheelAcumMes = 0;
+  let wheelAcumAnio = 0;
+  let wheelAcumPagina = 0;
 
   let popoverId = $derived(`${id || "fecha"}-calendar-popover`);
 
@@ -99,7 +125,7 @@
   function abrirCalendario() {
     if (!open) {
       sincronizarMesConValor();
-      menuAbierto = null;
+      vistaCalendario = "dias";
       open = true;
     }
   }
@@ -107,35 +133,26 @@
   function toggleCalendario(e) {
     e.stopPropagation();
     if (open) {
-      menuAbierto = null;
+      vistaCalendario = "dias";
       open = false;
     } else {
       sincronizarMesConValor();
-      menuAbierto = null;
+      vistaCalendario = "dias";
       open = true;
     }
   }
 
-  function toggleSubmenu(tipo, e) {
+  function toggleVista(tipo, e) {
     e.stopPropagation();
-    menuAbierto = menuAbierto === tipo ? null : tipo;
-    if (menuAbierto === "anio") {
-      setTimeout(() => {
-        const activo = yearListEl?.querySelector(".selected");
-        activo?.scrollIntoView({ block: "center" });
-      }, 10);
+    if (vistaCalendario === tipo) {
+      vistaCalendario = "dias";
+      return;
     }
-  }
-
-  function contenerWheelEnSublista(e) {
-    const el = e.currentTarget;
-    const enTopeSuperior = e.deltaY < 0 && el.scrollTop <= 0;
-    const enTopeInferior =
-      e.deltaY > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    if (enTopeSuperior || enTopeInferior) {
-      e.preventDefault();
+    if (tipo === "anios") {
+      yearPageStart =
+        ANIO_MIN + Math.floor((viewYear - ANIO_MIN) / ANIOS_POR_PAGINA) * ANIOS_POR_PAGINA;
     }
-    e.stopPropagation();
+    vistaCalendario = tipo;
   }
 
   function formatearFechaInput(e) {
@@ -170,8 +187,104 @@
     }
   }
 
+  function cambiarAnio(delta) {
+    const siguiente = Math.min(ANIO_MAX, Math.max(ANIO_MIN, viewYear + delta));
+    viewYear = siguiente;
+    yearPageStart =
+      ANIO_MIN + Math.floor((siguiente - ANIO_MIN) / ANIOS_POR_PAGINA) * ANIOS_POR_PAGINA;
+  }
+
+  function cambiarPaginaAnios(delta) {
+    yearPageStart = Math.min(
+      MAX_YEAR_PAGE_START,
+      Math.max(ANIO_MIN, yearPageStart + delta * ANIOS_POR_PAGINA)
+    );
+  }
+
+  function calcularPasoWheel(e, acumActual) {
+    const delta = e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY;
+    const umbral = 24;
+    if (Math.abs(delta) >= umbral) {
+      return { paso: delta > 0 ? 1 : -1, resto: 0 };
+    }
+    const siguienteAcum = acumActual + delta;
+    if (Math.abs(siguienteAcum) >= umbral) {
+      return { paso: siguienteAcum > 0 ? 1 : -1, resto: 0 };
+    }
+    return { paso: 0, resto: siguienteAcum };
+  }
+
+  function manejarWheelMes(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const { paso, resto } = calcularPasoWheel(e, wheelAcumMes);
+    wheelAcumMes = resto;
+    if (paso !== 0) cambiarMes(paso);
+  }
+
+  function manejarWheelAnio(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const { paso, resto } = calcularPasoWheel(e, wheelAcumAnio);
+    wheelAcumAnio = resto;
+    if (paso !== 0) cambiarAnio(paso);
+  }
+
+  function manejarWheelPaginaAnios(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const { paso, resto } = calcularPasoWheel(e, wheelAcumPagina);
+    wheelAcumPagina = resto;
+    if (paso !== 0) cambiarPaginaAnios(paso);
+  }
+
+  function navegarEncabezado(delta) {
+    if (vistaCalendario === "meses") {
+      cambiarAnio(delta);
+    } else if (vistaCalendario === "anios") {
+      cambiarPaginaAnios(delta);
+    } else {
+      cambiarMes(delta);
+    }
+  }
+
+  let aniosPagina = $derived.by(() => {
+    const lista = [];
+    for (let a = yearPageStart; a < yearPageStart + ANIOS_POR_PAGINA && a <= ANIO_MAX; a++) {
+      lista.push(a);
+    }
+    return lista;
+  });
+
+  let anioFinPagina = $derived(Math.min(ANIO_MAX, yearPageStart + ANIOS_POR_PAGINA - 1));
+  let ariaNavAnterior = $derived(
+    vistaCalendario === "anios"
+      ? "Años anteriores"
+      : vistaCalendario === "meses"
+        ? "Año anterior"
+        : "Mes anterior"
+  );
+  let ariaNavSiguiente = $derived(
+    vistaCalendario === "anios"
+      ? "Años siguientes"
+      : vistaCalendario === "meses"
+        ? "Año siguiente"
+        : "Mes siguiente"
+  );
+  let navAnteriorDeshabilitado = $derived(
+    (vistaCalendario === "anios" && yearPageStart <= ANIO_MIN) ||
+      (vistaCalendario === "meses" && viewYear <= ANIO_MIN) ||
+      (vistaCalendario === "dias" && viewYear <= ANIO_MIN && viewMonth === 0)
+  );
+  let navSiguienteDeshabilitado = $derived(
+    (vistaCalendario === "anios" && yearPageStart >= MAX_YEAR_PAGE_START) ||
+      (vistaCalendario === "meses" && viewYear >= ANIO_MAX) ||
+      (vistaCalendario === "dias" && viewYear >= ANIO_MAX && viewMonth === 11)
+  );
+
   function seleccionarFecha(fechaStr) {
     value = fechaStr;
+    vistaCalendario = "dias";
     open = false;
   }
 
@@ -180,6 +293,7 @@
     viewYear = d.getFullYear();
     viewMonth = d.getMonth();
     value = fechaHoyStr;
+    vistaCalendario = "dias";
     open = false;
   }
 
@@ -217,8 +331,9 @@
       });
     }
 
-    // Días del mes siguiente hasta completar 42 celdas (6 semanas)
-    const restantes = 42 - celdas.length;
+    // Días del mes siguiente solo para completar la última semana visible (4, 5 o 6 filas)
+    const totalCeldas = Math.ceil(celdas.length / 7) * 7;
+    const restantes = totalCeldas - celdas.length;
     for (let dia = 1; dia <= restantes; dia++) {
       const m = viewMonth === 11 ? 0 : viewMonth + 1;
       const y = viewMonth === 11 ? viewYear + 1 : viewYear;
@@ -238,7 +353,11 @@
     if (e.key === "Escape" && open) {
       e.preventDefault();
       e.stopPropagation();
-      open = false;
+      if (vistaCalendario !== "dias") {
+        vistaCalendario = "dias";
+      } else {
+        open = false;
+      }
     } else if (e.key === "ArrowDown" && !open) {
       abrirCalendario();
     }
@@ -246,7 +365,7 @@
 
   function handleWindowPointerDown(e) {
     if (open && containerEl && !containerEl.contains(e.target)) {
-      menuAbierto = null;
+      vistaCalendario = "dias";
       open = false;
     }
   }
@@ -262,9 +381,12 @@
       type="text"
       inputmode="numeric"
       maxlength="10"
-      class="input has-trailing"
+      class="input has-trailing {invalid ? 'is-invalid' : ''}"
       {value}
+      aria-invalid={invalid ? "true" : "false"}
+      aria-describedby={describedBy}
       onfocus={abrirCalendario}
+      onblur={() => onBlur?.()}
       onclick={abrirCalendario}
       oninput={formatearFechaInput}
       onkeydown={manejarKeydown}
@@ -286,157 +408,159 @@
   </div>
 
   {#if open}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
       id={popoverId}
       class="calendar-popover"
       role="dialog"
       tabindex="-1"
       aria-label="Calendario de fecha de audiencia"
-      onclick={() => (menuAbierto = null)}
+      onkeydown={manejarKeydown}
       onwheel={(e) => {
-        if (!e.target.closest(".calendar-dropdown-list")) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
+        e.preventDefault();
+        e.stopPropagation();
       }}
     >
       <div class="calendar-header">
         <button
           type="button"
           class="mini-icon-btn"
-          aria-label="Mes anterior"
-          onclick={() => {
-            menuAbierto = null;
-            cambiarMes(-1);
-          }}
+          aria-label={ariaNavAnterior}
+          disabled={navAnteriorDeshabilitado}
+          onclick={() => navegarEncabezado(-1)}
         >
           <ChevronLeft size={15} />
         </button>
 
         <div class="calendar-title-group">
-          <div class="calendar-select-wrap">
-            <button
-              type="button"
-              class="calendar-select-trigger {menuAbierto === 'mes' ? 'is-open' : ''}"
-              aria-expanded={menuAbierto === "mes"}
-              onclick={(e) => toggleSubmenu("mes", e)}
-            >
-              <span>{MESES[viewMonth]}</span>
-              <ChevronDown size={13} strokeWidth={2} />
-            </button>
-            {#if menuAbierto === "mes"}
-              <div
-                class="calendar-dropdown-list scroller"
-                role="listbox"
-                aria-label="Seleccionar mes"
-                onwheel={contenerWheelEnSublista}
-              >
-                {#each MESES as nombreMes, idx}
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={viewMonth === idx}
-                    class="custom-select-option {viewMonth === idx ? 'selected' : ''}"
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      viewMonth = idx;
-                      menuAbierto = null;
-                    }}
-                  >
-                    <span class="opt-text">{nombreMes}</span>
-                    {#if viewMonth === idx}
-                      <span class="opt-check">
-                        <Check size={13} strokeWidth={2.5} />
-                      </span>
-                    {/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
+          <button
+            type="button"
+            class="calendar-select-trigger {vistaCalendario === 'meses' ? 'is-open' : ''}"
+            aria-pressed={vistaCalendario === "meses"}
+            title="Clic para abrir rejilla de meses · Rueda del ratón para cambiar de mes"
+            onwheel={manejarWheelMes}
+            onclick={(e) => toggleVista("meses", e)}
+          >
+            <span>{MESES[viewMonth]}</span>
+            <ChevronDown size={13} strokeWidth={2} />
+          </button>
 
-          <div class="calendar-select-wrap">
-            <button
-              type="button"
-              class="calendar-select-trigger is-year {menuAbierto === 'anio' ? 'is-open' : ''}"
-              aria-expanded={menuAbierto === "anio"}
-              onclick={(e) => toggleSubmenu("anio", e)}
-            >
-              <span>{viewYear}</span>
-              <ChevronDown size={13} strokeWidth={2} />
-            </button>
-            {#if menuAbierto === "anio"}
-              <div
-                bind:this={yearListEl}
-                class="calendar-dropdown-list is-year scroller"
-                role="listbox"
-                aria-label="Seleccionar año"
-                onwheel={contenerWheelEnSublista}
-              >
-                {#each ANIOS as anio}
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={viewYear === anio}
-                    class="custom-select-option {viewYear === anio ? 'selected' : ''}"
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      viewYear = anio;
-                      menuAbierto = null;
-                    }}
-                  >
-                    <span class="opt-text">{anio}</span>
-                    {#if viewYear === anio}
-                      <span class="opt-check">
-                        <Check size={13} strokeWidth={2.5} />
-                      </span>
-                    {/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
+          <button
+            type="button"
+            class="calendar-select-trigger is-year {vistaCalendario === 'anios' ? 'is-open' : ''}"
+            aria-pressed={vistaCalendario === "anios"}
+            title="Clic para abrir rejilla de años · Rueda del ratón para cambiar de año"
+            onwheel={manejarWheelAnio}
+            onclick={(e) => toggleVista("anios", e)}
+          >
+            <span>{viewYear}</span>
+            <ChevronDown size={13} strokeWidth={2} />
+          </button>
         </div>
 
         <button
           type="button"
           class="mini-icon-btn"
-          aria-label="Mes siguiente"
-          onclick={() => {
-            menuAbierto = null;
-            cambiarMes(1);
-          }}
+          aria-label={ariaNavSiguiente}
+          disabled={navSiguienteDeshabilitado}
+          onclick={() => navegarEncabezado(1)}
         >
           <ChevronRight size={15} />
         </button>
       </div>
 
-      <div class="calendar-weekdays" aria-hidden="true">
-        {#each DIAS_SEMANA as d}
-          <span class="calendar-weekday">{d}</span>
-        {/each}
-      </div>
-
-      <div class="calendar-grid">
-        {#each celdasCalendario as celda}
-          {@const esSeleccionada = value === celda.fechaStr}
-          {@const esHoy = fechaHoyStr === celda.fechaStr}
+      {#if vistaCalendario === "meses"}
+        <div class="calendar-subview-bar">
+          <span class="calendar-subview-label">Seleccionar mes · {viewYear}</span>
           <button
             type="button"
-            class="calendar-day {celda.otroMes ? 'is-outside' : ''} {esHoy ? 'is-today' : ''} {esSeleccionada ? 'is-selected' : ''}"
-            onclick={() => seleccionarFecha(celda.fechaStr)}
-            title={celda.conteo > 0
-              ? `${celda.fechaStr} · ${celda.conteo} audiencia(s) en esta planilla`
-              : celda.fechaStr}
+            class="inline-action-link"
+            onclick={() => (vistaCalendario = "dias")}
           >
-            <span>{celda.dia}</span>
-            {#if celda.conteo > 0}
-              <span class="calendar-day-dot" aria-hidden="true"></span>
-            {/if}
+            Volver
           </button>
-        {/each}
-      </div>
+        </div>
+        <div
+          class="calendar-months-matrix"
+          role="grid"
+          aria-label="Meses del año"
+          onwheel={manejarWheelMes}
+        >
+          {#each MESES_CORTOS as nombreCorto, idx}
+            {@const esMesActual = hoy.getFullYear() === viewYear && hoy.getMonth() === idx}
+            <button
+              type="button"
+              class="calendar-cell-btn {esMesActual ? 'is-today' : ''} {viewMonth === idx ? 'is-selected' : ''}"
+              aria-label={MESES[idx]}
+              aria-pressed={viewMonth === idx}
+              title={MESES[idx]}
+              onclick={() => {
+                viewMonth = idx;
+                vistaCalendario = "dias";
+              }}
+            >
+              {nombreCorto}
+            </button>
+          {/each}
+        </div>
+      {:else if vistaCalendario === "anios"}
+        <div class="calendar-subview-bar">
+          <span class="calendar-subview-label">{yearPageStart} – {anioFinPagina}</span>
+          <button
+            type="button"
+            class="inline-action-link"
+            onclick={() => (vistaCalendario = "dias")}
+          >
+            Volver
+          </button>
+        </div>
+        <div
+          class="calendar-years-matrix"
+          role="grid"
+          aria-label="Años disponibles"
+          onwheel={manejarWheelPaginaAnios}
+        >
+          {#each aniosPagina as anio}
+            {@const esAnioActual = hoy.getFullYear() === anio}
+            <button
+              type="button"
+              class="calendar-cell-btn {esAnioActual ? 'is-today' : ''} {viewYear === anio ? 'is-selected' : ''}"
+              aria-pressed={viewYear === anio}
+              onclick={() => {
+                viewYear = anio;
+                vistaCalendario = "dias";
+              }}
+            >
+              {anio}
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <div class="calendar-weekdays" aria-hidden="true">
+          {#each DIAS_SEMANA as d}
+            <span class="calendar-weekday">{d}</span>
+          {/each}
+        </div>
+
+        <div class="calendar-grid" onwheel={manejarWheelMes}>
+          {#each celdasCalendario as celda}
+            {@const esSeleccionada = value === celda.fechaStr}
+            {@const esHoy = fechaHoyStr === celda.fechaStr}
+            <button
+              type="button"
+              class="calendar-day {celda.otroMes ? 'is-outside' : ''} {esHoy ? 'is-today' : ''} {esSeleccionada ? 'is-selected' : ''}"
+              onclick={() => seleccionarFecha(celda.fechaStr)}
+              title={celda.conteo > 0
+                ? `${celda.fechaStr} · ${celda.conteo} audiencia(s) en esta planilla`
+                : celda.fechaStr}
+            >
+              <span>{celda.dia}</span>
+              {#if celda.conteo > 0}
+                <span class="calendar-day-dot" aria-hidden="true"></span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
 
       <div class="calendar-footer">
         <button
@@ -444,6 +568,7 @@
           class="inline-action-link"
           onclick={() => {
             value = "";
+            vistaCalendario = "dias";
             open = false;
           }}
         >

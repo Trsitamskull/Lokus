@@ -32,6 +32,15 @@
 </script>
 
 <div class="table-view-container">
+  <div class="records-view-header">
+    <div>
+      <h1 class="dossier-title">Registros de la Planilla</h1>
+      <p class="dossier-subtitle">
+        Consulta, edita o clona audiencias registradas ordenadas cronológicamente
+      </p>
+    </div>
+  </div>
+
   <search class="table-Command-bar">
     <div class="search-box-wrap">
       <span class="search-box-icon">
@@ -123,18 +132,18 @@
       <tbody>
         {#if registrosFiltrados.length === 0}
           <tr>
-            <td colspan="9" style="text-align: center; padding: 36px; color: var(--text-muted)">
+            <td colspan="9" class="records-empty-cell">
               No hay audiencias que coincidan con el filtro actual.
             </td>
           </tr>
         {:else}
           {#each registrosFiltrados as reg}
             <tr>
-              <td data-label="N°" style="color: var(--text-muted); font-variant-numeric: tabular-nums">{reg.numero}</td>
-              <td data-label="Radicado" style="font-weight: 600">{reg.radicado}</td>
+              <td data-label="N°" class="col-num">{reg.numero}</td>
+              <td data-label="Radicado" class="col-radicado">{reg.radicado}</td>
               <td data-label="Audiencia">{reg.tipo || "—"}</td>
-              <td data-label="Fecha" style="font-variant-numeric: tabular-nums">{reg.fecha || "—"}</td>
-              <td data-label="Hora" style="font-variant-numeric: tabular-nums">{reg.hora || "—"}</td>
+              <td data-label="Fecha" class="col-tabular">{reg.fecha || "—"}</td>
+              <td data-label="Hora" class="col-tabular">{reg.hora || "—"}</td>
               <td data-label="Despacho">{reg.juzgado || "—"}</td>
               <td data-label="Estado">
                 {#if reg.realizada === "SI"}
@@ -144,8 +153,8 @@
                 {/if}
               </td>
               <td data-label="Causal">{reg.motivo || "—"}</td>
-              <td data-label="Acciones" style="text-align: right">
-                <div style="display: inline-flex; gap: 4px">
+              <td data-label="Acciones" class="col-actions">
+                <div class="table-row-actions">
                   <button
                     type="button"
                     class="mini-icon-btn"
@@ -185,9 +194,9 @@
   <div class="fila111-footer">
     <span class="fila111-title">Totales de la planilla</span>
     <div class="fila111-metrics">
-      <span style="color: var(--status-si)">Realizadas: {totales.total_si}</span>
-      <span style="color: var(--status-no)">Aplazadas: {totales.total_no}</span>
-      <span style="color: var(--text-secondary)">
+      <span class="metric-si">Realizadas: {totales.total_si}</span>
+      <span class="metric-no">Aplazadas: {totales.total_no}</span>
+      <span class="metric-motivos">
         {MOTIVOS_LABELS.map((m, idx) => `${m}: ${totales.totales_motivos[idx] ?? 0}`).join(" · ")}
       </span>
     </div>
