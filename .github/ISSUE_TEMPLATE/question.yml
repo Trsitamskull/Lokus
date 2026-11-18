@@ -1,0 +1,41 @@
+name: Pregunta o ayuda
+description: Solicita ayuda para usar o configurar Lokus.
+title: "[Pregunta]: "
+labels:
+  - "tipo: pregunta"
+  - "estado: por revisar"
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Versión de Lokus
+      placeholder: "3.0.0"
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: ¿En qué necesitas ayuda?
+      description: Explica el objetivo y lo que ya intentaste.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área relacionada
+      options:
+        - Uso general
+        - Planillas Excel
+        - Autocompletado con IA
+        - Estadísticas
+        - Instalación o actualización
+        - Otro
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Seguridad
+      options:
+        - label: No he incluido API keys, contraseñas ni datos personales.
+          required: true

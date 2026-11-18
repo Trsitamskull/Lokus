@@ -1,0 +1,77 @@
+name: Reportar un error
+description: Informa de un comportamiento que no funciona como debería.
+title: "[Bug]: "
+labels:
+  - "tipo: bug"
+  - "estado: por revisar"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por ayudar a mejorar Lokus. Completa los datos para que podamos reproducir el problema.
+  - type: input
+    id: version
+    attributes:
+      label: Versión de Lokus
+      description: Indica la versión instalada o el commit utilizado.
+      placeholder: "3.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Sistema operativo
+      options:
+        - Windows 10
+        - Windows 11
+        - Linux
+        - Otro
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área afectada
+      options:
+        - Interfaz
+        - Planillas Excel
+        - Autocompletado con IA
+        - Estadísticas
+        - Instalación o actualización
+        - Otro
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: ¿Qué ocurrió?
+      description: Describe el problema con el mayor detalle posible.
+      placeholder: Explica qué esperabas y qué sucedió.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Pasos para reproducirlo
+      placeholder: |
+        1. Abre...
+        2. Selecciona...
+        3. Pulsa...
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidencia
+      description: Añade capturas, mensajes de error o registros. No compartas datos personales ni API keys.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Comprobaciones
+      options:
+        - label: He buscado Issues abiertos y no encontré un reporte igual.
+          required: true
+        - label: He eliminado datos personales y secretos de la información compartida.
+          required: true
