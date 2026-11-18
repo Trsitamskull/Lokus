@@ -1,0 +1,27 @@
+name: Mejorar la documentación
+description: Reporta información faltante, confusa o incorrecta.
+title: "[Documentación]: "
+labels:
+  - "tipo: documentación"
+  - "estado: por revisar"
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Ubicación
+      description: Indica el archivo, sección o enlace que necesita cambios.
+      placeholder: "README.md, sección Instalación"
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: ¿Qué está mal o falta?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Corrección propuesta
+    validations:
+      required: false

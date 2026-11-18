@@ -1,0 +1,52 @@
+name: Solicitar una funcionalidad
+description: Propón una capacidad nueva para Lokus.
+title: "[Funcionalidad]: "
+labels:
+  - "tipo: funcionalidad"
+  - "estado: por revisar"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Las mejores propuestas explican el problema que resuelven, no solo la solución imaginada.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema o necesidad
+      description: ¿Qué tarea es difícil, repetitiva o imposible actualmente?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propuesta
+      description: Describe cómo te gustaría que funcionara.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas consideradas
+      description: ¿Cómo resuelves hoy esta necesidad? ¿Qué otras opciones evaluaste?
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área relacionada
+      options:
+        - Interfaz
+        - Planillas Excel
+        - Autocompletado con IA
+        - Estadísticas
+        - Instalación o actualización
+        - Otro
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Comprobaciones
+      options:
+        - label: He buscado propuestas similares antes de crear esta.
+          required: true

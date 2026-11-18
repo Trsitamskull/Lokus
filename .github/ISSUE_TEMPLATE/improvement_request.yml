@@ -1,0 +1,48 @@
+name: Solicitar una mejora
+description: Sugiere cómo hacer mejor una función existente.
+title: "[Mejora]: "
+labels:
+  - "tipo: mejora"
+  - "estado: por revisar"
+body:
+  - type: textarea
+    id: current
+    attributes:
+      label: Función actual
+      description: ¿Qué parte de Lokus quieres mejorar y cómo funciona hoy?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Mejora propuesta
+      description: Explica el cambio esperado y por qué sería útil.
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impacto esperado
+      options:
+        - Ahorra tiempo
+        - Reduce errores
+        - Mejora la accesibilidad
+        - Mejora el rendimiento
+        - Mejora la claridad de la interfaz
+        - Otro
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Contexto adicional
+      description: Incluye ejemplos, capturas o casos de uso sin datos sensibles.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Comprobaciones
+      options:
+        - label: He buscado solicitudes similares antes de crear esta.
+          required: true
