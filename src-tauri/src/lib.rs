@@ -1,9 +1,15 @@
 pub mod ai;
+pub mod aprendizaje;
 pub mod config;
 pub mod excel;
 pub mod models;
 
-use ai::{extraer_datos_audiencia_ia, AiAudienciaOutput};
+use ai::{analizar_correccion_ia, extraer_datos_audiencia_ia, AiAudienciaOutput};
+use aprendizaje::{
+    aplicar_analisis_en, descartar_aclaracion_en, exportar_aprendizaje_ia,
+    guardar_nota_aclaracion_en, obtener_pendientes_analisis_en, obtener_resumen_aprendizaje,
+    registrar_resultado_ia, ruta_memoria, ResumenAprendizaje,
+};
 use config::{
     actualizar_config, actualizar_tema, agregar_defensor, cargar_config_publica,
     eliminar_defensor, renombrar_defensor, ActualizarConfig, ConfigPublica,
@@ -11,9 +17,12 @@ use config::{
 use excel::{
     actualizar_audiencia_existente, actualizar_defensor_archivo, crear_copia_plantilla,
     descargar_archivo, eliminar_archivo, eliminar_registro_audiencia, guardar_nueva_audiencia,
-    leer_archivo_completo, listar_archivos, listar_respaldos, restaurar_respaldo, RespaldoInfo,
+    leer_archivo_completo, listar_archivos, listar_respaldos, obtener_estadisticas_globales,
+    restaurar_respaldo, RespaldoInfo,
 };
-use models::{validar_audiencia, AudienciaInput, RegistroAudiencia, TotalesExcel};
+use models::{
+    validar_audiencia, AudienciaInput, EstadisticasGlobales, RegistroAudiencia, TotalesExcel,
+};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -170,7 +179,97 @@ fn cmd_eliminar_defensor(nombre: String) -> Result<ConfigPublica, String> {
 
 #[tauri::command]
 async fn cmd_autocompletar_ia(texto: String) -> Result<AiAudienciaOutput, String> {
-    extraer_datos_audiencia_ia(&texto).await
+    let resultado = extraer_datos_audiencia_ia(&texto).await?;
+    // Si quedó alguna corrección pendiente por falta de conexión previa, intentarla en segundo plano
+    tauri::async_runtime::spawn(async move {
+        let pendientes = obtener_pendientes_analisis_en(&ruta_memoria(), 1);
+        for corr in pendientes {
+            if let Ok(analisis) = analizar_correccion_ia(&corr).await {
+                let _ = aplicar_analisis_en(&ruta_memoria(), &corr.id, &analisis);
+            }
+        }
+    });
+    Ok(resultado)
+}
+
+/// Compara lo que propuso la IA con lo que el usuario guardó, almacena la corrección si la hay
+/// y ejecuta la 2ª llamada de análisis únicamente cuando existen diferencias.
+#[tauri::command]
+async fn cmd_registrar_resultado_ia(
+    texto: String,
+    prediccion: AudienciaInput,
+    final_usuario: AudienciaInput,
+) -> Result<ResumenAprendizaje, String> {
+    let (mut resumen, nueva_correccion) =
+        ejecutar_en_hilo_io(move || registrar_resultado_ia(&texto, &prediccion, &final_usuario))
+            .await?;
+
+    if let Some(corr) = nueva_correccion {
+        if let Ok(analisis) = analizar_correccion_ia(&corr).await {
+            let id = corr.id;
+            if let Ok(actualizado) =
+                ejecutar_en_hilo_io(move || aplicar_analisis_en(&ruta_memoria(), &id, &analisis))
+                    .await
+            {
+                resumen = actualizado;
+            }
+        }
+    }
+
+    Ok(resumen)
+}
+
+#[tauri::command]
+async fn cmd_responder_aclaracion_ia(
+    correccion_id: String,
+    nota: String,
+) -> Result<ResumenAprendizaje, String> {
+    let id_clon = correccion_id.clone();
+    let nota_clon = nota.clone();
+    let (mut resumen, corr_opt) = ejecutar_en_hilo_io(move || {
+        guardar_nota_aclaracion_en(&ruta_memoria(), &id_clon, &nota_clon)
+    })
+    .await?;
+
+    if let Some(corr) = corr_opt {
+        if let Ok(mut analisis) = analizar_correccion_ia(&corr).await {
+            analisis.necesita_aclaracion = false;
+            let id_ref = corr.id;
+            if let Ok(actualizado) =
+                ejecutar_en_hilo_io(move || aplicar_analisis_en(&ruta_memoria(), &id_ref, &analisis))
+                    .await
+            {
+                resumen = actualizado;
+            }
+        }
+    }
+
+    Ok(resumen)
+}
+
+#[tauri::command]
+async fn cmd_descartar_aclaracion_ia(correccion_id: String) -> Result<ResumenAprendizaje, String> {
+    ejecutar_en_hilo_io(move || descartar_aclaracion_en(&ruta_memoria(), &correccion_id)).await
+}
+
+#[tauri::command]
+async fn cmd_resumen_aprendizaje_ia() -> Result<ResumenAprendizaje, String> {
+    ejecutar_en_hilo_io(|| Ok(obtener_resumen_aprendizaje())).await
+}
+
+#[tauri::command]
+async fn cmd_exportar_aprendizaje_ia() -> Result<String, String> {
+    ejecutar_en_hilo_io(exportar_aprendizaje_ia).await
+}
+
+#[tauri::command]
+async fn cmd_obtener_estadisticas(
+    anio: Option<i32>,
+    mes: Option<u32>,
+    archivo: Option<String>,
+    defensor: Option<String>,
+) -> Result<EstadisticasGlobales, String> {
+    ejecutar_en_hilo_io(move || obtener_estadisticas_globales(anio, mes, archivo, defensor)).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -188,6 +287,7 @@ pub fn run() {
             cmd_eliminar_registro,
             cmd_listar_respaldos,
             cmd_restaurar_respaldo,
+            cmd_obtener_estadisticas,
             cmd_obtener_config,
             cmd_guardar_config,
             cmd_guardar_tema,
@@ -195,6 +295,11 @@ pub fn run() {
             cmd_renombrar_defensor,
             cmd_eliminar_defensor,
             cmd_autocompletar_ia,
+            cmd_registrar_resultado_ia,
+            cmd_responder_aclaracion_ia,
+            cmd_descartar_aclaracion_ia,
+            cmd_resumen_aprendizaje_ia,
+            cmd_exportar_aprendizaje_ia,
         ])
         .run(tauri::generate_context!())
         .expect("error al ejecutar la aplicación Tauri");

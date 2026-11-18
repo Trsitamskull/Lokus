@@ -2,7 +2,9 @@
   import {
     Scale,
     Plus,
+    X,
     FileSpreadsheet,
+    UserCheck,
     History,
     Download,
     Trash2,
@@ -17,8 +19,11 @@
     totales,
     aiStatus,
     theme = "dark",
+    mobileOpen = false,
+    onCloseMobile,
     onCrearArchivo,
     onSeleccionarArchivo,
+    onAbrirDefensorArchivo,
     onAbrirRespaldos,
     onDescargarArchivo,
     onEliminarArchivo,
@@ -28,7 +33,16 @@
   } = $props();
 </script>
 
-<aside class="sidebar">
+{#if mobileOpen}
+  <button
+    type="button"
+    class="sidebar-backdrop mobile-open"
+    aria-label="Cerrar panel de planillas"
+    onclick={onCloseMobile}
+  ></button>
+{/if}
+
+<aside class="sidebar {mobileOpen ? 'mobile-open' : ''}">
   <div class="sidebar-brand">
     <div class="brand-id">
       <span class="brand-mark">
@@ -36,15 +50,28 @@
       </span>
       <span>Lokus Judicial</span>
     </div>
-    <button
-      type="button"
-      class="mini-icon-btn"
-      onclick={onCrearArchivo}
-      title="Crear nuevo archivo Excel (Ctrl+N)"
-      aria-label="Crear nuevo archivo Excel"
-    >
-      <Plus size={16} strokeWidth={2.2} />
-    </button>
+    <div class="sidebar-brand-actions">
+      <button
+        type="button"
+        class="mini-icon-btn"
+        onclick={onCrearArchivo}
+        title="Crear nuevo archivo Excel (Ctrl+N)"
+        aria-label="Crear nuevo archivo Excel"
+      >
+        <Plus size={16} strokeWidth={2.2} />
+      </button>
+      {#if mobileOpen}
+        <button
+          type="button"
+          class="mini-icon-btn sidebar-close-btn"
+          onclick={onCloseMobile}
+          title="Ocultar panel"
+          aria-label="Ocultar panel"
+        >
+          <X size={15} />
+        </button>
+      {/if}
+    </div>
   </div>
 
   <div class="sidebar-section-header">
@@ -52,7 +79,7 @@
     <span>{archivosDisponibles.length}</span>
   </div>
 
-  <div class="sidebar-files">
+  <div class="sidebar-files scroller">
     {#if archivosDisponibles.length === 0}
       <div class="sidebar-empty">
         No hay planillas creadas.<br />
@@ -65,12 +92,24 @@
           <button
             type="button"
             class="sidebar-file-btn"
-            onclick={() => onSeleccionarArchivo(arch)}
+            onclick={() => {
+              onSeleccionarArchivo(arch);
+              onCloseMobile?.();
+            }}
           >
             <FileSpreadsheet size={15} strokeWidth={1.9} />
             <span class="file-name-truncate">{arch.replace(/\.xlsx$/i, "")}</span>
           </button>
           <div class="file-row-actions">
+            <button
+              type="button"
+              class="mini-icon-btn"
+              onclick={() => onAbrirDefensorArchivo(arch)}
+              title="Asignar o editar defensor público"
+              aria-label="Asignar o editar defensor público"
+            >
+              <UserCheck size={13} />
+            </button>
             <button
               type="button"
               class="mini-icon-btn"
@@ -131,15 +170,21 @@
     <div class="sidebar-bottom-bar">
       <button
         type="button"
-        class="ai-config-trigger"
+        class="ai-config-trigger {aiStatus.configured ? '' : 'is-unconfigured'}"
         onclick={onAbrirConfigIa}
-        title="Configurar proveedor de IA"
+        title={aiStatus.configured ? "Configurar proveedor de IA" : "Falta configurar tu clave API de IA"}
       >
         <span class="led {aiStatus.configured ? 'on' : 'off'}"></span>
-        <span>{aiStatus.provider === "gemini" ? "Gemini" : "OpenAI"} · {aiStatus.model}</span>
+        <span class="ai-trigger-label">
+          {#if aiStatus.configured}
+            {aiStatus.provider === "gemini" ? "Gemini" : "OpenAI"} · {aiStatus.model}
+          {:else}
+            Configurar IA
+          {/if}
+        </span>
       </button>
 
-      <div style="display: flex; gap: 3px">
+      <div style="display: flex; gap: 3px; flex-shrink: 0">
         <button
           type="button"
           class="mini-icon-btn"
@@ -153,7 +198,7 @@
           type="button"
           class="mini-icon-btn"
           onclick={onToggleTema}
-          title="Cambiar tema claro/oscuro (Ctrl+T)"
+          title="Cambiar tema Azul Niebla / Oscuro (Ctrl+T)"
           aria-label="Cambiar tema"
         >
           {#if theme === "dark"}

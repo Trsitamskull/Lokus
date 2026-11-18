@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "aciertos": 0,
+  "reglas": [
+    {
+      "id": "base-abreviacion-cto",
+      "tipo_error": "abreviacion",
+      "regla": "Mantener la abreviación 'CTO' / 'Cto' tal cual en el nombre del juzgado sin expandirla, porque puede significar Circuito o Conocimiento.",
+      "refuerzos": 5,
+      "actualizada": "2025-09-21T00:00:00-05:00"
+    },
+    {
+      "id": "base-jerarquia-causas-reacciones",
+      "tipo_error": "motivo",
+      "regla": "Cuando concurran una causa principal (Fiscalía, Juez, INPEC, Usuario) y una reacción en primera persona del defensor ('por eso solicité reprogramar'), el motivo es la causa principal y la reacción va en observaciones.",
+      "refuerzos": 5,
+      "actualizada": "2025-09-21T00:00:00-05:00"
+    },
+    {
+      "id": "base-defensor-confianza-contractual",
+      "tipo_error": "motivo",
+      "regla": "Expresiones como 'abogado contractual', 'abogado privado', 'def. confianza' o 'el abogado del procesado' corresponden siempre a 'Defensor Confianza' y nunca a 'Defensor Público'.",
+      "refuerzos": 5,
+      "actualizada": "2025-09-21T00:00:00-05:00"
+    }
+  ],
+  "correcciones": [
+    {
+      "id": "base-caso-dostin-fiscalia",
+      "registrada": "2025-09-21T11:31:29-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-4o-mini",
+      "texto_original": "Tercero penal del circuito, [RADICADO] [PROCESADO] – JUICIO, 9:00 A.M. JUEVES 31 julio, fracasa por solicitud de la fiscalía, no fijan fecha, no se abre audio.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "31/07/2025",
+        "hora": "09:00",
+        "juzgado": "Tercero penal del circuito",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Sin observaciones adicionales"
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "31/07/2025",
+        "hora": "09:00",
+        "juzgado": "Juzgado Tercero Penal del Circuito",
+        "realizada": "NO",
+        "motivo": "Fiscalía",
+        "observaciones": "Fracasa por solicitud de la Fiscalía; no se fijó nueva fecha ni se abrió audio."
+      },
+      "campos": [
+        {
+          "campo": "juzgado",
+          "valor_ia": "Tercero penal del circuito",
+          "valor_usuario": "Juzgado Tercero Penal del Circuito"
+        },
+        {
+          "campo": "realizada",
+          "valor_ia": "SI",
+          "valor_usuario": "NO"
+        },
+        {
+          "campo": "motivo",
+          "valor_ia": "",
+          "valor_usuario": "Fiscalía"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Si menciona 'fracasa por solicitud de la fiscalía', marcar realizada='NO' con motivo='Fiscalía' y anteponer 'Juzgado' al nombre del despacho si falta.",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true
+    },
+    {
+      "id": "base-caso-cto-juzgado",
+      "registrada": "2025-09-21T11:31:29-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-4o-mini",
+      "texto_original": "Audiencia preparatoria en el Juzgado 3 Cto Penal radicado [RADICADO] contra [PROCESADO] el 15 de agosto a las 2:30 PM. Se realizó sin novedad.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia preparatoria",
+        "fecha": "15/08/2025",
+        "hora": "14:30",
+        "juzgado": "Juzgado 3 Circuito Penal",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó sin novedad"
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia preparatoria",
+        "fecha": "15/08/2025",
+        "hora": "14:30",
+        "juzgado": "Juzgado 3 Cto Penal",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó sin novedad"
+      },
+      "campos": [
+        {
+          "campo": "juzgado",
+          "valor_ia": "Juzgado 3 Circuito Penal",
+          "valor_usuario": "Juzgado 3 Cto Penal"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "No expandir 'Cto' / 'CTO' como 'Circuito' en el campo juzgado; dejar la abreviación tal como viene en el texto.",
+      "pregunta_ia": "",
+      "nota_usuario": "CTO puede ser Circuito o Conocimiento, mejor dejarlo abreviado.",
+      "exportada": true
+    }
+  ]
+}

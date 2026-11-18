@@ -1,14 +1,16 @@
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
 use umya_spreadsheet::{reader, writer, Spreadsheet, Worksheet};
 
 use crate::models::{
-    buscar_posible_duplicado, mapear_motivo_a_indice, AudienciaInput, RegistroAudiencia,
-    TotalesExcel, MOTIVOS_LABELS,
+    buscar_posible_duplicado, mapear_motivo_a_indice, AudienciaInput, EstadisticasGlobales,
+    MesDisponible, PlanillaResumen, RegistroAudiencia, ResumenDefensor, TotalesExcel,
+    MOTIVOS_LABELS,
 };
 
 const PLANTILLA_BYTES: &[u8] = include_bytes!("../../templates/plantilla_audiencias.xlsx");
@@ -137,11 +139,10 @@ pub fn ruta_archivo(nombre_archivo: &str) -> Result<PathBuf, String> {
     Ok(obtener_carpeta_archivos().join(nombre_final))
 }
 
-pub fn listar_archivos() -> Result<Vec<String>, String> {
-    let carpeta = obtener_carpeta_archivos();
-    fs::create_dir_all(&carpeta).map_err(|e| format!("Error creando carpeta: {}", e))?;
+pub fn listar_archivos_en(carpeta: &Path) -> Result<Vec<String>, String> {
+    fs::create_dir_all(carpeta).map_err(|e| format!("Error creando carpeta: {}", e))?;
 
-    let mut archivos: Vec<String> = fs::read_dir(&carpeta)
+    let mut archivos: Vec<String> = fs::read_dir(carpeta)
         .map_err(|e| format!("Error leyendo carpeta: {}", e))?
         .filter_map(|entry| {
             let entry = entry.ok()?;
@@ -156,6 +157,10 @@ pub fn listar_archivos() -> Result<Vec<String>, String> {
 
     archivos.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
     Ok(archivos)
+}
+
+pub fn listar_archivos() -> Result<Vec<String>, String> {
+    listar_archivos_en(&obtener_carpeta_archivos())
 }
 
 fn leer_defensor_de_hoja(ws: &Worksheet) -> String {
@@ -225,15 +230,20 @@ pub fn eliminar_archivo(nombre_archivo: &str) -> Result<(), String> {
     fs::remove_file(&ruta).map_err(|e| format!("No se pudo eliminar el archivo: {}", e))
 }
 
+/// Carpeta de Descargas del usuario (o su carpeta personal si no existe) para exportaciones.
+pub fn carpeta_descargas() -> Result<PathBuf, String> {
+    dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "No se pudo localizar la carpeta de Descargas".to_string())
+}
+
 pub fn descargar_archivo(nombre_archivo: &str) -> Result<String, String> {
     let origen = ruta_archivo(nombre_archivo)?;
     if !origen.exists() {
         return Err("Archivo no encontrado.".to_string());
     }
 
-    let carpeta_descargas = dirs::download_dir()
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| "No se pudo localizar la carpeta de Descargas".to_string())?;
+    let carpeta_descargas = carpeta_descargas()?;
 
     let nombre_limpio = origen
         .file_name()
@@ -916,6 +926,247 @@ pub fn eliminar_registro_audiencia(
     eliminar_registro_en(&ruta, fila_excel, radicado_esperado)
 }
 
+fn nombre_mes_es(mes: u32) -> &'static str {
+    match mes {
+        1 => "Enero",
+        2 => "Febrero",
+        3 => "Marzo",
+        4 => "Abril",
+        5 => "Mayo",
+        6 => "Junio",
+        7 => "Julio",
+        8 => "Agosto",
+        9 => "Septiembre",
+        10 => "Octubre",
+        11 => "Noviembre",
+        12 => "Diciembre",
+        _ => "Mes",
+    }
+}
+
+fn redondear_1_decimal(val: f64) -> f64 {
+    (val * 10.0).round() / 10.0
+}
+
+#[derive(Default)]
+struct AcumuladorDefensor {
+    display: String,
+    archivos: Vec<String>,
+    total: u32,
+    si: u32,
+    no: u32,
+    motivos: [u32; 8],
+}
+
+/// Consolida estadísticas globales o filtradas por año/mes/planilla/defensor sobre los Excel creados.
+pub fn calcular_estadisticas_en(
+    carpeta: &Path,
+    anio: Option<i32>,
+    mes: Option<u32>,
+    archivo_filtro: Option<&str>,
+    defensor_filtro: Option<&str>,
+) -> Result<EstadisticasGlobales, String> {
+    let nombres = listar_archivos_en(carpeta)?;
+    let filtro_archivo_limpio = archivo_filtro
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let filtro_defensor_limpio = defensor_filtro
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|s| !s.is_empty());
+
+    let mut stats = EstadisticasGlobales {
+        total_planillas: nombres.len() as u32,
+        ..Default::default()
+    };
+
+    let mut meses_map: BTreeMap<(i32, u32), u32> = BTreeMap::new();
+    let mut defensores_map: HashMap<String, AcumuladorDefensor> = HashMap::new();
+    let mut defensores_disponibles_map: HashMap<String, String> = HashMap::new();
+
+    for nombre in &nombres {
+        let ruta = carpeta.join(nombre);
+        let (registros, _totales, defensor) = leer_archivo_en(&ruta)
+            .map_err(|e| format!("Error leyendo '{}': {}", nombre, e))?;
+
+        let defensor_norm = defensor.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !defensor_norm.is_empty() {
+            defensores_disponibles_map
+                .entry(defensor_norm.to_lowercase())
+                .or_insert_with(|| defensor_norm.clone());
+        }
+
+        stats.planillas.push(PlanillaResumen {
+            archivo: nombre.clone(),
+            defensor: defensor_norm.clone(),
+            num_registros: registros.len() as u32,
+        });
+
+        if let Some(filtro_arch) = filtro_archivo_limpio {
+            if nombre != filtro_arch {
+                continue;
+            }
+        }
+
+        if let Some(ref filtro_def) = filtro_defensor_limpio {
+            if filtro_def == "__SIN_ASIGNAR__" {
+                if !defensor_norm.is_empty() {
+                    continue;
+                }
+            } else if defensor_norm.to_lowercase() != filtro_def.to_lowercase() {
+                continue;
+            }
+        }
+
+        let mut tuvo_datos_en_rango = false;
+
+        for r in &registros {
+            let fecha_parsed = NaiveDate::parse_from_str(r.fecha.trim(), "%d/%m/%Y").ok();
+
+            if let Some(d) = fecha_parsed {
+                *meses_map.entry((d.year(), d.month())).or_insert(0) += 1;
+            }
+
+            let cumple_periodo = match (anio, mes) {
+                (Some(y), Some(m)) => fecha_parsed
+                    .map(|d| d.year() == y && d.month() == m)
+                    .unwrap_or(false),
+                (Some(y), None) => fecha_parsed.map(|d| d.year() == y).unwrap_or(false),
+                (None, Some(m)) => fecha_parsed.map(|d| d.month() == m).unwrap_or(false),
+                (None, None) => true,
+            };
+
+            if !cumple_periodo {
+                continue;
+            }
+
+            tuvo_datos_en_rango = true;
+            stats.total_audiencias += 1;
+            if r.realizada == "SI" {
+                stats.total_si += 1;
+            } else if r.realizada == "NO" {
+                stats.total_no += 1;
+            }
+            for i in 0..8 {
+                if r.motivos_flags[i] {
+                    stats.totales_motivos[i] += 1;
+                }
+            }
+
+            let (clave_def, display_def) = if defensor.trim().is_empty() {
+                (
+                    format!("__sin_asignar__:{}", nombre.to_lowercase()),
+                    format!("Sin asignar ({})", nombre.trim_end_matches(".xlsx")),
+                )
+            } else {
+                let norm = defensor.split_whitespace().collect::<Vec<_>>().join(" ");
+                (norm.to_lowercase(), norm)
+            };
+
+            let acc = defensores_map
+                .entry(clave_def)
+                .or_insert_with(|| AcumuladorDefensor {
+                    display: display_def,
+                    ..Default::default()
+                });
+            if !acc.archivos.contains(nombre) {
+                acc.archivos.push(nombre.clone());
+            }
+            acc.total += 1;
+            if r.realizada == "SI" {
+                acc.si += 1;
+            } else if r.realizada == "NO" {
+                acc.no += 1;
+            }
+            for i in 0..8 {
+                if r.motivos_flags[i] {
+                    acc.motivos[i] += 1;
+                }
+            }
+        }
+
+        if tuvo_datos_en_rango {
+            stats.total_planillas_con_datos += 1;
+        }
+    }
+
+    if stats.total_audiencias > 0 {
+        stats.efectividad_pct =
+            redondear_1_decimal((stats.total_si as f64 / stats.total_audiencias as f64) * 100.0);
+    }
+
+    stats.meses_disponibles = meses_map
+        .into_iter()
+        .rev()
+        .map(|((y, m), cantidad)| MesDisponible {
+            anio: y,
+            mes: m,
+            etiqueta: format!("{} {}", nombre_mes_es(m), y),
+            cantidad,
+        })
+        .collect();
+
+    let mut por_defensor: Vec<ResumenDefensor> = defensores_map
+        .into_values()
+        .map(|mut acc| {
+            acc.archivos.sort();
+            let efect = if acc.total > 0 {
+                redondear_1_decimal((acc.si as f64 / acc.total as f64) * 100.0)
+            } else {
+                0.0
+            };
+            let mut best_idx = None;
+            let mut best_val = 0u32;
+            for i in 0..8 {
+                if acc.motivos[i] > best_val {
+                    best_val = acc.motivos[i];
+                    best_idx = Some(i);
+                }
+            }
+            let motivo_frecuente = best_idx
+                .map(|i| format!("{} ({})", MOTIVOS_LABELS[i], best_val))
+                .unwrap_or_else(|| "—".to_string());
+
+            ResumenDefensor {
+                defensor: acc.display,
+                archivos: acc.archivos,
+                total: acc.total,
+                total_si: acc.si,
+                total_no: acc.no,
+                efectividad_pct: efect,
+                motivo_frecuente,
+            }
+        })
+        .collect();
+
+    por_defensor.sort_by(|a, b| {
+        b.total
+            .cmp(&a.total)
+            .then_with(|| a.defensor.to_lowercase().cmp(&b.defensor.to_lowercase()))
+    });
+    stats.por_defensor = por_defensor;
+
+    let mut defs_disp: Vec<String> = defensores_disponibles_map.into_values().collect();
+    defs_disp.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    stats.defensores_disponibles = defs_disp;
+
+    Ok(stats)
+}
+
+pub fn obtener_estadisticas_globales(
+    anio: Option<i32>,
+    mes: Option<u32>,
+    archivo: Option<String>,
+    defensor: Option<String>,
+) -> Result<EstadisticasGlobales, String> {
+    calcular_estadisticas_en(
+        &obtener_carpeta_archivos(),
+        anio,
+        mes,
+        archivo.as_deref(),
+        defensor.as_deref(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1115,5 +1366,71 @@ mod tests {
         assert!(sanitizar_nombre_archivo("   ").is_err());
         assert!(sanitizar_nombre_archivo("CON").is_err());
         assert!(ruta_archivo("../secreto.xlsx").is_err());
+    }
+
+    #[test]
+    fn test_estadisticas_globales_por_mes_y_defensor() {
+        let dir = preparar_temp_dir("stats_globales");
+        let p1 = dir.join("paula.xlsx");
+        let p2 = dir.join("carlos.xlsx");
+        let p3 = dir.join("libre.xlsx");
+
+        crear_copia_plantilla_en(&p1, Some("Dra. Paula Ríos")).unwrap();
+        crear_copia_plantilla_en(&p2, Some("Dr. Carlos Mendoza")).unwrap();
+        crear_copia_plantilla_en(&p3, None).unwrap();
+
+        guardar_nueva_audiencia_en(&p1, &ejemplo_audiencia("R-1", "10/08/2025", "09:00", "SI", ""), false).unwrap();
+        guardar_nueva_audiencia_en(&p1, &ejemplo_audiencia("R-2", "11/08/2025", "10:00", "NO", "Fiscalía"), false).unwrap();
+        guardar_nueva_audiencia_en(&p1, &ejemplo_audiencia("R-3", "20/07/2025", "11:00", "SI", ""), false).unwrap();
+
+        guardar_nueva_audiencia_en(&p2, &ejemplo_audiencia("R-4", "15/08/2025", "14:00", "NO", "INPEC"), false).unwrap();
+        guardar_nueva_audiencia_en(&p3, &ejemplo_audiencia("R-5", "18/08/2025", "15:00", "SI", ""), false).unwrap();
+
+        // Todo el historial sin filtros
+        let todo = calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        assert_eq!(todo.total_planillas, 3);
+        assert_eq!(todo.total_planillas_con_datos, 3);
+        assert_eq!(todo.total_audiencias, 5);
+        assert_eq!(todo.total_si, 3);
+        assert_eq!(todo.total_no, 2);
+        assert_eq!(todo.efectividad_pct, 60.0);
+        assert_eq!(todo.totales_motivos[1], 1); // Fiscalía
+        assert_eq!(todo.totales_motivos[3], 1); // INPEC
+        assert_eq!(todo.meses_disponibles.len(), 2);
+        assert_eq!(todo.meses_disponibles[0].etiqueta, "Agosto 2025");
+        assert_eq!(todo.meses_disponibles[0].cantidad, 4);
+        assert_eq!(todo.meses_disponibles[1].etiqueta, "Julio 2025");
+        assert_eq!(todo.meses_disponibles[1].cantidad, 1);
+        assert_eq!(todo.defensores_disponibles, vec!["Dr. Carlos Mendoza", "Dra. Paula Ríos"]);
+        assert_eq!(todo.por_defensor[0].defensor, "Dra. Paula Ríos");
+        assert_eq!(todo.por_defensor[0].total, 3);
+        assert_eq!(todo.por_defensor[0].motivo_frecuente, "Fiscalía (1)");
+
+        // Filtro por Agosto 2025
+        let ago = calcular_estadisticas_en(&dir, Some(2025), Some(8), None, None).unwrap();
+        assert_eq!(ago.total_audiencias, 4);
+        assert_eq!(ago.total_si, 2);
+        assert_eq!(ago.total_no, 2);
+        assert_eq!(ago.por_defensor.len(), 3);
+
+        // Filtro por archivo específico (conservando lista completa de planillas y defensores)
+        let solo_paula = calcular_estadisticas_en(&dir, Some(2025), Some(8), Some("paula.xlsx"), None).unwrap();
+        assert_eq!(solo_paula.total_audiencias, 2);
+        assert_eq!(solo_paula.planillas.len(), 3);
+        assert_eq!(solo_paula.por_defensor.len(), 1);
+        assert_eq!(solo_paula.por_defensor[0].defensor, "Dra. Paula Ríos");
+
+        // Filtro por defensor directo (todos los meses) y por planillas sin asignar
+        let por_carlos = calcular_estadisticas_en(&dir, None, None, None, Some("dr. carlos mendoza")).unwrap();
+        assert_eq!(por_carlos.total_audiencias, 1);
+        assert_eq!(por_carlos.total_no, 1);
+        assert_eq!(por_carlos.por_defensor[0].defensor, "Dr. Carlos Mendoza");
+        assert_eq!(por_carlos.meses_disponibles.len(), 1);
+
+        let sin_asignar = calcular_estadisticas_en(&dir, None, None, None, Some("__SIN_ASIGNAR__")).unwrap();
+        assert_eq!(sin_asignar.total_audiencias, 1);
+        assert_eq!(sin_asignar.total_si, 1);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

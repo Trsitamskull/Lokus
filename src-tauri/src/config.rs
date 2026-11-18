@@ -126,6 +126,12 @@ fn obtener_ruta_config() -> PathBuf {
     fallback.join("settings.json")
 }
 
+/// Ruta de un archivo auxiliar ubicado en la misma carpeta de configuración que `settings.json`
+/// (`config/` en desarrollo, carpeta de configuración del sistema en producción).
+pub fn ruta_en_carpeta_config(nombre_archivo: &str) -> PathBuf {
+    obtener_ruta_config().with_file_name(nombre_archivo)
+}
+
 fn intentar_migrar_config_python() -> Option<String> {
     let posibles = [
         PathBuf::from("config/config.py"),

@@ -104,7 +104,8 @@
     </div>
   {/if}
 
-  <div class="records-sheet">
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <section class="records-sheet scroller" tabindex="0" aria-label="Registros en la planilla">
     <table class="records-table">
       <thead>
         <tr>
@@ -129,21 +130,21 @@
         {:else}
           {#each registrosFiltrados as reg}
             <tr>
-              <td style="color: var(--text-muted)">{reg.numero}</td>
-              <td style="font-weight: 600">{reg.radicado}</td>
-              <td>{reg.tipo}</td>
-              <td style="font-variant-numeric: tabular-nums">{reg.fecha}</td>
-              <td style="font-variant-numeric: tabular-nums">{reg.hora || "—"}</td>
-              <td>{reg.juzgado}</td>
-              <td>
+              <td data-label="N°" style="color: var(--text-muted); font-variant-numeric: tabular-nums">{reg.numero}</td>
+              <td data-label="Radicado" style="font-weight: 600">{reg.radicado}</td>
+              <td data-label="Audiencia">{reg.tipo}</td>
+              <td data-label="Fecha" style="font-variant-numeric: tabular-nums">{reg.fecha}</td>
+              <td data-label="Hora" style="font-variant-numeric: tabular-nums">{reg.hora || "—"}</td>
+              <td data-label="Despacho">{reg.juzgado}</td>
+              <td data-label="Estado">
                 {#if reg.realizada === "SI"}
                   <span class="tag-si">SI</span>
                 {:else}
                   <span class="tag-no">NO</span>
                 {/if}
               </td>
-              <td>{reg.motivo || "—"}</td>
-              <td style="text-align: right">
+              <td data-label="Causal">{reg.motivo || "—"}</td>
+              <td data-label="Acciones" style="text-align: right">
                 <div style="display: inline-flex; gap: 4px">
                   <button
                     type="button"
@@ -179,5 +180,16 @@
         {/if}
       </tbody>
     </table>
+  </section>
+
+  <div class="fila111-footer">
+    <span class="fila111-title">Totales de la planilla</span>
+    <div class="fila111-metrics">
+      <span style="color: var(--status-si)">Realizadas: {totales.total_si}</span>
+      <span style="color: var(--status-no)">Aplazadas: {totales.total_no}</span>
+      <span style="color: var(--text-secondary)">
+        {MOTIVOS_LABELS.map((m, idx) => `${m}: ${totales.totales_motivos[idx] ?? 0}`).join(" · ")}
+      </span>
+    </div>
   </div>
 </div>

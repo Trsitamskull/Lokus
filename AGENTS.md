@@ -34,12 +34,13 @@ Este documento constituye la memoria persistente, la especificación operativa y
 1. **Frontend y vistas (`src/` e `index.html`):**
    - `src/App.svelte`: Orquestador principal de estado, barra superior, comandos IPC y atajos globales.
    - `src/lib/constants.js`: Catálogos oficiales del frontend (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`, `HORAS_RAPIDAS`).
-   - `src/lib/components/`: Componentes modulares Svelte 5 (`Sidebar.svelte`, `AudienciaForm.svelte`, `RegistrosTable.svelte`, `Modals.svelte`, `CustomSelect.svelte`).
-   - `src/app.css`: Sistema de temas (`data-theme="dark"` y `data-theme="light"`) basado en variables CSS.
+   - `src/lib/components/`: Componentes modulares Svelte 5 (`Sidebar.svelte`, `AudienciaForm.svelte`, `RegistrosTable.svelte`, `EstadisticasView.svelte`, `Modals.svelte`, `CustomSelect.svelte`, `AutocompleteInput.svelte`).
+   - `src/app.css`: Sistema de temas (`data-theme="dark"` Warm Obsidian y `data-theme="light"` Azul Niebla Sereno), barras de scroll integradas y CSS `@container` responsivo.
 2. **Backend y lógica de dominio en Rust (`src-tauri/src/`):**
    - `models.rs`: Estructuras `AudienciaInput`, `RegistroAudiencia`, `TotalesExcel`, catálogos oficiales (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`), mapeo de columnas `mapear_motivo_a_indice` y validadores.
    - `excel.rs`: Motor de lectura/escritura sobre `umya-spreadsheet`, plantilla embebida con `include_bytes!`, ordenamiento cronológico descendente y cálculo de totales.
    - `ai.rs`: Preprocesador de jerga/abreviaciones judiciales colombianas, cliente HTTP asíncrono dual (OpenAI + Gemini) y postprocesador de motivos y observaciones.
+   - `aprendizaje.rs`: Aprendizaje por correcciones del autocompletado con IA. Compara la predicción de la IA con lo guardado por el usuario, almacena las correcciones en `ia_aprendizaje.json` (misma carpeta que `settings.json`, ignorado en Git) y exporta un paquete anonimizado a Descargas (ícono de compartir del topbar).
    - `config.rs`: Lectura/escritura de `config/settings.json` y enmascaramiento de API Keys para la interfaz.
    - `lib.rs` y `main.rs`: Registro de comandos IPC (`#[tauri::command]`) y arranque de Tauri v2.
 3. **Plantilla oficial y datos de usuario:**

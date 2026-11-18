@@ -13,6 +13,7 @@ __pycache__/
 config/config.py
 config/config_local.py
 config/settings.json
+config/ia_aprendizaje.json*
 *.env
 *.env.*
 

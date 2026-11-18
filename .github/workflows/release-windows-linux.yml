@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - rust-tauri
     tags:
       - "v*"
@@ -46,9 +47,30 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Build Tauri Desktop App
+      - name: Build Tauri Desktop App & Publish to GitHub Releases
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tagName: v__VERSION__
+          releaseName: "Lokus v__VERSION__"
+          releaseBody: "Descarga directa de Lokus para Windows (Lokus.exe portable y Lokus-setup.exe con WebView2 incluido) y Linux (.AppImage, .deb, .rpm)."
+          releaseDraft: false
+          prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Adjuntar Lokus.exe portable a GitHub Releases
+        if: matrix.platform == 'windows-latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload v3.0.0 src-tauri/target/release/Lokus.exe --clobber
+
+      - name: Upload Windows .exe (portable + setup con WebView2)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lokus-Windows-exe
+          path: |
+            src-tauri/target/release/Lokus.exe
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi

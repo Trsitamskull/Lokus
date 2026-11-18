@@ -79,6 +79,47 @@ pub struct DuplicadoDetectado {
     pub juzgado: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MesDisponible {
+    pub anio: i32,
+    pub mes: u32,
+    pub etiqueta: String,
+    pub cantidad: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumenDefensor {
+    pub defensor: String,
+    pub archivos: Vec<String>,
+    pub total: u32,
+    pub total_si: u32,
+    pub total_no: u32,
+    pub efectividad_pct: f64,
+    pub motivo_frecuente: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanillaResumen {
+    pub archivo: String,
+    pub defensor: String,
+    pub num_registros: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EstadisticasGlobales {
+    pub total_audiencias: u32,
+    pub total_si: u32,
+    pub total_no: u32,
+    pub efectividad_pct: f64,
+    pub totales_motivos: [u32; 8],
+    pub total_planillas: u32,
+    pub total_planillas_con_datos: u32,
+    pub meses_disponibles: Vec<MesDisponible>,
+    pub planillas: Vec<PlanillaResumen>,
+    pub defensores_disponibles: Vec<String>,
+    pub por_defensor: Vec<ResumenDefensor>,
+}
+
 /// Mapea cualquier variante del nombre de un motivo a su índice exacto de columna (0..8 -> Columnas I..P)
 pub fn mapear_motivo_a_indice(motivo: &str) -> Option<usize> {
     let m = motivo.trim().to_lowercase();

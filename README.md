@@ -12,10 +12,12 @@ Lokus/
 │   ├── lib/
 │   │   ├── constants.js               # Catálogos de audiencias, causales y horas rápidas
 │   │   └── components/
-│   │       ├── AudienciaForm.svelte   # Formulario principal + tira de registros recientes
-│   │       ├── CustomSelect.svelte    # Selector buscable para tipos de audiencia
+│   │       ├── AudienciaForm.svelte     # Formulario responsivo + barra superior de IA
+│   │       ├── AutocompleteInput.svelte # Input de texto con sugerencias integradas al tema
+│   │       ├── CustomSelect.svelte      # Selector buscable para audiencias, meses y planillas
+│   │       ├── EstadisticasView.svelte# Sección independiente de estadísticas mensuales
 │   │       ├── Modals.svelte          # Diálogos nativos (<dialog>): crear, IA, defensores, respaldos
-│   │       ├── RegistrosTable.svelte  # Tabla filtrable y chips de Fila 111
+│   │       ├── RegistrosTable.svelte  # Tabla responsiva y resumen oficial de Fila 111
 │   │       └── Sidebar.svelte         # Navegador de planillas (.xlsx), cupo y estado IA
 │   ├── App.svelte                     # Orquestador de estado y comandos Tauri
 │   ├── app.css                        # Variables CSS y temas Oscuro / Claro
@@ -25,6 +27,7 @@ Lokus/
 │   ├── icons/                         # Iconos de aplicación (PNG / ICO)
 │   ├── src/
 │   │   ├── ai.rs                      # Cliente OpenAI + Gemini y reglas jurídicas
+│   │   ├── aprendizaje.rs             # Aprendizaje por correcciones de la IA y exportación anonimizada
 │   │   ├── config.rs                  # Configuración en JSON y directorio de defensores
 │   │   ├── excel.rs                   # Motor Excel atómico, ordenamiento y 3 respaldos
 │   │   ├── lib.rs                     # Comandos IPC asíncronos (#[tauri::command])

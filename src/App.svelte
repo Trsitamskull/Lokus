@@ -1,15 +1,17 @@
 <script>
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { Sparkles, UserCheck } from "@lucide/svelte";
-  import { TIPOS_AUDIENCIA } from "./lib/constants.js";
+  import { FileText, List, PanelLeft, BarChart3, Share2 } from "@lucide/svelte";
+  import { TIPOS_AUDIENCIA, MOTIVOS_LABELS } from "./lib/constants.js";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import AudienciaForm from "./lib/components/AudienciaForm.svelte";
   import RegistrosTable from "./lib/components/RegistrosTable.svelte";
+  import EstadisticasView from "./lib/components/EstadisticasView.svelte";
   import Modals from "./lib/components/Modals.svelte";
 
   // Navegación y archivos
-  let vistaActiva = $state("formulario"); // "formulario" | "listado"
+  let vistaActiva = $state("formulario"); // "formulario" | "listado" | "estadisticas"
+  let sidebarMobileOpen = $state(false);
   let archivoActual = $state(null);
   let archivosDisponibles = $state([]);
   let registros = $state([]);
@@ -21,6 +23,25 @@
     total_no: 0,
     totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
   });
+
+  // Estadísticas globales / mensuales
+  let statsMesSeleccionado = $state(""); // "" = todos los meses, o "YYYY-MM"
+  let statsArchivoFiltro = $state(""); // "" = todas las planillas
+  let statsDefensorFiltro = $state(""); // "" = todos los defensores
+  let estadisticas = $state({
+    total_audiencias: 0,
+    total_si: 0,
+    total_no: 0,
+    efectividad_pct: 0,
+    totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
+    total_planillas: 0,
+    total_planillas_con_datos: 0,
+    meses_disponibles: [],
+    planillas: [],
+    defensores_disponibles: [],
+    por_defensor: [],
+  });
+  let cargandoEstadisticas = $state(false);
 
   // Formulario
   let radicado = $state("");
@@ -34,6 +55,17 @@
   let motivoSeleccionado = $state("");
   let observaciones = $state("");
   let inputRadicadoEl = $state(null);
+
+  // Aprendizaje de la IA: foto de lo que propuso el autocompletado para compararlo al guardar
+  let iaSnapshot = $state(null); // { texto, prediccion } | null
+  let aprendizaje = $state({
+    aciertos: 0,
+    total_correcciones: 0,
+    total_reglas: 0,
+    pendientes_exportar: 0,
+    aclaracion_pendiente: null,
+  });
+  let exportandoAprendizaje = $state(false);
 
   // Edición
   let modoEdicion = $state(false);
@@ -57,6 +89,8 @@
   let filtroMotivo = $state("");
 
   // Defensores y respaldos
+  let defensorTargetArchivo = $state(null);
+  let defensorTargetNombre = $state("");
   let filtroDefensores = $state("");
   let nuevoDefensorDirectorio = $state("");
   let defensorEditando = $state(null);
@@ -158,6 +192,83 @@
     }
   }
 
+  async function cargarEstadisticas() {
+    cargandoEstadisticas = true;
+    try {
+      let anio = null;
+      let mes = null;
+      if (statsMesSeleccionado && statsMesSeleccionado.includes("-")) {
+        const [yStr, mStr] = statsMesSeleccionado.split("-");
+        const yNum = Number.parseInt(yStr, 10);
+        const mNum = Number.parseInt(mStr, 10);
+        if (Number.isFinite(yNum) && Number.isFinite(mNum)) {
+          anio = yNum;
+          mes = mNum;
+        }
+      }
+      estadisticas = await invoke("cmd_obtener_estadisticas", {
+        anio,
+        mes,
+        archivo: statsArchivoFiltro || null,
+        defensor: statsDefensorFiltro || null,
+      });
+    } catch (e) {
+      mostrarToast(`Error calculando estadísticas: ${e}`, "error");
+    } finally {
+      cargandoEstadisticas = false;
+    }
+  }
+
+  function cambiarVista(destino) {
+    vistaActiva = destino;
+    if (destino === "estadisticas") {
+      cargarEstadisticas();
+    }
+  }
+
+  async function abrirPlanillaDesdeStats(nombreArchivo) {
+    await seleccionarArchivo(nombreArchivo);
+    vistaActiva = "listado";
+  }
+
+  async function copiarResumenEstadisticas() {
+    if (!estadisticas || estadisticas.total_audiencias === 0) return;
+    const mesObj = estadisticas.meses_disponibles.find(
+      (m) => `${m.anio}-${String(m.mes).padStart(2, "0")}` === statsMesSeleccionado
+    );
+    const periodo = mesObj ? mesObj.etiqueta : "Todos los meses";
+    const defEtiqueta =
+      statsDefensorFiltro === "__SIN_ASIGNAR__"
+        ? "Sin defensor asignado"
+        : statsDefensorFiltro;
+    const alcance = statsArchivoFiltro
+      ? `Planilla ${statsArchivoFiltro}`
+      : defEtiqueta
+        ? `Defensor: ${defEtiqueta}`
+        : `Todas las planillas (${estadisticas.total_planillas})`;
+    const causalesTexto = MOTIVOS_LABELS.map(
+      (m, i) => `  - ${m}: ${estadisticas.totales_motivos[i] ?? 0}`
+    ).join("\n");
+
+    const resumen = [
+      `RESUMEN DE AUDIENCIAS — LOKUS JUDICIAL`,
+      `Periodo: ${periodo}`,
+      `Alcance: ${alcance}`,
+      `Total audiencias: ${estadisticas.total_audiencias}`,
+      `Realizadas (SI): ${estadisticas.total_si} (${estadisticas.efectividad_pct.toFixed(1)}%)`,
+      `Aplazadas (NO): ${estadisticas.total_no}`,
+      `Causales de aplazamiento:`,
+      causalesTexto,
+    ].join("\n");
+
+    try {
+      await navigator.clipboard.writeText(resumen);
+      mostrarToast("Resumen mensual copiado al portapapeles", "success");
+    } catch (_) {
+      mostrarToast("No se pudo copiar al portapapeles", "error");
+    }
+  }
+
   function limpiarFormulario() {
     radicado = "";
     juzgado = "";
@@ -169,6 +280,7 @@
     minuto = "";
     motivoSeleccionado = "";
     observaciones = "";
+    iaSnapshot = null;
     inputRadicadoEl?.focus();
   }
 
@@ -231,6 +343,7 @@
         modalActivo = null;
         mostrarToast("Registro actualizado en Excel", "success");
       } else {
+        const snapshotIa = iaSnapshot;
         totales = await invoke("cmd_guardar_audiencia", {
           nombreArchivo: archivoActual,
           datos,
@@ -242,6 +355,7 @@
         limpiarFormulario();
         modalActivo = null;
         mostrarToast("Audiencia registrada correctamente", "success");
+        if (snapshotIa) registrarResultadoIa(snapshotIa, datos);
       }
     } catch (err) {
       const msg = String(err);
@@ -362,35 +476,54 @@
     }
   }
 
-  function abrirModalDefensores() {
-    defensorPlanillaDraft = defensorArchivo;
+  async function abrirModalDefensoresArchivo(nombreArchivo) {
+    defensorTargetArchivo = nombreArchivo;
+    let actualDef = "";
+    if (nombreArchivo && nombreArchivo === archivoActual) {
+      actualDef = defensorArchivo || "";
+    } else if (nombreArchivo) {
+      try {
+        const res = await invoke("cmd_leer_archivo", { nombre: nombreArchivo });
+        actualDef = res.defensor || "";
+      } catch (_) {}
+    }
+    defensorTargetNombre = actualDef;
+    defensorPlanillaDraft = actualDef;
     filtroDefensores = "";
     nuevoDefensorDirectorio = "";
     defensorEditando = null;
     defensorEditandoValor = "";
     errorDefensores = "";
+    sidebarMobileOpen = false;
     modalActivo = "defensores";
   }
 
   async function asignarDefensorAPlanilla(nombreDefensor) {
-    if (!archivoActual) return;
+    const target = defensorTargetArchivo || archivoActual;
+    if (!target) return;
     const limpio = nombreDefensor.trim();
     errorDefensores = "";
     try {
       const guardado = await invoke("cmd_actualizar_defensor_archivo", {
-        nombreArchivo: archivoActual,
+        nombreArchivo: target,
         defensor: limpio,
       });
-      defensorArchivo = guardado;
+      defensorTargetNombre = guardado;
       defensorPlanillaDraft = guardado;
+      if (target === archivoActual) {
+        defensorArchivo = guardado;
+      }
       if (limpio) {
         const cfg = await invoke("cmd_agregar_defensor", { nombre: limpio });
         defensores = cfg.defensores || [];
       }
+      if (vistaActiva === "estadisticas") {
+        cargarEstadisticas();
+      }
       mostrarToast(
         guardado
-          ? `Planilla asignada a ${guardado}`
-          : "Se quitó la asignación de defensor en la planilla",
+          ? `'${target}' asignada a ${guardado}`
+          : `Se quitó la asignación de defensor en '${target}'`,
         "success"
       );
     } catch (e) {
@@ -596,6 +729,9 @@
       }
       if (datos.observaciones) observaciones = datos.observaciones;
 
+      // Foto de lo que quedó en el formulario tras la IA, para aprender de las correcciones
+      iaSnapshot = { texto: textoIa, prediccion: construirPayloadFormulario() };
+
       modalActivo = null;
       vistaActiva = "formulario";
       textoIa = "";
@@ -604,6 +740,65 @@
       errorIa = String(e);
     } finally {
       procesandoIa = false;
+    }
+  }
+
+  // Aprendizaje silencioso: compara lo propuesto por la IA con lo guardado (no bloquea al usuario)
+  async function registrarResultadoIa(snapshot, datosFinales) {
+    try {
+      aprendizaje = await invoke("cmd_registrar_resultado_ia", {
+        texto: snapshot.texto,
+        prediccion: snapshot.prediccion,
+        finalUsuario: datosFinales,
+      });
+    } catch (e) {
+      console.warn("No se pudo registrar el aprendizaje de la IA:", e);
+    }
+  }
+
+  async function cargarResumenAprendizaje() {
+    try {
+      aprendizaje = await invoke("cmd_resumen_aprendizaje_ia");
+    } catch (_) {}
+  }
+
+  async function responderAclaracionIa(nota) {
+    const id = aprendizaje.aclaracion_pendiente?.correccion_id;
+    if (!id) return;
+    try {
+      aprendizaje = await invoke("cmd_responder_aclaracion_ia", {
+        correccionId: id,
+        nota,
+      });
+      mostrarToast("Regla guardada en el aprendizaje de la IA", "success", 3200);
+    } catch (e) {
+      mostrarToast(`No se pudo guardar la aclaración: ${e}`, "error");
+    }
+  }
+
+  async function omitirAclaracionIa() {
+    const id = aprendizaje.aclaracion_pendiente?.correccion_id;
+    if (!id) return;
+    try {
+      aprendizaje = await invoke("cmd_descartar_aclaracion_ia", {
+        correccionId: id,
+      });
+    } catch (_) {
+      aprendizaje = { ...aprendizaje, aclaracion_pendiente: null };
+    }
+  }
+
+  async function exportarAprendizajeIa() {
+    if (exportandoAprendizaje) return;
+    exportandoAprendizaje = true;
+    try {
+      const ruta = await invoke("cmd_exportar_aprendizaje_ia");
+      aprendizaje = { ...aprendizaje, pendientes_exportar: 0 };
+      mostrarToast(`Aprendizaje de la IA exportado en: ${ruta}`, "success", 5000);
+    } catch (e) {
+      mostrarToast(String(e), "info", 4200);
+    } finally {
+      exportandoAprendizaje = false;
     }
   }
 
@@ -662,6 +857,9 @@
       e.preventDefault();
       if (modoEdicion) {
         guardarOActualizar(false);
+      } else if (vistaActiva === "estadisticas") {
+        cargarEstadisticas();
+        mostrarToast("Estadísticas actualizadas", "info", 1400);
       } else {
         recargarArchivoActual();
         mostrarToast("Sincronizado con Excel", "info", 1400);
@@ -680,9 +878,18 @@
     } else if (key === "n") {
       e.preventDefault();
       abrirCrearArchivoModal();
+    } else if (key === "1") {
+      e.preventDefault();
+      cambiarVista("formulario");
+    } else if (key === "2") {
+      e.preventDefault();
+      cambiarVista("listado");
+    } else if (key === "3") {
+      e.preventDefault();
+      cambiarVista("estadisticas");
     } else if (key === "f" || key === "e") {
       e.preventDefault();
-      vistaActiva = vistaActiva === "listado" ? "formulario" : "listado";
+      cambiarVista(vistaActiva === "listado" ? "formulario" : "listado");
     } else if (key === "i") {
       e.preventDefault();
       abrirAutocompletarIa();
@@ -697,6 +904,7 @@
 
   onMount(async () => {
     await cargarConfigInicial();
+    cargarResumenAprendizaje();
     await refrescarListaArchivos();
     if (archivosDisponibles.length > 0 && !archivoActual) {
       archivoActual = archivosDisponibles[0];
@@ -714,8 +922,11 @@
     {totales}
     {aiStatus}
     theme={settings.theme}
+    mobileOpen={sidebarMobileOpen}
+    onCloseMobile={() => (sidebarMobileOpen = false)}
     onCrearArchivo={abrirCrearArchivoModal}
     onSeleccionarArchivo={seleccionarArchivo}
+    onAbrirDefensorArchivo={abrirModalDefensoresArchivo}
     onAbrirRespaldos={abrirRespaldos}
     onDescargarArchivo={descargarArchivo}
     onEliminarArchivo={eliminarArchivo}
@@ -726,64 +937,89 @@
 
   <div class="workspace-pane">
     <header class="workspace-header">
-      <div class="header-left">
-        <div class="view-tabs" role="tablist">
+      <div class="header-nav-wrap">
+        <button
+          type="button"
+          class="mini-icon-btn mobile-menu-btn"
+          onclick={() => (sidebarMobileOpen = true)}
+          title="Mostrar lista de planillas"
+          aria-label="Mostrar panel de planillas"
+        >
+          <PanelLeft size={16} />
+        </button>
+
+        <div class="topbar-nav" role="tablist" aria-label="Secciones principales">
           <button
             type="button"
             role="tab"
             aria-selected={vistaActiva === "formulario"}
-            class="view-tab {vistaActiva === 'formulario' ? 'active' : ''}"
-            onclick={() => (vistaActiva = "formulario")}
+            class="topbar-tab {vistaActiva === 'formulario' ? 'active' : ''}"
+            onclick={() => cambiarVista("formulario")}
           >
+            <FileText size={14} strokeWidth={2} />
             <span>Nueva Audiencia</span>
           </button>
+
+          <span class="topbar-sep" aria-hidden="true"></span>
+
           <button
             type="button"
             role="tab"
             aria-selected={vistaActiva === "listado"}
-            class="view-tab {vistaActiva === 'listado' ? 'active' : ''}"
-            onclick={() => (vistaActiva = "listado")}
+            class="topbar-tab {vistaActiva === 'listado' ? 'active' : ''}"
+            onclick={() => cambiarVista("listado")}
           >
-            <span>Registros en Planilla</span>
+            <List size={14} strokeWidth={2} />
+            <span>Registros</span>
             <span class="tab-count">{totales.num_registros}</span>
           </button>
-        </div>
 
-        <button
-          type="button"
-          class="defensor-pill"
-          onclick={abrirModalDefensores}
-          title="Gestionar directorio de defensores y asignación en celda B8"
-        >
-          <UserCheck size={13} strokeWidth={2} />
-          {#if archivoActual}
-            <span>Defensor: <strong>{defensorArchivo || "Sin asignar"}</strong></span>
-          {:else}
-            <span>Directorio ({defensores.length})</span>
-          {/if}
-        </button>
+          <span class="topbar-sep" aria-hidden="true"></span>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={vistaActiva === "estadisticas"}
+            class="topbar-tab {vistaActiva === 'estadisticas' ? 'active' : ''}"
+            onclick={() => cambiarVista("estadisticas")}
+          >
+            <BarChart3 size={14} strokeWidth={2} />
+            <span>Estadísticas</span>
+          </button>
+        </div>
       </div>
 
       <div class="header-right">
         <button
           type="button"
-          class="btn btn-ai-warm"
-          onclick={abrirAutocompletarIa}
-          title={aiStatus.configured ? "Autocompletar a partir de texto libre (Ctrl+I)" : "Configurar clave de IA"}
+          class="mini-icon-btn share-learning-btn"
+          onclick={exportarAprendizajeIa}
+          disabled={exportandoAprendizaje}
+          title={aprendizaje.total_correcciones > 0
+            ? `Compartir aprendizaje de la IA (${aprendizaje.total_correcciones} correcciones, ${aprendizaje.pendientes_exportar} nuevas)`
+            : "Compartir aprendizaje de la IA (aún sin correcciones)"}
+          aria-label="Compartir aprendizaje de la IA"
         >
-          <Sparkles size={14} strokeWidth={2} />
-          <span>{aiStatus.configured ? "Autocompletar IA · Ctrl+I" : "Configurar IA"}</span>
+          <Share2 size={15} />
+          {#if aprendizaje.pendientes_exportar > 0}
+            <span class="share-badge" aria-hidden="true">
+              {aprendizaje.pendientes_exportar > 99 ? "99+" : aprendizaje.pendientes_exportar}
+            </span>
+          {/if}
         </button>
       </div>
     </header>
 
-    <main class="workspace-scroll">
+    <main class="workspace-scroll scroller">
       {#if vistaActiva === "formulario"}
         <AudienciaForm
           {archivoActual}
           {registros}
           {totales}
-          aiConfigured={aiStatus.configured}
+          {aiStatus}
+          bind:textoIa
+          {procesandoIa}
+          {errorIa}
           {modoEdicion}
           {filaEditando}
           {numeroEditando}
@@ -801,11 +1037,15 @@
           onSubmit={() => guardarOActualizar(false)}
           onCancelarEdicion={cancelarEdicion}
           onLimpiar={limpiarFormulario}
-          onAbrirIa={abrirAutocompletarIa}
-          onVerTodos={() => (vistaActiva = "listado")}
+          onProcesarConIa={procesarConIa}
+          onAbrirConfigIa={abrirConfiguracionIa}
+          onVerTodos={() => cambiarVista("listado")}
           onEditarRegistro={cargarRegistroParaEdicion}
+          aclaracionPendiente={aprendizaje.aclaracion_pendiente}
+          onResponderAclaracion={responderAclaracionIa}
+          onOmitirAclaracion={omitirAclaracionIa}
         />
-      {:else}
+      {:else if vistaActiva === "listado"}
         <RegistrosTable
           {registros}
           {totales}
@@ -816,6 +1056,17 @@
           onEditar={cargarRegistroParaEdicion}
           onEliminar={eliminarRegistroFila}
         />
+      {:else}
+        <EstadisticasView
+          stats={estadisticas}
+          cargando={cargandoEstadisticas}
+          bind:mesSeleccionado={statsMesSeleccionado}
+          bind:archivoFiltro={statsArchivoFiltro}
+          bind:defensorFiltro={statsDefensorFiltro}
+          onFiltrarChange={cargarEstadisticas}
+          onAbrirPlanilla={abrirPlanillaDesdeStats}
+          onCopiarResumen={copiarResumenEstadisticas}
+        />
       {/if}
     </main>
   </div>
@@ -823,8 +1074,8 @@
 
 <Modals
   bind:modalActivo
-  {archivoActual}
-  {defensorArchivo}
+  {defensorTargetArchivo}
+  {defensorTargetNombre}
   {defensores}
   bind:settings
   {aiStatus}

@@ -12,11 +12,12 @@
     Edit3,
     Trash2,
   } from "@lucide/svelte";
+  import AutocompleteInput from "./AutocompleteInput.svelte";
 
   let {
     modalActivo = $bindable(null),
-    archivoActual = null,
-    defensorArchivo = "",
+    defensorTargetArchivo = null,
+    defensorTargetNombre = "",
     defensores = [],
     settings = $bindable(),
     aiStatus,
@@ -69,18 +70,26 @@
     if (!q) return defensores;
     return defensores.filter((d) => d.toLowerCase().includes(q));
   });
-</script>
 
-<datalist id="defensores-datalist">
-  {#each defensores as d}
-    <option value={d}></option>
-  {/each}
-</datalist>
+  async function cerrarDefensoresYGuardarPendiente() {
+    if (
+      defensorTargetArchivo &&
+      defensorPlanillaDraft.trim() !== defensorTargetNombre.trim()
+    ) {
+      await onAsignarDefensor(defensorPlanillaDraft);
+    }
+    modalActivo = null;
+  }
+</script>
 
 {#if modalActivo}
   <dialog
     bind:this={dialogEl}
-    class={modalActivo === "defensores" ? "modal-wide" : ""}
+    class={modalActivo === "defensores"
+      ? "modal-wide"
+      : modalActivo === "crear"
+        ? "modal-overflow-visible"
+        : ""}
     aria-labelledby="dialog-heading"
     onclose={() => {
       modalActivo = null;
@@ -104,7 +113,7 @@
           <X size={15} />
         </button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body scroller">
         <div class="field-group">
           <label class="field-label" for="nuevo-archivo-input">
             Nombre de la planilla Excel
@@ -132,18 +141,17 @@
         <div class="field-group">
           <div class="field-header">
             <label class="field-label" for="nuevo-archivo-defensor">
-              Defensor Público asignado (celda B8, opcional)
+              Defensor Público asignado (opcional)
             </label>
           </div>
-          <input
+          <AutocompleteInput
             id="nuevo-archivo-defensor"
-            type="text"
-            list="defensores-datalist"
-            class="input"
             bind:value={defensorNuevoArchivo}
+            suggestions={defensores}
             placeholder={defensores.length > 0
-              ? "Selecciona de tu lista o escribe un nombre nuevo"
+              ? "Selecciona de tu directorio o escribe un nombre nuevo"
               : "Escribe el nombre y se guardará para próximas planillas"}
+            onEnter={onCrearNuevoArchivo}
           />
           <span class="shortcut-hint">
             Si ingresas un nombre nuevo se guardará en tu directorio de defensores.
@@ -174,7 +182,7 @@
           <X size={15} />
         </button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body scroller">
         <div class="field-group">
           <label class="field-label" for="ia-textarea">
             Pega el reporte, acta o nota de la audiencia
@@ -226,7 +234,7 @@
           <X size={15} />
         </button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body scroller">
         <div class="field-group">
           <span class="field-label">Proveedor</span>
           <div class="segmented-control" role="radiogroup" aria-label="Proveedor de IA">
@@ -390,7 +398,7 @@
           <X size={15} />
         </button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body scroller">
         <p style="color: var(--text-secondary)">
           No especificaste una hora. ¿Deseas registrar la audiencia dejando vacía la columna de hora en el Excel?
         </p>
@@ -425,7 +433,7 @@
           <X size={15} />
         </button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body scroller">
         <p style="color: var(--text-secondary)">
           Ya existe un registro en esta planilla con el mismo proceso o nombre muy similar en la misma fecha:
         </p>
@@ -457,7 +465,7 @@
       <div class="modal-header">
         <h2 id="dialog-heading" class="modal-title">
           <UserCheck size={15} />
-          <span>Defensores Públicos y celda B8</span>
+          <span>Defensor Público de la planilla</span>
         </h2>
         <button
           type="button"
@@ -468,39 +476,43 @@
           <X size={15} />
         </button>
       </div>
-      <div class="modal-body">
-        {#if archivoActual}
+      <div class="modal-body scroller">
+        {#if defensorTargetArchivo}
           <div class="field-group">
             <label class="field-label" for="defensor-planilla-input">
-              Asignado en {archivoActual} (celda B8)
+              Defensor asignado en {defensorTargetArchivo}
             </label>
-            <div style="display: flex; gap: 8px">
-              <input
-                id="defensor-planilla-input"
-                type="text"
-                list="defensores-datalist"
-                class="input"
-                bind:value={defensorPlanillaDraft}
-                placeholder="Nombre del defensor en este Excel"
-              />
+            <div style="display: flex; gap: 8px; align-items: stretch">
+              <div style="flex: 1; min-width: 0">
+                <AutocompleteInput
+                  id="defensor-planilla-input"
+                  bind:value={defensorPlanillaDraft}
+                  suggestions={defensores}
+                  placeholder="Escribe, corrige o elige el defensor de esta planilla"
+                  onEnter={() => onAsignarDefensor(defensorPlanillaDraft)}
+                />
+              </div>
               <button
                 type="button"
                 class="btn btn-solid"
                 onclick={() => onAsignarDefensor(defensorPlanillaDraft)}
               >
-                Asignar
+                Guardar
               </button>
-              {#if defensorArchivo}
+              {#if defensorTargetNombre}
                 <button
                   type="button"
                   class="btn btn-subtle"
                   onclick={() => onAsignarDefensor("")}
-                  title="Dejar celda B8 sin nombre"
+                  title="Quitar el nombre de defensor asignado en este Excel"
                 >
                   Quitar
                 </button>
               {/if}
             </div>
+            <span class="shortcut-hint">
+              Si te equivocaste al crear el archivo, corrige el nombre aquí y se actualizará directamente en el Excel.
+            </span>
           </div>
           <div class="dossier-divider"></div>
         {/if}
@@ -547,7 +559,7 @@
         {:else if defensoresFiltrados.length === 0}
           <p class="shortcut-hint">No hay defensores que coincidan con "{filtroDefensores}".</p>
         {:else}
-          <div class="defensores-list">
+          <div class="defensores-list scroller">
             {#each defensoresFiltrados as defName}
               <div class="defensor-row">
                 {#if defensorEditando === defName}
@@ -590,7 +602,7 @@
                     {defName}
                   </span>
                   <div style="display: inline-flex; gap: 4px; flex-shrink: 0">
-                    {#if archivoActual}
+                    {#if defensorTargetArchivo}
                       <button
                         type="button"
                         class="btn btn-subtle"
@@ -629,7 +641,7 @@
         {/if}
       </div>
       <div class="modal-footer">
-        <button type="button" class="btn btn-solid" onclick={() => (modalActivo = null)}>
+        <button type="button" class="btn btn-solid" onclick={cerrarDefensoresYGuardarPendiente}>
           Listo
         </button>
       </div>
@@ -649,7 +661,7 @@
           <X size={15} />
         </button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body scroller">
         <p class="shortcut-hint">
           Lokus guarda automáticamente hasta 3 versiones previas antes de cada cambio en la planilla.
         </p>
@@ -701,7 +713,7 @@
           <X size={15} />
         </button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body scroller">
         <p style="color: var(--text-secondary)">
           {confirmacionPendiente.mensaje}
         </p>
@@ -739,15 +751,15 @@
           <X size={15} />
         </button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body scroller">
         <div class="shortcut-grid">
           <div class="shortcut-row"><span>Guardar audiencia</span><span class="kbd">Ctrl+S</span></div>
           <div class="shortcut-row"><span>Autocompletar IA</span><span class="kbd">Ctrl+I</span></div>
           <div class="shortcut-row"><span>Nuevo archivo</span><span class="kbd">Ctrl+N</span></div>
-          <div class="shortcut-row"><span>Alternar vista tabla</span><span class="kbd">Ctrl+F</span></div>
+          <div class="shortcut-row"><span>Cambiar de sección</span><span class="kbd">Ctrl+1 / 2 / 3</span></div>
           <div class="shortcut-row"><span>Limpiar campos</span><span class="kbd">Ctrl+L</span></div>
           <div class="shortcut-row"><span>Exportar copia</span><span class="kbd">Ctrl+Shift+S</span></div>
-          <div class="shortcut-row"><span>Cambiar tema</span><span class="kbd">Ctrl+T</span></div>
+          <div class="shortcut-row"><span>Tema Azul / Oscuro</span><span class="kbd">Ctrl+T</span></div>
           <div class="shortcut-row"><span>Refrescar / Cerrar</span><span class="kbd">F5 / Esc</span></div>
         </div>
       </div>

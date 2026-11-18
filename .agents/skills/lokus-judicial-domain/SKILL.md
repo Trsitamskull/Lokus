@@ -58,5 +58,11 @@ Cada vez que se inserta, actualiza o elimina un registro:
    - Términos como *"abogado contractual"*, *"abogado privado"*, *"def. confianza"* o *"defensor de confianza"* corresponden siempre a **Defensor Confianza**.
 2. **Causas Principales vs. Reacciones:**
    - Si en un mismo texto concurre una causa principal (`Juez`, `Fiscalía`, `Usuario`, `INPEC`, `Víctima`, `ICBF`) junto con una reacción del defensor (*"la fiscal no se conectó y por eso solicité reprogramar"*), el motivo principal debe ser la **causa principal** (`Fiscalía`), y la reacción se registra en `observaciones` como causa secundaria.
-3. **Verificación:**
+3. **Abreviaciones ambiguas:**
+   - Si el texto usa una abreviación cuyo significado no es inequívoco (ej. `CTO`, `MPAL`, `PCTO`), la IA debe copiarla tal cual; no debe adivinar ni expandir su significado.
+4. **Aprendizaje por correcciones (`src-tauri/src/aprendizaje.rs`):**
+   - Solo se registra cuando el usuario guarda un registro nuevo que vino del autocompletado; si no cambió nada se cuenta un acierto.
+   - Radicado, tipo y juzgado ignoran cambios de mayúsculas/espacios; las observaciones solo cuentan si se reescriben (similitud < 0.85).
+   - La exportación siempre se anonimiza (`[PROCESADO]`, `[RADICADO]`, `[NUMERO]`) y nunca borra lo aprendido.
+5. **Verificación:**
    - Ejecutar `cd src-tauri && cargo test` tras cualquier cambio en `models.rs`, `excel.rs` o `ai.rs`.
