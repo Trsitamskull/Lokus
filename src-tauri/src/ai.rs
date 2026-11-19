@@ -13,13 +13,13 @@ use crate::aprendizaje::{
 };
 use crate::config::{cargar_settings, guardar_settings};
 use crate::estadistica_ia::{
-    resolver_alias_exacto_validado, resolver_hora_con_prior, seleccionar_candidatos_prompt,
-    CandidatosPrompt, MotorEstadisticoLocal,
+    juzgados_base, resolver_alias_exacto_validado, resolver_hora_con_prior,
+    seleccionar_candidatos_prompt, CandidatosPrompt, MotorEstadisticoLocal,
 };
 use crate::excel::cargar_priors_actuales;
 use crate::models::{
-    extraer_numeros_radicado, mapear_motivo_a_indice, IndicePriorsExcel, MOTIVOS_LABELS,
-    TIPOS_AUDIENCIA,
+    extraer_numeros_radicado, mapear_motivo_a_indice, normalizar_clave_catalogo,
+    normalizar_texto_sin_tildes, IndicePriorsExcel, MOTIVOS_LABELS, TIPOS_AUDIENCIA,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -404,15 +404,31 @@ fn inferir_motivos(texto_original: &str) -> (String, Vec<String>) {
     (principal, secundarios)
 }
 
-fn mapear_tipo_audiencia(tipo_ia: &str) -> (String, String) {
-    let limpio = tipo_ia.trim();
+fn mapear_tipo_audiencia_con_usuario(tipo_ia: &str, tipos_usuario: &[String]) -> (String, String) {
+    let limpio_raw = limpiar_valor_opcional_vacio(tipo_ia);
+    let limpio = limpio_raw.trim();
     if limpio.is_empty() {
         return (String::new(), String::new());
     }
-    let lower = limpio.to_lowercase();
+    let norm = normalizar_clave_catalogo(limpio);
+    if norm.is_empty() || norm == "otra" {
+        return (String::new(), String::new());
+    }
+
+    for &oficial in &TIPOS_AUDIENCIA {
+        if oficial != "Otra" && normalizar_clave_catalogo(oficial) == norm {
+            return (oficial.to_string(), String::new());
+        }
+    }
+
+    for usr in tipos_usuario {
+        if normalizar_clave_catalogo(usr) == norm {
+            return (usr.clone(), String::new());
+        }
+    }
 
     let mapeo_directo = [
-        ("alegatos de conclusión", "Alegatos de conclusión"),
+        ("alegatos de conclusion", "Alegatos de conclusión"),
         ("control de legalidad", "Audiencia de control de legalidad"),
         ("concentrada", "Audiencia concentrada"),
         ("juicio oral", "Audiencia de juicio oral"),
@@ -420,46 +436,66 @@ fn mapear_tipo_audiencia(tipo_ia: &str) -> (String, String) {
         ("continua juicio", "Audiencia de juicio oral"),
         ("preliminar", "Audiencia preliminar"),
         ("preparatoria", "Audiencia preparatoria"),
-        ("acusación", "Audiencia de acusación"),
         ("acusacion", "Audiencia de acusación"),
-        ("conciliación", "Audiencia de conciliación"),
-        ("preclusión", "Audiencia de preclusión"),
+        ("conciliacion", "Audiencia de conciliación"),
         ("preclusion", "Audiencia de preclusión"),
         (
-            "individualización de pena",
+            "individualizacion de pena",
             "Audiencia de individualización de pena",
         ),
-        ("imputación", "Audiencia de imputación"),
+        ("imputacion", "Audiencia de imputación"),
         (
-            "reparación integral",
+            "reparacion integral",
             "Audiencia de incidente de reparación integral",
         ),
         (
             "medidas de aseguramiento",
             "Audiencia de medidas de aseguramiento",
         ),
-        ("nulidad", "Audiencia de nulidad"),
-        ("prórroga", "Audiencia de prórroga"),
-        ("revisión de medida", "Audiencia de revisión de medida"),
         (
-            "verificación de cumplimiento",
+            "medida de aseguramiento",
+            "Audiencia de medidas de aseguramiento",
+        ),
+        ("nulidad", "Audiencia de nulidad"),
+        ("prorroga", "Audiencia de prórroga"),
+        ("revision de medida", "Audiencia de revisión de medida"),
+        (
+            "verificacion de cumplimiento",
             "Audiencia de verificación de cumplimiento",
         ),
     ];
 
     for (clave, oficial) in mapeo_directo {
-        if lower.contains(clave) {
-            return (oficial.to_string(), String::new());
-        }
-    }
-
-    for &oficial in &TIPOS_AUDIENCIA {
-        if oficial != "Otra" && oficial.eq_ignore_ascii_case(limpio) {
+        if norm.contains(clave) {
             return (oficial.to_string(), String::new());
         }
     }
 
     ("Otra".to_string(), limpio.to_string())
+}
+
+fn normalizar_juzgado_catalogo(juzgado_ia: &str, juzgados_usuario: &[String]) -> String {
+    let limpio = limpiar_valor_opcional_vacio(juzgado_ia);
+    if limpio.is_empty() {
+        return String::new();
+    }
+    let norm = normalizar_clave_catalogo(&limpio);
+    if norm.is_empty() || norm == "otra" {
+        return String::new();
+    }
+    if let Some(usr) = juzgados_usuario
+        .iter()
+        .find(|j| normalizar_clave_catalogo(j) == norm)
+    {
+        return usr.clone();
+    }
+    if let Some(oficial) = juzgados_base()
+        .iter()
+        .find(|j| normalizar_clave_catalogo(j) == norm)
+    {
+        return oficial.clone();
+    }
+    limpio
 }
 
 fn extraer_fechas_reprogramacion(texto: &str) -> String {
@@ -569,17 +605,73 @@ fn detectar_patron_fracaso_con_preferencias(
     false
 }
 
-fn limpiar_observacion_vacia(obs: String) -> String {
-    let limpio = obs.trim();
-    if limpio.eq_ignore_ascii_case("sin observaciones adicionales")
-        || limpio.eq_ignore_ascii_case("ninguna")
-        || limpio.eq_ignore_ascii_case("ninguno")
-        || limpio.eq_ignore_ascii_case("n/a")
+pub fn limpiar_valor_opcional_vacio(raw: &str) -> String {
+    let limpio = raw.trim();
+    if limpio.is_empty() {
+        return String::new();
+    }
+    if limpio
+        .chars()
+        .all(|c| matches!(c, '-' | '–' | '—' | '.' | '_' | '/'))
+    {
+        return String::new();
+    }
+    let norm = normalizar_texto_sin_tildes(limpio);
+    if norm.is_empty()
+        || matches!(
+            norm.as_str(),
+            "no especificado"
+                | "no especificada"
+                | "no aplica"
+                | "n a"
+                | "na"
+                | "ninguno"
+                | "ninguna"
+                | "ningun"
+                | "sin especificar"
+                | "sin informacion"
+                | "sin datos"
+                | "sin dato"
+                | "desconocido"
+                | "desconocida"
+                | "no mencionado"
+                | "no mencionada"
+                | "no indica"
+                | "no se indica"
+                | "no se menciona"
+                | "no se especifica"
+                | "no disponible"
+                | "no consta"
+                | "por definir"
+                | "no registra"
+                | "sin registro"
+                | "sin hora"
+                | "sin fecha"
+                | "sin juzgado"
+                | "sin tipo"
+                | "sin motivo"
+                | "sin radicado"
+                | "sin observaciones"
+                | "sin observaciones adicionales"
+                | "ninguna observacion"
+                | "s n"
+                | "s i"
+                | "n r"
+                | "vacio"
+                | "vacia"
+                | "null"
+                | "none"
+                | "empty"
+        )
     {
         String::new()
     } else {
         limpio.to_string()
     }
+}
+
+fn limpiar_observacion_vacia(obs: String) -> String {
+    limpiar_valor_opcional_vacio(&obs)
 }
 
 fn formatear_candidatos_prompt(cands: Option<&CandidatosPrompt>) -> String {
@@ -618,6 +710,33 @@ fn formatear_candidatos_prompt(cands: Option<&CandidatosPrompt>) -> String {
     }
 }
 
+fn construir_catalogo_tipos_para_prompt(tipos_usuario: &[String]) -> String {
+    let mut vistos: Vec<String> = Vec::new();
+    let mut claves: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for &t in &TIPOS_AUDIENCIA {
+        if t == "Otra" {
+            continue;
+        }
+        let k = normalizar_clave_catalogo(t);
+        if claves.insert(k) {
+            vistos.push(format!("- {}", t));
+        }
+    }
+    let mut personalizados: Vec<String> = Vec::new();
+    for t in tipos_usuario {
+        let limpio = t.split_whitespace().collect::<Vec<_>>().join(" ");
+        let k = normalizar_clave_catalogo(&limpio);
+        if !k.is_empty() && k != "otra" && claves.insert(k) {
+            personalizados.push(format!("- {}", limpio));
+        }
+    }
+    if !personalizados.is_empty() {
+        vistos.push("Tipos personalizados guardados por el usuario:".to_string());
+        vistos.extend(personalizados);
+    }
+    vistos.join("\n")
+}
+
 #[allow(dead_code)]
 fn construir_prompt(
     texto_preprocesado: &str,
@@ -627,13 +746,31 @@ fn construir_prompt(
     construir_prompt_con_candidatos(texto_preprocesado, current_year, contexto_aprendizaje, None)
 }
 
+#[allow(dead_code)]
 fn construir_prompt_con_candidatos(
     texto_preprocesado: &str,
     current_year: i32,
     contexto_aprendizaje: &str,
     candidatos: Option<&CandidatosPrompt>,
 ) -> String {
+    construir_prompt_con_candidatos_y_catalogo(
+        texto_preprocesado,
+        current_year,
+        contexto_aprendizaje,
+        candidatos,
+        &[],
+    )
+}
+
+fn construir_prompt_con_candidatos_y_catalogo(
+    texto_preprocesado: &str,
+    current_year: i32,
+    contexto_aprendizaje: &str,
+    candidatos: Option<&CandidatosPrompt>,
+    tipos_usuario: &[String],
+) -> String {
     let seccion_candidatos = formatear_candidatos_prompt(candidatos);
+    let catalogo_tipos = construir_catalogo_tipos_para_prompt(tipos_usuario);
     let seccion_aprendizaje = if contexto_aprendizaje.trim().is_empty() {
         String::new()
     } else {
@@ -645,29 +782,35 @@ fn construir_prompt_con_candidatos(
 Analiza el texto (que puede venir en estilo ESTRUCTURADO descriptivo o en estilo COMPACTO telegráfico) y devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
 
 {{
-  "radicado": "NOMBRE_PROCESADO - NÚMERO_RADICADO (si hay ambos) o el identificador/radicado encontrado",
-  "tipo_audiencia": "Tipo de audiencia (ej: Audiencia concentrada, Audiencia de juicio oral, Audiencia preparatoria, Audiencia de acusación, Audiencia de control de legalidad, Alegatos de conclusión, etc.)",
-  "fecha": "DD/MM/YYYY",
-  "hora": "HH (formato 24 horas de 2 dígitos, ej: 08, 14, o vacío si no se menciona hora)",
-  "minuto": "MM (2 dígitos, ej: 00, 30, o vacío si no se menciona hora)",
-  "juzgado": "Nombre del juzgado o despacho judicial",
-  "se_realizo": "SI o NO",
-  "motivo": "Si se_realizo es NO, elegir SOLO UNO entre: Juez, Fiscalía, Usuario, INPEC, Víctima, ICBF, Defensor Confianza, Defensor Público. Si es SI, dejar vacío",
-  "observaciones": "Resumen breve y profesional de detalles relevantes, fechas de reprogramación o incidencias (o vacío si no hay detalles adicionales)"
+  "radicado": "NOMBRE_PROCESADO - NÚMERO_RADICADO (si hay ambos) o el identificador/radicado encontrado (o \"\" si no existe)",
+  "tipo_audiencia": "Nombre exacto del catálogo de tipos de audiencia si corresponde, o el nombre real si es distinto (o \"\" si no se menciona)",
+  "fecha": "DD/MM/YYYY (o \"\" si no se menciona)",
+  "hora": "HH (formato 24 horas de 2 dígitos, ej: 08, 14, o \"\" si no se menciona hora)",
+  "minuto": "MM (2 dígitos, ej: 00, 30, o \"\" si no se menciona hora)",
+  "juzgado": "Nombre del juzgado o despacho judicial (o \"\" si no se menciona)",
+  "se_realizo": "SI o NO (o \"\" si el texto no permite determinarlo)",
+  "motivo": "Si se_realizo es NO, elegir SOLO UNO entre: Juez, Fiscalía, Usuario, INPEC, Víctima, ICBF, Defensor Confianza, Defensor Público. Si es SI, dejar \"\"",
+  "observaciones": "Resumen breve y profesional de detalles relevantes, fechas de reprogramación o incidencias (o \"\" si no hay detalles adicionales)"
 }}
 
+CATÁLOGO COMPLETO DE TIPOS DE AUDIENCIA DEL FORMULARIO (elige el nombre EXACTO cuando coincida, o "" si el texto no indica tipo):
+{catalogo_tipos}
+
 REGLAS CRÍTICAS DE EXTRACCIÓN:
-1. RADICADO Y PROCESADO:
+1. CAMPOS OPCIONALES AUSENTES:
+   - Si un dato opcional (`tipo_audiencia`, `juzgado`, `fecha`, `hora`, `minuto`, `observaciones`) NO aparece en el texto, devuelve SIEMPRE cadena vacía `""`. Nunca escribas textos de relleno como "No especificado", "N/A", "Ninguno" ni "Sin datos".
+2. RADICADO Y PROCESADO:
    - Busca números largos (19 a 23 dígitos, ej: "200016001075202255547") o formatos cortos ("2024-00236", "2019-00542").
    - Si hay varios procesados, inclúyelos (ej: "FERNANDO JULIO CASUIL Y SHARLES DE JESUS LOPEZ JIMENEZ - 20001...").
-2. FECHA Y HORA MILITAR (24h):
+3. FECHA Y HORA MILITAR (24h):
    - Convierte cualquier fecha ("24 de junio", "JUNIO 24") a DD/MM/YYYY. Si no menciona el año, usa {current_year}.
    - Convierte horas PM a formato 24h ("09:30 am" -> hora: "09", minuto: "30"; "2:30 PM" -> hora: "14", minuto: "30"). Si no hay hora, deja "hora": "" y "minuto": "".
-3. TIPOS DE AUDIENCIA (ESTILO ESTRUCTURADO Y COMPACTO):
+4. TIPOS DE AUDIENCIA (ESTILO ESTRUCTURADO Y COMPACTO):
    - "INICIA JUICIO" o "CONTINUA JUICIO" -> "Audiencia de juicio oral"
    - "ACUSACION" -> "Audiencia de acusación"
    - "PREPARATORIA" -> "Audiencia preparatoria"
-4. REALIZACIÓN Y JERARQUÍA DE MOTIVOS:
+   - Si corresponde a uno del CATÁLOGO COMPLETO anterior, devuélvelo con su nombre exacto (incluyendo tildes). Si es un tipo distinto no listado arriba, escribe su nombre real (nunca escribas "Otra").
+5. REALIZACIÓN Y JERARQUÍA DE MOTIVOS:
    - FRACASO (SIEMPRE "se_realizo": "NO"): "se reprogramó", "será reprogramada", "se aplaza", "solicita aplazamiento", "se suspende", "se fija nueva fecha", "FRACSA", "FRACASA".
    - ÉXITO ("se_realizo": "SI", "motivo": ""): "se realizó con normalidad", "sin novedad", "se efectuó", "se emitió sentido de fallo", "se dio lectura", o si dice "¿Se realizó?: Sí" y la audiencia continuó pese a la ausencia de un tercero (incluso si se fija fecha posterior para continuar o leer fallo).
    - Si "se_realizo" es "NO", usa EXCLUSIVAMENTE uno de estos 8 valores en "motivo" (nunca pongas frases descriptivas en "motivo"):
@@ -680,9 +823,9 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
      7) "Víctima": víctima no compareció.
      8) "ICBF": representante del ICBF no compareció.
    - Si concurren una causa principal (ej. Fiscalía no se conectó) y una reacción del defensor ("por eso solicité reprogramar"), el "motivo" principal es la causa ("Fiscalía") y la reacción va a "observaciones".
-5. JUZGADOS Y ABREVIACIONES AMBIGUAS:
+6. JUZGADOS Y ABREVIACIONES AMBIGUAS:
    - Para abreviaciones ambiguas como "CTO" / "Cto" (que puede significar Circuito o Conocimiento), MPAL o PCTO, MANTÉN la abreviación original tal cual ("Juzgado 3 Cto Penal" -> "Juzgado 3 Cto Penal"); no adivines su expansión.
-6. OBSERVACIONES:
+7. OBSERVACIONES:
    - Incluye fechas de reprogramación, causas secundarias o incidencias técnicas. Si no hay detalles adicionales, deja el campo vacío "".
 {seccion_candidatos}{seccion_aprendizaje}
 TEXTO A ANALIZAR:
@@ -692,7 +835,219 @@ TEXTO A ANALIZAR:
     )
 }
 
-async fn llamar_openai(api_key: &str, model: &str, prompt: &str) -> Result<Value, String> {
+pub(crate) fn esquema_extraccion_audiencia_openai() -> Value {
+    json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "audiencia_judicial",
+            "strict": true,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "radicado": { "type": "string" },
+                    "tipo_audiencia": { "type": "string" },
+                    "fecha": { "type": "string" },
+                    "hora": { "type": "string" },
+                    "minuto": { "type": "string" },
+                    "juzgado": { "type": "string" },
+                    "se_realizo": { "type": "string", "enum": ["SI", "NO", ""] },
+                    "motivo": {
+                        "type": "string",
+                        "enum": [
+                            "",
+                            "Juez",
+                            "Fiscalía",
+                            "Usuario",
+                            "INPEC",
+                            "Víctima",
+                            "ICBF",
+                            "Defensor Confianza",
+                            "Defensor Público"
+                        ]
+                    },
+                    "observaciones": { "type": "string" }
+                },
+                "required": [
+                    "radicado",
+                    "tipo_audiencia",
+                    "fecha",
+                    "hora",
+                    "minuto",
+                    "juzgado",
+                    "se_realizo",
+                    "motivo",
+                    "observaciones"
+                ],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+pub(crate) fn esquema_extraccion_audiencia_gemini() -> Value {
+    json!({
+        "type": "OBJECT",
+        "properties": {
+            "radicado": { "type": "STRING" },
+            "tipo_audiencia": { "type": "STRING" },
+            "fecha": { "type": "STRING" },
+            "hora": { "type": "STRING" },
+            "minuto": { "type": "STRING" },
+            "juzgado": { "type": "STRING" },
+            "se_realizo": { "type": "STRING", "enum": ["SI", "NO", ""] },
+            "motivo": {
+                "type": "STRING",
+                "enum": [
+                    "",
+                    "Juez",
+                    "Fiscalía",
+                    "Usuario",
+                    "INPEC",
+                    "Víctima",
+                    "ICBF",
+                    "Defensor Confianza",
+                    "Defensor Público"
+                ]
+            },
+            "observaciones": { "type": "STRING" }
+        },
+        "required": [
+            "radicado",
+            "tipo_audiencia",
+            "fecha",
+            "hora",
+            "minuto",
+            "juzgado",
+            "se_realizo",
+            "motivo",
+            "observaciones"
+        ]
+    })
+}
+
+fn esquema_analisis_openai() -> Value {
+    json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "analisis_correccion_ia",
+            "strict": true,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "es_error_de_ia": { "type": "boolean" },
+                    "tipo_error": {
+                        "type": "string",
+                        "enum": [
+                            "abreviacion",
+                            "fecha",
+                            "hora",
+                            "realizacion",
+                            "motivo",
+                            "tipo",
+                            "juzgado",
+                            "estilo_observaciones",
+                            "otro"
+                        ]
+                    },
+                    "regla": { "type": "string" },
+                    "confianza": { "type": "number" },
+                    "necesita_aclaracion": { "type": "boolean" },
+                    "pregunta": { "type": "string" }
+                },
+                "required": [
+                    "es_error_de_ia",
+                    "tipo_error",
+                    "regla",
+                    "confianza",
+                    "necesita_aclaracion",
+                    "pregunta"
+                ],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+fn esquema_analisis_gemini() -> Value {
+    json!({
+        "type": "OBJECT",
+        "properties": {
+            "es_error_de_ia": { "type": "BOOLEAN" },
+            "tipo_error": {
+                "type": "STRING",
+                "enum": [
+                    "abreviacion",
+                    "fecha",
+                    "hora",
+                    "realizacion",
+                    "motivo",
+                    "tipo",
+                    "juzgado",
+                    "estilo_observaciones",
+                    "otro"
+                ]
+            },
+            "regla": { "type": "STRING" },
+            "confianza": { "type": "NUMBER" },
+            "necesita_aclaracion": { "type": "BOOLEAN" },
+            "pregunta": { "type": "STRING" }
+        },
+        "required": [
+            "es_error_de_ia",
+            "tipo_error",
+            "regla",
+            "confianza",
+            "necesita_aclaracion",
+            "pregunta"
+        ]
+    })
+}
+
+pub(crate) fn es_error_esquema_no_soportado(status: reqwest::StatusCode, msg: &str) -> bool {
+    if !matches!(status.as_u16(), 400 | 422) {
+        return false;
+    }
+    let m = msg.to_lowercase();
+    m.contains("json_schema")
+        || m.contains("response_format")
+        || m.contains("responseschema")
+        || m.contains("response_schema")
+        || m.contains("schema")
+        || m.contains("structured")
+        || m.contains("additionalproperties")
+        || m.contains("generation_config")
+        || m.contains("generationconfig")
+}
+
+fn parsear_json_limpio(content: &str) -> Result<Value, serde_json::Error> {
+    let trimmed = content.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        let sin_lang = rest
+            .trim_start_matches("json")
+            .trim_start_matches("JSON")
+            .trim();
+        let limpio = sin_lang.strip_suffix("```").unwrap_or(sin_lang).trim();
+        if let Ok(v) = serde_json::from_str(limpio) {
+            return Ok(v);
+        }
+    }
+    if let Ok(v) = serde_json::from_str(trimmed) {
+        return Ok(v);
+    }
+    if let (Some(ini), Some(fin)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if fin > ini {
+            return serde_json::from_str(&trimmed[ini..=fin]);
+        }
+    }
+    serde_json::from_str(trimmed)
+}
+
+async fn enviar_peticion_openai(
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    response_format: Value,
+) -> Result<(reqwest::StatusCode, Value), String> {
     let mut body = json!({
         "model": model,
         "messages": [
@@ -705,7 +1060,7 @@ async fn llamar_openai(api_key: &str, model: &str, prompt: &str) -> Result<Value
                 "content": prompt
             }
         ],
-        "response_format": { "type": "json_object" }
+        "response_format": response_format
     });
 
     // Modelos clásicos soportan temperature=0.1; modelos de razonamiento (gpt-5*, o1, o3, o4) usan su temperatura por defecto
@@ -726,6 +1081,33 @@ async fn llamar_openai(api_key: &str, model: &str, prompt: &str) -> Result<Value
         .json()
         .await
         .map_err(|e| format!("Respuesta inválida de OpenAI: {}", e.without_url()))?;
+    Ok((status, json_resp))
+}
+
+async fn llamar_openai(
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    response_schema: Option<Value>,
+) -> Result<Value, String> {
+    let formato_inicial = response_schema
+        .clone()
+        .unwrap_or_else(|| json!({ "type": "json_object" }));
+    let (mut status, mut json_resp) =
+        enviar_peticion_openai(api_key, model, prompt, formato_inicial).await?;
+
+    if !status.is_success() && response_schema.is_some() {
+        let msg = json_resp["error"]["message"].as_str().unwrap_or("");
+        if es_error_esquema_no_soportado(status, msg) {
+            (status, json_resp) = enviar_peticion_openai(
+                api_key,
+                model,
+                prompt,
+                json!({ "type": "json_object" }),
+            )
+            .await?;
+        }
+    }
 
     if !status.is_success() {
         let msg = json_resp["error"]["message"]
@@ -738,7 +1120,7 @@ async fn llamar_openai(api_key: &str, model: &str, prompt: &str) -> Result<Value
         .as_str()
         .ok_or_else(|| "OpenAI no devolvió contenido en la respuesta".to_string())?;
 
-    serde_json::from_str(content)
+    parsear_json_limpio(content)
         .map_err(|e| format!("No se pudo interpretar el JSON de OpenAI: {}", e))
 }
 
@@ -746,12 +1128,21 @@ async fn enviar_peticion_gemini(
     api_key: &str,
     model: &str,
     prompt: &str,
+    response_schema: Option<&Value>,
 ) -> Result<(reqwest::StatusCode, Value), String> {
     let modelo_limpio = model.trim().trim_start_matches("models/");
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
         modelo_limpio
     );
+
+    let mut generation_config = json!({
+        "responseMimeType": "application/json",
+        "temperature": 0.1
+    });
+    if let Some(schema) = response_schema {
+        generation_config["responseSchema"] = schema.clone();
+    }
 
     let body = json!({
         "contents": [
@@ -761,10 +1152,7 @@ async fn enviar_peticion_gemini(
                 ]
             }
         ],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "temperature": 0.1
-        }
+        "generationConfig": generation_config
     });
 
     let resp = http_client()
@@ -790,9 +1178,20 @@ fn extraer_modelo_sugerido_gemini(msg: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
-async fn llamar_gemini(api_key: &str, model: &str, prompt: &str) -> Result<Value, String> {
-    let modelo_inicial = model.trim().trim_start_matches("models/");
-    let (mut status, mut json_resp) = enviar_peticion_gemini(api_key, modelo_inicial, prompt).await?;
+async fn llamar_gemini(
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    response_schema: Option<Value>,
+) -> Result<Value, String> {
+    let mut modelo_activo = model.trim().trim_start_matches("models/").to_string();
+    let (mut status, mut json_resp) = enviar_peticion_gemini(
+        api_key,
+        &modelo_activo,
+        prompt,
+        response_schema.as_ref(),
+    )
+    .await?;
 
     // Si Google retiró el modelo para cuentas nuevas (404), usar automáticamente el modelo sugerido
     // por el propio mensaje de error de Google (o "gemini-flash-latest") y actualizar settings.json.
@@ -800,15 +1199,43 @@ async fn llamar_gemini(api_key: &str, model: &str, prompt: &str) -> Result<Value
         let msg_404 = json_resp["error"]["message"].as_str().unwrap_or("");
         let reemplazo = extraer_modelo_sugerido_gemini(msg_404)
             .unwrap_or_else(|| "gemini-flash-latest".to_string());
-        if reemplazo != modelo_inicial {
-            if let Ok((st2, jr2)) = enviar_peticion_gemini(api_key, &reemplazo, prompt).await {
-                if st2.is_success() {
-                    let mut cfg = cargar_settings();
-                    cfg.gemini_model = reemplazo;
-                    let _ = guardar_settings(&cfg);
+        if reemplazo != modelo_activo {
+            if let Ok((st2, jr2)) = enviar_peticion_gemini(
+                api_key,
+                &reemplazo,
+                prompt,
+                response_schema.as_ref(),
+            )
+            .await
+            {
+                if st2.is_success()
+                    || es_error_esquema_no_soportado(
+                        st2,
+                        jr2["error"]["message"].as_str().unwrap_or(""),
+                    )
+                {
+                    modelo_activo = reemplazo.clone();
+                    if st2.is_success() {
+                        let mut cfg = cargar_settings();
+                        cfg.gemini_model = reemplazo;
+                        let _ = guardar_settings(&cfg);
+                    }
                     status = st2;
                     json_resp = jr2;
                 }
+            }
+        }
+    }
+
+    if !status.is_success() && response_schema.is_some() {
+        let msg = json_resp["error"]["message"].as_str().unwrap_or("");
+        if es_error_esquema_no_soportado(status, msg) {
+            (status, json_resp) =
+                enviar_peticion_gemini(api_key, &modelo_activo, prompt, None).await?;
+            if status.is_success() && modelo_activo != model.trim().trim_start_matches("models/") {
+                let mut cfg = cargar_settings();
+                cfg.gemini_model = modelo_activo;
+                let _ = guardar_settings(&cfg);
             }
         }
     }
@@ -824,23 +1251,48 @@ async fn llamar_gemini(api_key: &str, model: &str, prompt: &str) -> Result<Value
         .as_str()
         .ok_or_else(|| "Gemini no devolvió texto en la respuesta".to_string())?;
 
-    serde_json::from_str(content)
+    parsear_json_limpio(content)
         .map_err(|e| format!("No se pudo interpretar el JSON de Gemini: {}", e))
 }
 
-async fn consultar_json_proveedor(prompt: &str) -> Result<Value, String> {
+async fn consultar_json_proveedor_con_esquema(
+    prompt: &str,
+    openai_schema: Option<Value>,
+    gemini_schema: Option<Value>,
+) -> Result<Value, String> {
     let settings = cargar_settings();
     if settings.provider == "gemini" {
         if settings.gemini_api_key.trim().is_empty() {
             return Err("No has configurado tu API Key de Google Gemini.".to_string());
         }
-        llamar_gemini(&settings.gemini_api_key, &settings.gemini_model, prompt).await
+        llamar_gemini(
+            &settings.gemini_api_key,
+            &settings.gemini_model,
+            prompt,
+            gemini_schema,
+        )
+        .await
     } else {
         if settings.openai_api_key.trim().is_empty() {
             return Err("No has configurado tu API Key de OpenAI.".to_string());
         }
-        llamar_openai(&settings.openai_api_key, &settings.openai_model, prompt).await
+        llamar_openai(
+            &settings.openai_api_key,
+            &settings.openai_model,
+            prompt,
+            openai_schema,
+        )
+        .await
     }
+}
+
+async fn consultar_json_proveedor(prompt: &str) -> Result<Value, String> {
+    consultar_json_proveedor_con_esquema(
+        prompt,
+        Some(esquema_analisis_openai()),
+        Some(esquema_analisis_gemini()),
+    )
+    .await
 }
 
 fn construir_prompt_analisis_correccion(correccion: &CorreccionIa) -> String {
@@ -1006,6 +1458,7 @@ pub async fn analizar_correccion_ia(
     analizar_cluster_correcciones_ia(std::slice::from_ref(correccion)).await
 }
 
+#[cfg(test)]
 pub(crate) fn arbitrar_salida_hibrida(
     texto: &str,
     raw_json: &Value,
@@ -1014,6 +1467,30 @@ pub(crate) fn arbitrar_salida_hibrida(
     reglas_inyectadas: Vec<String>,
     ejemplos_inyectados: Vec<String>,
     motor: &MotorEstadisticoLocal,
+) -> AiAudienciaOutput {
+    arbitrar_salida_hibrida_con_catalogos(
+        texto,
+        raw_json,
+        memoria_local,
+        priors,
+        reglas_inyectadas,
+        ejemplos_inyectados,
+        motor,
+        &[],
+        &[],
+    )
+}
+
+pub(crate) fn arbitrar_salida_hibrida_con_catalogos(
+    texto: &str,
+    raw_json: &Value,
+    memoria_local: &MemoriaAprendizaje,
+    priors: &IndicePriorsExcel,
+    reglas_inyectadas: Vec<String>,
+    ejemplos_inyectados: Vec<String>,
+    motor: &MotorEstadisticoLocal,
+    tipos_usuario: &[String],
+    juzgados_usuario: &[String],
 ) -> AiAudienciaOutput {
     let get_str = |key: &str| -> String {
         raw_json
@@ -1026,7 +1503,7 @@ pub(crate) fn arbitrar_salida_hibrida(
 
     let motor_pred = motor.predecir(texto, memoria_local, priors);
 
-    let mut radicado = get_str("radicado");
+    let mut radicado = limpiar_valor_opcional_vacio(&get_str("radicado"));
     let mut proc_vinculado = None;
     for num in extraer_numeros_radicado(if radicado.is_empty() { texto } else { &radicado }) {
         if let Some(p) = priors.procesos_por_numero.get(&num) {
@@ -1046,7 +1523,7 @@ pub(crate) fn arbitrar_salida_hibrida(
         }
     }
 
-    let raw_tipo = get_str("tipo_audiencia");
+    let raw_tipo = limpiar_valor_opcional_vacio(&get_str("tipo_audiencia"));
     let tipo_resuelto = resolver_alias_exacto_validado(memoria_local, "tipo", &raw_tipo, 0.35)
         .unwrap_or_else(|| {
             if raw_tipo.is_empty() {
@@ -1060,15 +1537,19 @@ pub(crate) fn arbitrar_salida_hibrida(
                 raw_tipo.clone()
             }
         });
-    let (tipo_audiencia, tipo_otra) = mapear_tipo_audiencia(&tipo_resuelto);
+    let (tipo_audiencia, tipo_otra) =
+        mapear_tipo_audiencia_con_usuario(&tipo_resuelto, tipos_usuario);
 
-    let fecha = normalizar_fecha_ia(&get_str("fecha"));
-    let (hora_norm, minuto_norm) = normalizar_hora_minuto_ia(&get_str("hora"), &get_str("minuto"));
+    let fecha = normalizar_fecha_ia(&limpiar_valor_opcional_vacio(&get_str("fecha")));
+    let raw_hora = limpiar_valor_opcional_vacio(&get_str("hora"));
+    let raw_minuto = limpiar_valor_opcional_vacio(&get_str("minuto"));
+    let (hora_norm, minuto_norm) = normalizar_hora_minuto_ia(&raw_hora, &raw_minuto);
     let (hora, minuto, _) = resolver_hora_con_prior(&hora_norm, &minuto_norm, texto, priors);
 
-    let raw_juzgado = get_str("juzgado");
-    // Preserva abreviaciones CTO/MPAL/PCTO por defecto; solo sustituye si existe un alias validado (q10 >= 0.35).
-    let juzgado = if raw_juzgado.is_empty() {
+    let raw_juzgado = limpiar_valor_opcional_vacio(&get_str("juzgado"));
+    // Preserva abreviaciones CTO/MPAL/PCTO por defecto; solo sustituye si existe un alias validado (q10 >= 0.35),
+    // o si coincide insensiblemente a tildes/mayúsculas con un ítem exacto del catálogo.
+    let juzgado_bruto = if raw_juzgado.is_empty() {
         proc_vinculado
             .as_ref()
             .map(|p| p.juzgado_habitual.clone())
@@ -1079,6 +1560,7 @@ pub(crate) fn arbitrar_salida_hibrida(
         resolver_alias_exacto_validado(memoria_local, "juzgado", &raw_juzgado, 0.35)
             .unwrap_or(raw_juzgado)
     };
+    let juzgado = normalizar_juzgado_catalogo(&juzgado_bruto, juzgados_usuario);
 
     let mut se_realizo = get_str("se_realizo").to_uppercase();
     if se_realizo == "SÍ" {
@@ -1266,15 +1748,21 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
     let candidatos = seleccionar_candidatos_prompt(&texto_pre, &memoria_local, &settings, &priors);
     let motor = MotorEstadisticoLocal::entrenar_desde_memorias(memoria_base, &memoria_local);
 
-    let prompt = construir_prompt_con_candidatos(
+    let prompt = construir_prompt_con_candidatos_y_catalogo(
         &texto_pre,
         current_year,
         &contexto_aprendizaje,
         Some(&candidatos),
+        &settings.tipos_audiencia,
     );
-    let raw_json = consultar_json_proveedor(&prompt).await?;
+    let raw_json = consultar_json_proveedor_con_esquema(
+        &prompt,
+        Some(esquema_extraccion_audiencia_openai()),
+        Some(esquema_extraccion_audiencia_gemini()),
+    )
+    .await?;
 
-    Ok(arbitrar_salida_hibrida(
+    Ok(arbitrar_salida_hibrida_con_catalogos(
         texto,
         &raw_json,
         &memoria_local,
@@ -1282,6 +1770,8 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
         reglas_inyectadas,
         ejemplos_inyectados,
         &motor,
+        &settings.tipos_audiencia,
+        &settings.juzgados,
     ))
 }
 
@@ -2048,5 +2538,118 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_contrato_api_formulario_esquema_catalogo_tildes_y_vacios() {
+        // 1) Esquemas estructurados nativos para OpenAI (strict) y Gemini (sin additionalProperties)
+        let oa = esquema_extraccion_audiencia_openai();
+        assert_eq!(oa["type"], "json_schema");
+        assert_eq!(oa["json_schema"]["strict"], true);
+        assert_eq!(oa["json_schema"]["schema"]["additionalProperties"], false);
+        assert_eq!(
+            oa["json_schema"]["schema"]["properties"]["se_realizo"]["enum"],
+            json!(["SI", "NO", ""])
+        );
+        assert!(oa["json_schema"]["schema"]["properties"]["motivo"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Defensor Confianza")));
+
+        let gm = esquema_extraccion_audiencia_gemini();
+        assert_eq!(gm["type"], "OBJECT");
+        assert!(gm.get("additionalProperties").is_none());
+        assert_eq!(gm["properties"]["se_realizo"]["enum"], json!(["SI", "NO", ""]));
+
+        // Detección de error 400 por esquema no soportado para respaldo automático
+        assert!(es_error_esquema_no_soportado(
+            reqwest::StatusCode::BAD_REQUEST,
+            "Invalid parameter: response_format json_schema is not supported on this model"
+        ));
+        assert!(!es_error_esquema_no_soportado(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "Invalid API key"
+        ));
+
+        // 2) Prompt incluye los 17 tipos oficiales + tipos personalizados del usuario
+        let prompt = construir_prompt_con_candidatos_y_catalogo(
+            "Audiencia verificacion de cumplimiento",
+            2026,
+            "",
+            None,
+            &["Audiencia de sustitución de medida".into()],
+        );
+        assert!(prompt.contains("Audiencia de verificación de cumplimiento"));
+        assert!(prompt.contains("Audiencia de incidente de reparación integral"));
+        assert!(prompt.contains("- Audiencia de sustitución de medida"));
+        assert!(!prompt.contains("(personalizado del usuario)"));
+        assert!(!prompt.contains("Alegatos de conclusión, etc."));
+
+        // Parseo tolerante cuando el modelo de respaldo envuelve JSON en texto breve
+        let json_envuelto = parsear_json_limpio("Resultado:\n```json\n{\"se_realizo\":\"SI\"}\n```").unwrap();
+        assert_eq!(json_envuelto["se_realizo"], "SI");
+
+        // 3) Empate insensible a tildes en tipos y juzgados + limpieza de placeholders opcionales
+        let mem = MemoriaAprendizaje::default();
+        let priors = IndicePriorsExcel::default();
+        let motor = MotorEstadisticoLocal::entrenar_desde_memorias(
+            &MemoriaAprendizaje::default(),
+            &mem,
+        );
+        let raw_sin_tildes = json!({
+            "radicado": "CARLOS GOMEZ - 200016001075202600010",
+            "tipo_audiencia": "Audiencia de verificacion de cumplimiento",
+            "fecha": "15/08/2026",
+            "hora": "No especificado",
+            "minuto": "N/A",
+            "juzgado": "Juzgado 1 Penal Municipal con Funcion de Control de Garantias de Valledupar",
+            "se_realizo": "SI",
+            "motivo": "Ninguno",
+            "observaciones": "No especificado"
+        });
+        let out = arbitrar_salida_hibrida_con_catalogos(
+            "Audiencia de verificacion de cumplimiento sin novedad",
+            &raw_sin_tildes,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &["Audiencia de sustitución de medida".into()],
+            &[],
+        );
+        assert_eq!(out.tipo_audiencia, "Audiencia de verificación de cumplimiento");
+        assert_eq!(out.tipo_otra, "");
+        assert_eq!(
+            out.juzgado,
+            "Juzgado 1 Penal Municipal con Función de Control de Garantías de Valledupar"
+        );
+        assert_eq!(out.hora, "");
+        assert_eq!(out.minuto, "");
+        assert_eq!(out.motivo, "");
+        assert_eq!(out.observaciones, "");
+
+        // Tipo personalizado del usuario sin tilde también resuelve exacto y "Otra" literal limpia a ""
+        assert_eq!(
+            mapear_tipo_audiencia_con_usuario(
+                "audiencia de sustitucion de medida",
+                &["Audiencia de sustitución de medida".into()]
+            ),
+            ("Audiencia de sustitución de medida".into(), "".into())
+        );
+        assert_eq!(
+            mapear_tipo_audiencia_con_usuario("Otra", &[]),
+            ("".into(), "".into())
+        );
+
+        // No debe fusionar variantes jurídicas reales en juzgado
+        assert_eq!(
+            normalizar_juzgado_catalogo("Juzgado 2 Penal", &[]),
+            "Juzgado 2 Penal"
+        );
+        assert_eq!(
+            normalizar_juzgado_catalogo("Juzgado Segundo Penal", &[]),
+            "Juzgado Segundo Penal"
+        );
     }
 }
