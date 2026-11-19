@@ -1,4 +1,4 @@
-# Lokus — Gestor de Audiencias Judiciales (v4.0)
+# Lokus — Gestor de Audiencias Judiciales (v4.1)
 
 Aplicación de escritorio nativa multiplataforma (**Windows** y **Linux**) construida con **Rust + Tauri v2 + Svelte 5** para la gestión, control estadístico y autocompletado inteligente de las planillas oficiales de audiencias judiciales de la Defensoría del Pueblo (Colombia).
 

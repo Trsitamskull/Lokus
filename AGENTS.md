@@ -20,7 +20,7 @@ Este documento constituye la memoria persistente, la especificación operativa y
 
 | Categoría | Especificación del proyecto |
 | :--- | :--- |
-| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v4.0` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
+| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v4.1` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
 | **Pila tecnológica activa (`rust-tauri`)** | **Backend:** Rust 2021 + Tauri v2 (`umya-spreadsheet`, `reqwest` con `rustls-tls`, `tokio`, `serde`, `chrono`, `regex`, `base64`, `flate2`)<br>**Frontend:** Svelte 5 (Runes: `$state`, `$derived`) + Vite 6 + CSS Variables nativas (puerto dev `5173`) |
 | **Pila tecnológica legado (`legacy-python`)** | Python 3 + `flet==1.1.2` (`flet-desktop==1.1.2`, `flet-cli==1.1.2`) + `openpyxl==3.1.2` + `openai==1.98.0` |
 | **Proveedores de IA soportados** | **OpenAI** (`gpt-5-mini`, `gpt-4o-mini`, `gpt-4o`) y **Google Gemini** (`gemini-2.5-flash`, `gemini-2.0-flash`) para autocompletado de formulario a partir de texto libre |
@@ -33,15 +33,16 @@ Este documento constituye la memoria persistente, la especificación operativa y
 
 1. **Frontend y vistas (`src/` e `index.html`):**
    - `src/App.svelte`: Orquestador principal de estado, barra superior, comandos IPC y atajos globales.
-   - `src/lib/constants.js`: Catálogos oficiales del frontend (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`, `HORAS_RAPIDAS`).
+   - `src/lib/constants.js`: Catálogos oficiales del frontend (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`, `HORAS_RAPIDAS`, `JUZGADOS_BASE`, `normalizarClaveCatalogo`).
    - `src/lib/components/`: Componentes modulares Svelte 5 (`Sidebar.svelte`, `AudienciaForm.svelte`, `RegistrosTable.svelte`, `EstadisticasView.svelte`, `Modals.svelte`, `CustomSelect.svelte`, `AutocompleteInput.svelte`, `DatePickerInput.svelte`).
    - `src/app.css`: Sistema de temas (`data-theme="dark"` Warm Obsidian y `data-theme="light"` Azul Niebla Sereno), barras de scroll integradas y CSS `@container` responsivo.
 2. **Backend y lógica de dominio en Rust (`src-tauri/src/`):**
-   - `models.rs`: Estructuras `AudienciaInput`, `RegistroAudiencia`, `TotalesExcel`, `IndicePriorsExcel`, catálogos oficiales (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`), mapeo de columnas `mapear_motivo_a_indice` y validadores.
+   - `models.rs`: Estructuras `AudienciaInput`, `RegistroAudiencia`, `TotalesExcel`, `IndicePriorsExcel`, catálogos oficiales (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`, `HORAS_RAPIDAS`), `normalizar_clave_catalogo`, mapeo de columnas `mapear_motivo_a_indice` y validadores.
    - `excel.rs`: Motor de lectura/escritura sobre `umya-spreadsheet`, plantilla embebida con `include_bytes!`, ordenamiento cronológico descendente, carpetas/subcarpetas, caché en memoria, índice de identidad estable (`.lokus_estadisticas.json`) e índice incremental de priors (`.lokus_priors.json`).
-   - `paquete.rs`: Exportación e importación portable de copias completas comprimidas (`.lokus`, sin API keys) y paquetes de solo estadísticas (`.lokus.json`), con inspección previa, deduplicación por ID e invalidación de priors.
-   - `ai.rs`: Preprocesador de jerga/abreviaciones judiciales colombianas, cliente HTTP asíncrono dual (OpenAI + Gemini), arbitraje híbrido (invariantes Defensoría + estadística local), inducción agrupada de clústeres y postprocesador de motivos y observaciones.
-   - `aprendizaje.rs`: Memoria `v2` de autoaprendizaje (`ia_aprendizaje.json`), gobernanza bayesiana (`cuantil_beta`, Wilson, decaimiento híbrido por evento), evaluación en sombra, tokenizador judicial + BM25 + MMR, atribución causal de crédito sobre búfer balanceado, clústeres diferidos, detección de deriva Page-Hinkley y exportación anonimizada completa a Descargas.
+   - `paquete.rs`: Exportación e importación portable de copias completas comprimidas (`.lokus`, sin API keys, incluyendo uso histórico de catálogos) y paquetes de solo estadísticas (`.lokus.json`), con inspección previa, deduplicación por ID e invalidación de priors.
+   - `ai.rs`: Preprocesador de jerga/abreviaciones judiciales colombianas, cliente HTTP asíncrono dual (OpenAI + Gemini con esquema JSON estricto y respaldo automático), arbitraje híbrido (invariantes Defensoría + estadística local), inducción agrupada de clústeres y postprocesador de motivos, tipos, juzgados y observaciones.
+   - `aprendizaje.rs`: Memoria `v2` de autoaprendizaje (`ia_aprendizaje.json`), gobernanza bayesiana (`cuantil_beta`, Wilson, decaimiento híbrido por evento), evaluación en sombra, tokenizador judicial + BM25 + MMR, atribución causal de crédito sobre búfer balanceado, clústeres diferidos, detección de deriva Page-Hinkley y exportación anonimizada unificada (IA + `uso_catalogos`) a Descargas.
+   - `uso_catalogos.rs`: Conteo histórico persistente (`config/uso_catalogos.json`) de uso en `Tipo de audiencia`, `Hora` y `Juzgado` (incluyendo opciones predeterminadas y de usuario con `0` usos, entradas libres `"Otra"` y franjas horarias), siembra única inicial desde Excel, ajuste por edición/borrado de filas e integración en paquetes `.lokus` y exportación JSON unificada.
    - `estadistica_ia.rs`: Motor estadístico local en Rust puro (Regresión Logística Online L2 + AdaGrad, comparativa CNB, BM25 k-NN, resolutor de entidades/ordinales con tabla de alias Beta y `resources/juzgados_base.json`, y desambiguación AM/PM por jornada laboral).
    - `config.rs`: Lectura/escritura de `config/settings.json` y enmascaramiento de API Keys para la interfaz.
    - `lib.rs` y `main.rs`: Registro de comandos IPC (`#[tauri::command]`) y arranque de Tauri v2.
