@@ -1598,7 +1598,7 @@ body.is-dragging-tree {
   align-items: center;
   gap: 2px;
   padding: 2px;
-  margin-left: auto;
+  margin-left: 4px;
   border-radius: var(--radius-chip);
   background: var(--bg-subtle);
   border: 1px solid var(--border-hairline);

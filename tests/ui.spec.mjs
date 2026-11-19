@@ -371,15 +371,22 @@ test.describe("Lokus UI smoke checks", () => {
       const btns = Array.from(document.querySelectorAll(".time-presets .preset-btn"));
       const tops = btns.map((b) => Math.round(b.getBoundingClientRect().top));
       const anyClipped = btns.some((b) => b.scrollWidth > b.clientWidth + 1);
+      const minEl = document.getElementById("minuto");
+      const merEl = document.querySelector(".time-meridiem-group");
+      const meridiemGap =
+        merEl.getBoundingClientRect().left - minEl.getBoundingClientRect().right;
       return {
         rowSpread: Math.max(...tops) - Math.min(...tops),
         containerOverflow: container.scrollWidth > container.clientWidth + 1,
         anyClipped,
+        meridiemGap,
       };
     });
     expect(presetLayout.rowSpread).toBeLessThan(2);
     expect(presetLayout.containerOverflow).toBe(false);
     expect(presetLayout.anyClipped).toBe(false);
+    expect(presetLayout.meridiemGap).toBeGreaterThanOrEqual(0);
+    expect(presetLayout.meridiemGap).toBeLessThanOrEqual(16);
 
     await page.locator(".time-presets .preset-btn", { hasText: "9:00 AM" }).click();
     await expect(horaInput).toHaveValue("09");
