@@ -698,7 +698,7 @@
                   <strong>Copia completa de Lokus (.lokus)</strong>
                 </div>
                 <p class="shortcut-hint">
-                  Incluye todas tus carpetas, planillas Excel, estadísticas archivadas y tus listas (defensores, juzgados y tipos de audiencia). Nunca incluye tus claves API.
+                  Incluye todas tus carpetas, planillas Excel, estadísticas archivadas, tus listas (defensores, juzgados y tipos de audiencia) y el historial de uso de catálogos. Nunca incluye tus claves API.
                 </p>
               </div>
             </label>

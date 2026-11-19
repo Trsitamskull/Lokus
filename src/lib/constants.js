@@ -32,10 +32,22 @@ export const MOTIVOS_LABELS = [
 
 export const HORAS_RAPIDAS = [
   { h24: "08", h12: "08", m: "00", periodo: "AM", label: "8:00 AM" },
+  { h24: "09", h12: "09", m: "00", periodo: "AM", label: "9:00 AM" },
   { h24: "10", h12: "10", m: "00", periodo: "AM", label: "10:00 AM" },
   { h24: "14", h12: "02", m: "00", periodo: "PM", label: "2:00 PM" },
+  { h24: "15", h12: "03", m: "00", periodo: "PM", label: "3:00 PM" },
   { h24: "16", h12: "04", m: "00", periodo: "PM", label: "4:00 PM" },
 ];
+
+export function normalizarClaveCatalogo(texto = "") {
+  return String(texto || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
 
 export const COLORES_CARPETA = [
   { id: "", label: "Predeterminado", cssVar: "var(--text-secondary)" },

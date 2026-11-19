@@ -86,7 +86,7 @@ Todos los colores en componentes `.svelte` y reglas de `src/app.css` deben refer
 
 ### Controles de Fecha y Hora (`DatePickerInput.svelte` y `AudienciaForm.svelte`)
 - **Calendario (`.calendar-popover`)**: alterna vistas inline entre días (`.calendar-grid`), rejilla `4×3` de meses (`.calendar-months-matrix`) y rejilla `4×3` paginada de años `2018–2050` (`.calendar-years-matrix`) mediante `.calendar-cell-btn`, con navegación por rueda del ratón sobre mes, año y cuadrícula.
-- **Hora 12h (`.time-inline-box`)**: captura en formato `12h` (`01..12`) + selector `.time-meridiem-group` (`AM`/`PM`) con navegación por bordes mediante `ArrowLeft`/`ArrowRight` y conversión automática a `24h` (`HH:MM`) al persistir en Excel.
+- **Hora 12h (`.time-inline-box` + `.time-presets`)**: captura en formato `12h` (`01..12`) + selector `.time-meridiem-group` (`AM`/`PM`) con navegación por bordes mediante `ArrowLeft`/`ArrowRight` y conversión automática a `24h` (`HH:MM`) al persistir en Excel. Debajo del control `HH:MM AM/PM` se muestra una fila ordenada de `6` accesos rápidos (`.time-presets`: `8:00 AM`, `9:00 AM`, `10:00 AM`, `2:00 PM`, `3:00 PM`, `4:00 PM`) en grilla de `6` columnas (`minmax(0, 1fr)`), reduciéndose a `3×2` cuando la columna es estrecha (`@container timecol (width < 360px)` o `@container workspace (width < 520px)`).
 - **Diagnóstico Técnico de Autoaprendizaje (`.ia-diag-details`)**: bloque colapsable `<details>` dentro del modal `config_ia` (`Modals.svelte`) sobre superficie plana (`--bg-input`, `--border-hairline`, `box-shadow: none`), métricas numéricas con `tabular-nums`, tabla de fiabilidad por campo, alertas de drift Page-Hinkley y ciclo de vida de reglas sin sobrecargar la vista diaria.
 
 ### Container Queries

@@ -1,11 +1,14 @@
 import { test, expect } from "@playwright/test";
 
-function mockTauriInit() {
+function mockTauriInit(opts = {}) {
+  const configured = Boolean(opts?.configured);
   const carpetas = ["2026", "2026/Enero"];
   const archivos = ["2026/Enero/audiencias_enero.xlsx"];
   const colores = { "2026": "azul", "2026/Enero": "verde" };
   const defensores = ["Dra. Laura Gómez", "Dr. Carlos Mendoza"];
   let temaActual = "dark";
+  let juzgadosUsuario = [];
+  let tiposUsuario = [];
 
   window.__TAURI_INTERNALS__ = {
     invoke: async (cmd, args = {}) => {
@@ -17,28 +20,65 @@ function mockTauriInit() {
             gemini_model: "gemini-2.5-flash",
             theme: temaActual,
             defensores,
-            juzgados: [],
-            tipos_audiencia: [],
+            juzgados: juzgadosUsuario,
+            tipos_audiencia: tiposUsuario,
             status: {
-              configured: false,
+              configured,
               provider: "openai",
               model: "gpt-5-mini",
-              has_openai_key: false,
+              has_openai_key: configured,
               has_gemini_key: false,
-              masked_openai_key: "",
+              masked_openai_key: configured ? "sk-***1234" : "",
               masked_gemini_key: "",
             },
           };
+        case "cmd_agregar_juzgado": {
+          const limpio = (args.nombre || "").trim().replace(/\s+/g, " ");
+          const norm = limpio
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/[^\p{L}\p{N}]+/gu, " ")
+            .trim()
+            .toLowerCase();
+          const yaEnBase = norm === "tribunal superior del distrito judicial de valledupar sala penal";
+          if (norm && !yaEnBase && !juzgadosUsuario.some((j) => j.toLowerCase() === limpio.toLowerCase())) {
+            juzgadosUsuario = [...juzgadosUsuario, limpio];
+          }
+          return { juzgados: juzgadosUsuario };
+        }
+        case "cmd_eliminar_juzgado": {
+          const target = (args.nombre || "").trim().toLowerCase();
+          juzgadosUsuario = juzgadosUsuario.filter((j) => j.toLowerCase() !== target);
+          return { juzgados: juzgadosUsuario };
+        }
+        case "cmd_agregar_tipo_audiencia": {
+          const limpio = (args.nombre || "").trim().replace(/\s+/g, " ");
+          const norm = limpio
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/[^\p{L}\p{N}]+/gu, " ")
+            .trim()
+            .toLowerCase();
+          if (norm && norm !== "audiencia de imputacion") {
+            tiposUsuario = [...tiposUsuario, limpio];
+          }
+          return { tipos_audiencia: tiposUsuario };
+        }
+        case "cmd_eliminar_tipo_audiencia": {
+          const target = (args.nombre || "").trim().toLowerCase();
+          tiposUsuario = tiposUsuario.filter((t) => t.toLowerCase() !== target);
+          return { tipos_audiencia: tiposUsuario };
+        }
         case "cmd_guardar_tema":
           temaActual = args.tema || "dark";
           return {
             status: {
-              configured: false,
+              configured,
               provider: "openai",
               model: "gpt-5-mini",
-              has_openai_key: false,
+              has_openai_key: configured,
               has_gemini_key: false,
-              masked_openai_key: "",
+              masked_openai_key: configured ? "sk-***1234" : "",
               masked_gemini_key: "",
             },
           };
@@ -55,9 +95,29 @@ function mockTauriInit() {
             aciertos: 12,
             total_correcciones: 2,
             total_reglas: 3,
-            pendientes_exportar: 1,
+            pendientes_exportar: 3,
+            pendientes_ia: 1,
+            pendientes_uso: 2,
+            total_audiencias_contabilizadas: 5,
+            puede_exportar: true,
             hubo_correccion: false,
             aclaracion_pendiente: null,
+          };
+        case "cmd_exportar_aprendizaje_ia":
+          return "/home/test/Descargas/lokus_uso_y_aprendizaje_ia_test.json";
+        case "cmd_autocompletar_ia":
+          return {
+            radicado: "200016001075202500999",
+            tipo_audiencia: "Audiencia de imputacion",
+            tipo_otra: "",
+            fecha: "18/01/2026",
+            hora: "15",
+            minuto: "00",
+            juzgado: "juzgado 1 promiscuo municipal de agustin codazzi",
+            se_realizo: "SI",
+            motivo: "",
+            observaciones: "Se realizó audiencia preliminar.",
+            reglas_inyectadas: [],
           };
         case "cmd_diagnostico_aprendizaje_ia":
           return {
@@ -295,10 +355,56 @@ test.describe("Lokus UI smoke checks", () => {
     await expect(pmBtn).toBeFocused();
     await pmBtn.click();
     await expect(pmBtn).toHaveAttribute("aria-pressed", "true");
-    await page.locator(".preset-btn", { hasText: "8:00 AM" }).click();
+    // 6 accesos rápidos de hora en fila única debajo de HH:MM AM/PM
+    const presetBtns = page.locator(".time-presets .preset-btn");
+    await expect(presetBtns).toHaveCount(6);
+    await expect(presetBtns).toHaveText([
+      "8:00 AM",
+      "9:00 AM",
+      "10:00 AM",
+      "2:00 PM",
+      "3:00 PM",
+      "4:00 PM",
+    ]);
+    const presetLayout = await page.evaluate(() => {
+      const container = document.querySelector(".time-presets");
+      const btns = Array.from(document.querySelectorAll(".time-presets .preset-btn"));
+      const tops = btns.map((b) => Math.round(b.getBoundingClientRect().top));
+      const anyClipped = btns.some((b) => b.scrollWidth > b.clientWidth + 1);
+      return {
+        rowSpread: Math.max(...tops) - Math.min(...tops),
+        containerOverflow: container.scrollWidth > container.clientWidth + 1,
+        anyClipped,
+      };
+    });
+    expect(presetLayout.rowSpread).toBeLessThan(2);
+    expect(presetLayout.containerOverflow).toBe(false);
+    expect(presetLayout.anyClipped).toBe(false);
+
+    await page.locator(".time-presets .preset-btn", { hasText: "9:00 AM" }).click();
+    await expect(horaInput).toHaveValue("09");
+    await expect(minutoInput).toHaveValue("00");
+    await expect(amBtn).toHaveAttribute("aria-pressed", "true");
+
+    await page.locator(".time-presets .preset-btn", { hasText: "3:00 PM" }).click();
+    await expect(horaInput).toHaveValue("03");
+    await expect(minutoInput).toHaveValue("00");
+    await expect(pmBtn).toHaveAttribute("aria-pressed", "true");
+
+    await page.locator(".time-presets .preset-btn", { hasText: "8:00 AM" }).click();
     await expect(horaInput).toHaveValue("08");
     await expect(minutoInput).toHaveValue("00");
     await expect(amBtn).toHaveAttribute("aria-pressed", "true");
+
+    // Botón compartir unificado (badge de novedades y limpieza tras exportar)
+    const shareBtn = page.getByRole("button", {
+      name: "Compartir uso de catálogos y aprendizaje IA",
+    });
+    await expect(shareBtn).toHaveAttribute("title", /5 audiencias/);
+    await expect(shareBtn.locator(".share-badge")).toHaveText("3");
+    await shareBtn.click();
+    await expect(shareBtn.locator(".share-badge")).toHaveCount(0);
+    await expect(page.locator(".toast")).toContainText("Uso de catálogos y aprendizaje exportados");
 
     // Navegación por rueda del ratón y rejillas 4x3 de mes y año en DatePickerInput
     const fechaInput = page.locator("#fecha");
@@ -358,15 +464,105 @@ test.describe("Lokus UI smoke checks", () => {
     await expect(page.locator(".ia-diag-rules-list")).toContainText("CTO");
     await page.getByRole("button", { name: "Cancelar" }).click();
 
-    // Cambio de tema y verificación de no desbordamiento horizontal
+    // Cambio de tema y verificación de no desbordamiento horizontal en tema claro
     await toggleSidebarBtn.click();
     await page.keyboard.press("Control+b");
     await page.getByRole("button", { name: "Cambiar tema" }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-    const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth > document.documentElement.clientWidth
+    await page.getByRole("tab", { name: /Nueva Audiencia/ }).click();
+    const lightCheck = await page.evaluate(() => {
+      const docOverflow =
+        document.documentElement.scrollWidth > document.documentElement.clientWidth;
+      const btns = Array.from(document.querySelectorAll(".time-presets .preset-btn"));
+      const tops = btns.map((b) => Math.round(b.getBoundingClientRect().top));
+      return {
+        docOverflow,
+        rowSpread: Math.max(...tops) - Math.min(...tops),
+      };
+    });
+    expect(lightCheck.docOverflow).toBe(false);
+    expect(lightCheck.rowSpread).toBeLessThan(2);
+    expect(errors).toEqual([]);
+  });
+
+  test("autocompletado IA empata sin tildes ni mayúsculas con el catálogo y resalta 3:00 PM", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, { configured: true });
+    await page.goto("/");
+
+    const iaTextarea = page.locator("#ia-inline-textarea");
+    await expect(iaTextarea).toBeVisible();
+    await iaTextarea.fill(
+      "Audiencia de imputacion ante juzgado 1 promiscuo municipal de agustin codazzi a las 3 pm"
     );
-    expect(overflow).toBe(false);
+    await page.getByRole("button", { name: /Autocompletar con IA/i }).click();
+
+    await expect(page.locator("#tipo-audiencia")).toContainText("Audiencia de imputación");
+    await expect(page.locator("#tipo-otra")).toHaveCount(0);
+    await expect(page.locator("#juzgado")).toContainText(
+      "Juzgado 1 Promiscuo Municipal de Agustín Codazzi"
+    );
+    await expect(page.locator("#juzgado-otra")).toHaveCount(0);
+    await expect(
+      page.locator(".time-presets .preset-btn", { hasText: "3:00 PM" })
+    ).toHaveAttribute("aria-pressed", "true");
+
+    // Verificar diseño en ventana estrecha (3x2 en accesos rápidos sin desbordamiento ni recortes en todos los anchos)
+    for (const width of [1280, 1024, 980, 960, 720, 670, 580, 480]) {
+      await page.setViewportSize({ width, height: 820 });
+      const layout = await page.evaluate(() => {
+        const docOverflow =
+          document.documentElement.scrollWidth > document.documentElement.clientWidth;
+        const container = document.querySelector(".time-presets");
+        const btns = Array.from(document.querySelectorAll(".time-presets .preset-btn"));
+        const anyClipped = btns.some((b) => b.scrollWidth > b.clientWidth + 1);
+        const containerOverflow = container.scrollWidth > container.clientWidth + 1;
+        return { docOverflow, anyClipped, containerOverflow };
+      });
+      expect(layout.docOverflow, `docOverflow at ${width}px`).toBe(false);
+      expect(layout.anyClipped, `anyClipped at ${width}px`).toBe(false);
+      expect(layout.containerOverflow, `containerOverflow at ${width}px`).toBe(false);
+    }
+
+    // Probar flujo "+ Agregar nuevo" en CustomSelect con variante sin tilde y puntuación distinta
+    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.locator("#tipo-audiencia").click();
+    await page.locator(".custom-select-add-trigger").click();
+    await page.locator(".custom-select-add-input").fill("Audiencia de imputacion");
+    await page.locator(".custom-select-add-save").click();
+    await expect(page.locator("#tipo-audiencia")).toContainText("Audiencia de imputación");
+    await expect(page.locator(".toast")).toContainText("ya existe en los tipos de audiencia");
+
+    await page.locator("#juzgado").click();
+    await page.locator(".custom-select-add-trigger").click();
+    await page
+      .locator(".custom-select-add-input")
+      .fill("Tribunal Superior del Distrito Judicial de Valledupar Sala Penal");
+    await page.locator(".custom-select-add-save").click();
+    await expect(page.locator("#juzgado")).toContainText(
+      "Tribunal Superior del Distrito Judicial de Valledupar - Sala Penal"
+    );
+    await expect(page.locator(".toast")).toContainText("ya existe en la lista de juzgados");
+
+    // Agregar juzgado nuevo real y luego eliminarlo de la lista
+    await page.locator("#juzgado").click();
+    await page.locator(".custom-select-add-trigger").click();
+    await page.locator(".custom-select-add-input").fill("Juzgado 2 Penal");
+    await page.locator(".custom-select-add-save").click();
+    await expect(page.locator("#juzgado")).toContainText("Juzgado 2 Penal");
+    await expect(page.locator(".toast")).toContainText("agregado a la lista de juzgados");
+
+    await page.locator("#juzgado").click();
+    await page.getByRole("button", { name: "Eliminar Juzgado 2 Penal" }).click();
+    await expect(page.locator("#juzgado")).toContainText("Sin especificar");
+
     expect(errors).toEqual([]);
   });
 });

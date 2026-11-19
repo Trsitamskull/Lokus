@@ -21,9 +21,14 @@ use chrono::Local;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{cargar_settings, estado_desde_settings, ruta_en_carpeta_config};
-use crate::excel::carpeta_descargas;
+use crate::config::{cargar_settings, estado_desde_settings, ruta_en_carpeta_config, AppSettings};
+use crate::excel::{carpeta_descargas, obtener_carpeta_archivos, recolectar_radicados_en};
 use crate::models::{normalizar_texto_sin_tildes, AudienciaInput};
+use crate::uso_catalogos::{
+    asegurar_uso_inicializado_actual, asegurar_uso_inicializado_en,
+    construir_reporte_uso_catalogos, marcar_uso_compartido_en, ruta_uso_catalogos,
+    ReporteUsoCatalogos, UsoCatalogos,
+};
 
 pub const NOMBRE_ARCHIVO_MEMORIA: &str = "ia_aprendizaje.json";
 /// Máximo de correcciones conservadas localmente (se descartan primero las más antiguas).
@@ -431,6 +436,14 @@ pub struct ResumenAprendizaje {
     pub total_correcciones: usize,
     pub total_reglas: usize,
     pub pendientes_exportar: usize,
+    #[serde(default)]
+    pub pendientes_ia: usize,
+    #[serde(default)]
+    pub pendientes_uso: usize,
+    #[serde(default)]
+    pub total_audiencias_contabilizadas: u32,
+    #[serde(default)]
+    pub puede_exportar: bool,
     pub hubo_correccion: bool,
     pub aclaracion_pendiente: Option<AclaracionPendiente>,
 }
@@ -519,6 +532,7 @@ struct PaqueteExportacion {
     alias_validados: Vec<AliasDiagnostico>,
     juzgados_agregados_usuario: Vec<String>,
     tipos_audiencia_agregados_usuario: Vec<String>,
+    uso_catalogos: ReporteUsoCatalogos,
     reglas: Vec<ReglaAprendida>,
     correcciones: Vec<CorreccionIa>,
 }
@@ -1868,6 +1882,86 @@ fn enmascarar_numeros_largos(texto: &str) -> String {
     .into_owned()
 }
 
+fn es_termino_estructural_judicial(token: &str) -> bool {
+    let norm = normalizar_texto_sin_tildes(token);
+    matches!(
+        norm.as_str(),
+        "juzgado"
+            | "juez"
+            | "audiencia"
+            | "penal"
+            | "circuito"
+            | "municipal"
+            | "promiscuo"
+            | "conocimiento"
+            | "garantias"
+            | "especializado"
+            | "especializada"
+            | "mixto"
+            | "mixta"
+            | "despacho"
+            | "tribunal"
+            | "superior"
+            | "sala"
+            | "ejecucion"
+            | "penas"
+            | "medidas"
+            | "seguridad"
+            | "adolescentes"
+            | "distrito"
+            | "judicial"
+            | "funcion"
+            | "funciones"
+            | "control"
+            | "fiscalia"
+            | "defensor"
+            | "publico"
+            | "imputacion"
+            | "acusacion"
+            | "preparatoria"
+            | "concentrada"
+            | "preliminar"
+            | "preclusion"
+            | "nulidad"
+            | "prorroga"
+            | "revision"
+            | "verificacion"
+            | "cumplimiento"
+            | "incidente"
+            | "reparacion"
+            | "integral"
+            | "conciliacion"
+            | "alegatos"
+            | "conclusion"
+            | "sustitucion"
+            | "revocatoria"
+            | "libertad"
+            | "terminos"
+            | "vencimiento"
+            | "preacuerdo"
+            | "allanamiento"
+            | "apelacion"
+            | "captura"
+            | "legalizacion"
+            | "rebaja"
+            | "acumulacion"
+            | "lectura"
+            | "fallo"
+            | "sentencia"
+            | "victima"
+            | "usuario"
+            | "inpec"
+            | "icbf"
+    )
+}
+
+fn es_token_anonimizacion_valido(token: &str) -> bool {
+    let lower = token.to_lowercase();
+    token.chars().count() >= 3
+        && !PALABRAS_VACIAS_NOMBRE.contains(&lower.as_str())
+        && !es_termino_estructural_judicial(token)
+}
+
 /// Reemplaza el nombre del procesado y el número de radicado (conocidos por el campo Radicado,
 /// con formato habitual `NOMBRE - NÚMERO`) por marcadores genéricos.
 pub(crate) struct Anonimizador {
@@ -1935,7 +2029,7 @@ impl Anonimizador {
                                 !matches!(lw.as_str(), "rad" | "radicado" | "nro" | "num" | "proc" | "procesado")
                             })
                             .collect();
-                        if !tokens_alfa.is_empty() {
+                        if tokens_alfa.iter().any(|t| es_token_anonimizacion_valido(t)) {
                             let pat_full = tokens_alfa
                                 .iter()
                                 .map(|t| patron_sin_tildes(t))
@@ -1945,10 +2039,7 @@ impl Anonimizador {
                                 completos.push((re, "[PROCESADO]"));
                             }
                             for token in tokens_alfa {
-                                let lower = token.to_lowercase();
-                                if token.chars().count() < 3
-                                    || PALABRAS_VACIAS_NOMBRE.contains(&lower.as_str())
-                                {
+                                if !es_token_anonimizacion_valido(token) {
                                     continue;
                                 }
                                 if let Ok(re) = Regex::new(&format!(r"(?i)\b{}\b", patron_sin_tildes(token))) {
@@ -1961,23 +2052,23 @@ impl Anonimizador {
                 }
 
                 let tokens: Vec<&str> = parte.split_whitespace().collect();
-                let patron_completo = tokens
-                    .iter()
-                    .map(|t| patron_sin_tildes(t))
-                    .collect::<Vec<_>>()
-                    .join(r"\s+");
-                if let Ok(re) = Regex::new(&format!(r"(?i)\b{}\b", patron_completo)) {
-                    completos.push((re, "[PROCESADO]"));
-                }
-
-                for token in tokens {
-                    let lower = token.to_lowercase();
-                    if token.chars().count() < 3 || PALABRAS_VACIAS_NOMBRE.contains(&lower.as_str())
-                    {
-                        continue;
+                if tokens.iter().any(|t| es_token_anonimizacion_valido(t)) {
+                    let patron_completo = tokens
+                        .iter()
+                        .map(|t| patron_sin_tildes(t))
+                        .collect::<Vec<_>>()
+                        .join(r"\s+");
+                    if let Ok(re) = Regex::new(&format!(r"(?i)\b{}\b", patron_completo)) {
+                        completos.push((re, "[PROCESADO]"));
                     }
-                    if let Ok(re) = Regex::new(&format!(r"(?i)\b{}\b", patron_sin_tildes(token))) {
-                        palabras.push((re, "[PROCESADO]"));
+
+                    for token in tokens {
+                        if !es_token_anonimizacion_valido(token) {
+                            continue;
+                        }
+                        if let Ok(re) = Regex::new(&format!(r"(?i)\b{}\b", patron_sin_tildes(token))) {
+                            palabras.push((re, "[PROCESADO]"));
+                        }
                     }
                 }
             }
@@ -2111,6 +2202,11 @@ fn ultima_aclaracion_pendiente(memoria: &MemoriaAprendizaje) -> Option<Aclaracio
 }
 
 fn resumen_de(memoria: &MemoriaAprendizaje, hubo_correccion: bool) -> ResumenAprendizaje {
+    let pendientes_ia = memoria.correcciones.iter().filter(|c| !c.exportada).count();
+    let puede_exportar = !memoria.correcciones.is_empty()
+        || !memoria.reglas.is_empty()
+        || memoria.aciertos > 0
+        || !memoria.ejemplos_aciertos.is_empty();
     ResumenAprendizaje {
         aciertos: memoria.aciertos,
         total_correcciones: memoria.correcciones.len(),
@@ -2119,10 +2215,35 @@ fn resumen_de(memoria: &MemoriaAprendizaje, hubo_correccion: bool) -> ResumenApr
             .iter()
             .filter(|r| r.estado != "retirada")
             .count(),
-        pendientes_exportar: memoria.correcciones.iter().filter(|c| !c.exportada).count(),
+        pendientes_exportar: pendientes_ia,
+        pendientes_ia,
+        pendientes_uso: 0,
+        total_audiencias_contabilizadas: 0,
+        puede_exportar,
         hubo_correccion,
         aclaracion_pendiente: ultima_aclaracion_pendiente(memoria),
     }
+}
+
+pub fn combinar_resumen_con_uso(
+    mut base: ResumenAprendizaje,
+    uso: &UsoCatalogos,
+    settings: &AppSettings,
+) -> ResumenAprendizaje {
+    let hay_uso = crate::uso_catalogos::hay_datos_uso_exportables(uso, settings);
+    base.pendientes_uso = if hay_uso {
+        uso.pendientes_compartir as usize
+    } else {
+        0
+    };
+    base.total_audiencias_contabilizadas = uso.total_audiencias_contabilizadas;
+    base.puede_exportar = base.puede_exportar || hay_uso;
+    base.pendientes_exportar = if base.puede_exportar {
+        base.pendientes_ia.saturating_add(base.pendientes_uso)
+    } else {
+        0
+    };
+    base
 }
 
 fn actualizar_estado_page_hinkley(
@@ -3290,127 +3411,193 @@ pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje
     }
 }
 
+pub fn exportar_aprendizaje_completo_en(
+    ruta: &Path,
+    ruta_uso: Option<&Path>,
+    carpeta_archivos: Option<&Path>,
+    carpeta_destino: &Path,
+    juzgados_usuario: &[String],
+    tipos_usuario: &[String],
+) -> Result<String, String> {
+    let uso = match (ruta_uso, carpeta_archivos) {
+        (Some(r_uso), Some(carp)) => {
+            let mut s_tmp = AppSettings::default();
+            s_tmp.juzgados = juzgados_usuario.to_vec();
+            s_tmp.tipos_audiencia = tipos_usuario.to_vec();
+            asegurar_uso_inicializado_en(r_uso, carp, &s_tmp)
+        }
+        (Some(r_uso), None) => crate::uso_catalogos::cargar_uso_sin_lock_en(r_uso),
+        _ => UsoCatalogos::default(),
+    };
+
+    let radicados_excel = carpeta_archivos
+        .map(recolectar_radicados_en)
+        .unwrap_or_default();
+
+    let destino_str = {
+        let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+        let mut memoria = cargar_memoria_en(ruta);
+        if memoria.correcciones.is_empty()
+            && memoria.reglas.is_empty()
+            && memoria.aciertos == 0
+            && memoria.ejemplos_aciertos.is_empty()
+            && juzgados_usuario.is_empty()
+            && tipos_usuario.is_empty()
+            && uso.total_audiencias_contabilizadas == 0
+        {
+            return Err(
+                "Aún no hay audiencias registradas, actividad de la IA ni elementos agregados para compartir."
+                    .to_string(),
+            );
+        }
+
+        let mut correcciones_por_campo: BTreeMap<String, usize> = BTreeMap::new();
+        for c in &memoria.correcciones {
+            for campo in &c.campos {
+                *correcciones_por_campo.entry(campo.campo.clone()).or_insert(0) += 1;
+            }
+        }
+
+        let mut todos_radicados: Vec<&str> = Vec::new();
+        for c in &memoria.correcciones {
+            if !c.prediccion.radicado.trim().is_empty() {
+                todos_radicados.push(&c.prediccion.radicado);
+            }
+            if !c.final_usuario.radicado.trim().is_empty() {
+                todos_radicados.push(&c.final_usuario.radicado);
+            }
+        }
+        for e in &memoria.ejemplos_aciertos {
+            if !e.salida_anonimizada.radicado.trim().is_empty() {
+                todos_radicados.push(&e.salida_anonimizada.radicado);
+            }
+        }
+        for rad in &radicados_excel {
+            todos_radicados.push(rad.as_str());
+        }
+        let anon_global = Anonimizador::desde_radicados(&todos_radicados);
+
+        let reglas_anonimizadas: Vec<ReglaAprendida> = memoria
+            .reglas
+            .iter()
+            .map(|r| {
+                let triggers_limpios: Vec<String> = r
+                    .triggers
+                    .iter()
+                    .map(|t| anon_global.aplicar(t))
+                    .filter(|t| {
+                        let limpio = t.trim();
+                        !limpio.is_empty()
+                            && limpio != "[PROCESADO]"
+                            && limpio != "[RADICADO]"
+                            && limpio != "[NUMERO]"
+                    })
+                    .collect();
+                ReglaAprendida {
+                    regla: anon_global.aplicar(&r.regla),
+                    triggers: triggers_limpios,
+                    ..r.clone()
+                }
+            })
+            .collect();
+
+        let correcciones_anonimizadas: Vec<CorreccionIa> = memoria
+            .correcciones
+            .iter()
+            .map(|c| anonimizar_correccion_con_global(c, Some(&anon_global)))
+            .collect();
+
+        let juzgados_anon: Vec<String> = juzgados_usuario
+            .iter()
+            .map(|j| anon_global.aplicar(j))
+            .collect();
+        let tipos_anon: Vec<String> = tipos_usuario
+            .iter()
+            .map(|t| anon_global.aplicar(t))
+            .collect();
+
+        let reporte_uso = construir_reporte_uso_catalogos(
+            &uso,
+            juzgados_usuario,
+            tipos_usuario,
+            &|s| anon_global.aplicar(s),
+        );
+
+        let (metricas_por_campo, metricas_por_modelo, alias_validados, _) =
+            construir_metricas_diagnostico(&memoria, &anon_global);
+        let preferencias_estilo = construir_preferencias_resumen(&memoria.preferencias_estilo);
+
+        let paquete = PaqueteExportacion {
+            app: "Lokus",
+            version_app: env!("CARGO_PKG_VERSION"),
+            formato: VERSION_FORMATO,
+            exportado: Local::now().to_rfc3339(),
+            aciertos: memoria.aciertos,
+            total_reglas: reglas_anonimizadas.len(),
+            total_correcciones: correcciones_anonimizadas.len(),
+            total_ejemplos_aciertos: memoria.ejemplos_aciertos.len(),
+            llamadas_induccion_llm_total: memoria.llamadas_induccion_llm_total,
+            correcciones_por_campo,
+            metricas_por_campo,
+            metricas_por_modelo,
+            preferencias_estilo,
+            alias_validados,
+            juzgados_agregados_usuario: juzgados_anon,
+            tipos_audiencia_agregados_usuario: tipos_anon,
+            uso_catalogos: reporte_uso,
+            reglas: reglas_anonimizadas,
+            correcciones: correcciones_anonimizadas,
+        };
+        let json = serde_json::to_string_pretty(&paquete)
+            .map_err(|e| format!("Error preparando la exportación del aprendizaje: {}", e))?;
+
+        fs::create_dir_all(carpeta_destino)
+            .map_err(|e| format!("No se pudo acceder a la carpeta de destino: {}", e))?;
+        let base = format!("lokus_aprendizaje_ia_{}", Local::now().format("%Y%m%d_%H%M%S"));
+        let mut destino = carpeta_destino.join(format!("{}.json", base));
+        let mut contador = 1;
+        while destino.exists() {
+            destino = carpeta_destino.join(format!("{}_{}.json", base, contador));
+            contador += 1;
+        }
+        fs::write(&destino, json)
+            .map_err(|e| format!("No se pudo guardar el archivo de aprendizaje: {}", e))?;
+
+        let mut cambio_mem = false;
+        for c in memoria.correcciones.iter_mut() {
+            if !c.exportada {
+                c.exportada = true;
+                cambio_mem = true;
+            }
+        }
+        if cambio_mem {
+            guardar_memoria_en(ruta, &memoria)?;
+        }
+
+        destino.to_string_lossy().to_string()
+    };
+
+    if let Some(r_uso) = ruta_uso {
+        marcar_uso_compartido_en(r_uso)?;
+    }
+
+    Ok(destino_str)
+}
+
 pub fn exportar_aprendizaje_con_catalogos_en(
     ruta: &Path,
     carpeta_destino: &Path,
     juzgados_usuario: &[String],
     tipos_usuario: &[String],
 ) -> Result<String, String> {
-    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
-    let mut memoria = cargar_memoria_en(ruta);
-    if memoria.correcciones.is_empty()
-        && memoria.reglas.is_empty()
-        && juzgados_usuario.is_empty()
-        && tipos_usuario.is_empty()
-    {
-        return Err(
-            "Aún no hay correcciones de la IA ni elementos agregados para compartir."
-                .to_string(),
-        );
-    }
-
-    let mut correcciones_por_campo: BTreeMap<String, usize> = BTreeMap::new();
-    for c in &memoria.correcciones {
-        for campo in &c.campos {
-            *correcciones_por_campo.entry(campo.campo.clone()).or_insert(0) += 1;
-        }
-    }
-
-    let mut todos_radicados: Vec<&str> = Vec::new();
-    for c in &memoria.correcciones {
-        if !c.prediccion.radicado.trim().is_empty() {
-            todos_radicados.push(&c.prediccion.radicado);
-        }
-        if !c.final_usuario.radicado.trim().is_empty() {
-            todos_radicados.push(&c.final_usuario.radicado);
-        }
-    }
-    let anon_global = Anonimizador::desde_radicados(&todos_radicados);
-
-    let reglas_anonimizadas: Vec<ReglaAprendida> = memoria
-        .reglas
-        .iter()
-        .map(|r| {
-            let triggers_limpios: Vec<String> = r
-                .triggers
-                .iter()
-                .map(|t| anon_global.aplicar(t))
-                .filter(|t| {
-                    let limpio = t.trim();
-                    !limpio.is_empty()
-                        && limpio != "[PROCESADO]"
-                        && limpio != "[RADICADO]"
-                        && limpio != "[NUMERO]"
-                })
-                .collect();
-            ReglaAprendida {
-                regla: anon_global.aplicar(&r.regla),
-                triggers: triggers_limpios,
-                ..r.clone()
-            }
-        })
-        .collect();
-
-    let correcciones_anonimizadas: Vec<CorreccionIa> = memoria
-        .correcciones
-        .iter()
-        .map(|c| anonimizar_correccion_con_global(c, Some(&anon_global)))
-        .collect();
-
-    let juzgados_anon: Vec<String> = juzgados_usuario
-        .iter()
-        .map(|j| anon_global.aplicar(j))
-        .collect();
-    let tipos_anon: Vec<String> = tipos_usuario
-        .iter()
-        .map(|t| anon_global.aplicar(t))
-        .collect();
-
-    let (metricas_por_campo, metricas_por_modelo, alias_validados, _) =
-        construir_metricas_diagnostico(&memoria, &anon_global);
-    let preferencias_estilo = construir_preferencias_resumen(&memoria.preferencias_estilo);
-
-    let paquete = PaqueteExportacion {
-        app: "Lokus",
-        version_app: env!("CARGO_PKG_VERSION"),
-        formato: VERSION_FORMATO,
-        exportado: Local::now().to_rfc3339(),
-        aciertos: memoria.aciertos,
-        total_reglas: reglas_anonimizadas.len(),
-        total_correcciones: correcciones_anonimizadas.len(),
-        total_ejemplos_aciertos: memoria.ejemplos_aciertos.len(),
-        llamadas_induccion_llm_total: memoria.llamadas_induccion_llm_total,
-        correcciones_por_campo,
-        metricas_por_campo,
-        metricas_por_modelo,
-        preferencias_estilo,
-        alias_validados,
-        juzgados_agregados_usuario: juzgados_anon,
-        tipos_audiencia_agregados_usuario: tipos_anon,
-        reglas: reglas_anonimizadas,
-        correcciones: correcciones_anonimizadas,
-    };
-    let json = serde_json::to_string_pretty(&paquete)
-        .map_err(|e| format!("Error preparando la exportación del aprendizaje: {}", e))?;
-
-    fs::create_dir_all(carpeta_destino)
-        .map_err(|e| format!("No se pudo acceder a la carpeta de destino: {}", e))?;
-    let base = format!("lokus_aprendizaje_ia_{}", Local::now().format("%Y%m%d_%H%M%S"));
-    let mut destino = carpeta_destino.join(format!("{}.json", base));
-    let mut contador = 1;
-    while destino.exists() {
-        destino = carpeta_destino.join(format!("{}_{}.json", base, contador));
-        contador += 1;
-    }
-    fs::write(&destino, json)
-        .map_err(|e| format!("No se pudo guardar el archivo de aprendizaje: {}", e))?;
-
-    for c in memoria.correcciones.iter_mut() {
-        c.exportada = true;
-    }
-    guardar_memoria_en(ruta, &memoria)?;
-
-    Ok(destino.to_string_lossy().to_string())
+    exportar_aprendizaje_completo_en(
+        ruta,
+        None,
+        None,
+        carpeta_destino,
+        juzgados_usuario,
+        tipos_usuario,
+    )
 }
 
 pub fn exportar_aprendizaje_en(ruta: &Path, carpeta_destino: &Path) -> Result<String, String> {
@@ -3465,8 +3652,13 @@ pub fn registrar_resultado_ia(
 }
 
 pub fn obtener_resumen_aprendizaje() -> ResumenAprendizaje {
-    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
-    resumen_de(&cargar_memoria_en(&ruta_memoria()), false)
+    let settings = cargar_settings();
+    let uso = asegurar_uso_inicializado_actual();
+    let base = {
+        let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+        resumen_de(&cargar_memoria_en(&ruta_memoria()), false)
+    };
+    combinar_resumen_con_uso(base, &uso, &settings)
 }
 
 pub fn obtener_diagnostico_aprendizaje() -> DiagnosticoAprendizaje {
@@ -3487,8 +3679,12 @@ pub fn aplicar_analisis_cluster_ia(
 
 pub fn exportar_aprendizaje_ia() -> Result<String, String> {
     let settings = cargar_settings();
-    exportar_aprendizaje_con_catalogos_en(
+    let ruta_uso = ruta_uso_catalogos();
+    let carpeta = obtener_carpeta_archivos();
+    exportar_aprendizaje_completo_en(
         &ruta_memoria(),
+        Some(&ruta_uso),
+        Some(&carpeta),
         &carpeta_descargas()?,
         &settings.juzgados,
         &settings.tipos_audiencia,
@@ -4751,5 +4947,123 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir_sim);
         let _ = fs::remove_dir_all(&dir_ph);
+    }
+
+    #[test]
+    fn test_exportacion_unificada_sin_ia_anonimiza_personalizados_y_protege_predeterminados() {
+        use crate::uso_catalogos::{
+            cargar_uso_sin_lock_en, registrar_delta_audiencia_en, NOMBRE_ARCHIVO_USO,
+        };
+        use umya_spreadsheet::{reader, writer};
+
+        let dir = preparar_dir("export_unificada_sin_ia");
+        let ruta_mem = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let ruta_uso = dir.join(NOMBRE_ARCHIVO_USO);
+        let carpeta_excel = dir.join("archivos");
+        let descargas = dir.join("descargas");
+        fs::create_dir_all(&carpeta_excel).unwrap();
+
+        // Excel con un procesado llamado "JUAN CARLOS CESAR" y radicado largo (sin haber usado nunca la IA)
+        let ruta_xlsx = carpeta_excel.join("planilla.xlsx");
+        let plantilla = include_bytes!("../../templates/plantilla_audiencias.xlsx");
+        fs::write(&ruta_xlsx, plantilla).unwrap();
+        let mut book = reader::xlsx::read(&ruta_xlsx).unwrap();
+        let ws = book.get_sheet_mut(&0).unwrap();
+        ws.get_cell_mut((1, 11)).set_value_number(1);
+        ws.get_cell_mut((2, 11))
+            .set_value_string("JUAN CARLOS CESAR - 200016001075202599887");
+        ws.get_cell_mut((3, 11))
+            .set_value_string("Audiencia de acusación");
+        ws.get_cell_mut((4, 11)).set_value_string("15/08/2025");
+        ws.get_cell_mut((5, 11)).set_value_string("09:00");
+        ws.get_cell_mut((6, 11))
+            .set_value_string("Juzgado 1 Promiscuo Municipal de San Juan del Cesar");
+        ws.get_cell_mut((7, 11)).set_value_string("SI");
+        writer::xlsx::write(&book, &ruta_xlsx).unwrap();
+
+        // También un registro con texto libre "Otra" que accidentalmente menciona al procesado y un número largo
+        let mut settings = AppSettings::default();
+        settings.juzgados = vec!["Juzgado Especial JUAN CARLOS 200016001075202599887".into()];
+        let extra = AudienciaInput {
+            radicado: "JUAN CARLOS CESAR - 200016001075202599887".into(),
+            tipo: "Audiencia de rebaja de pena".into(),
+            fecha: "16/08/2025".into(),
+            hora: "08:30".into(),
+            juzgado: "Juzgado Libre CARLOS 123456".into(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+        registrar_delta_audiencia_en(&ruta_uso, &carpeta_excel, &settings, None, Some(&extra))
+            .unwrap();
+
+        let archivo = exportar_aprendizaje_completo_en(
+            &ruta_mem,
+            Some(&ruta_uso),
+            Some(&carpeta_excel),
+            &descargas,
+            &settings.juzgados,
+            &settings.tipos_audiencia,
+        )
+        .expect("debe permitir exportar aunque nunca se haya usado la IA");
+
+        let json_str = fs::read_to_string(&archivo).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // Sin correcciones de IA previas, no debe crear innecesariamente ia_aprendizaje.json en disco
+        assert!(!ruta_mem.exists());
+
+        // El uso pendiente se reseteó a 0 sin borrar los conteos
+        let uso_post = cargar_uso_sin_lock_en(&ruta_uso);
+        assert_eq!(uso_post.pendientes_compartir, 0);
+        assert_eq!(uso_post.total_audiencias_contabilizadas, 2);
+
+        // Si se queda sin datos exportables (ni IA ni audiencias ni listas), el resumen nunca anuncia novedades fantasma
+        let mut uso_fantasma = UsoCatalogos::default();
+        uso_fantasma.pendientes_compartir = 4;
+        let resumen_vacio = combinar_resumen_con_uso(
+            resumen_de(&MemoriaAprendizaje::default(), false),
+            &uso_fantasma,
+            &AppSettings::default(),
+        );
+        assert!(!resumen_vacio.puede_exportar);
+        assert_eq!(resumen_vacio.pendientes_exportar, 0);
+
+        // El catálogo predeterminado oficial ("San Juan del Cesar") NO se alteró aunque el procesado se llamara Juan Cesar
+        let juzgados_det = parsed["uso_catalogos"]["juzgados"]["detalle"]
+            .as_array()
+            .unwrap();
+        let oficial = juzgados_det
+            .iter()
+            .find(|i| {
+                i["nombre"] == "Juzgado 1 Promiscuo Municipal de San Juan del Cesar"
+            })
+            .expect("debe conservar intacto el catálogo oficial");
+        assert_eq!(oficial["origen"], "predeterminado");
+        assert_eq!(oficial["conteo"], 1);
+
+        // En cambio, los nombres no predeterminados SÍ fueron anonimizados
+        let no_pred = parsed["uso_catalogos"]["juzgados"]["nuevos_no_predeterminados"]
+            .as_array()
+            .unwrap();
+        assert_eq!(no_pred.len(), 2);
+        let texto_no_pred = serde_json::to_string(no_pred).unwrap();
+        assert!(!texto_no_pred.contains("CARLOS"), "{}", texto_no_pred);
+        assert!(!texto_no_pred.contains("200016001075202599887"));
+        assert!(!texto_no_pred.contains("123456"));
+
+        // Horas: 08:30 aparece en horas_mas_frecuentes_no_rapidas y 09:00 en horas_rapidas_predeterminadas
+        let horas_rap = parsed["uso_catalogos"]["horas"]["horas_rapidas_predeterminadas"]
+            .as_array()
+            .unwrap();
+        assert_eq!(horas_rap.len(), 6);
+        assert!(parsed["uso_catalogos"]["horas"]["horas_mas_frecuentes_no_rapidas"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["hora_24"] == "08:30" && h["conteo"] == 1));
+        assert!(parsed["uso_catalogos"]["horas"]["resumen_por_franja_horaria"].is_array());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

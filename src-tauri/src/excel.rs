@@ -392,6 +392,9 @@ pub fn eliminar_carpeta_con_opciones(
     eliminar_contenido: bool,
     conservar_estadisticas: bool,
 ) -> Result<(), String> {
+    if eliminar_contenido {
+        let _ = crate::uso_catalogos::asegurar_uso_inicializado_actual();
+    }
     eliminar_carpeta_con_opciones_en(
         &obtener_carpeta_archivos(),
         carpeta_relativa,
@@ -624,6 +627,7 @@ pub fn eliminar_archivo_con_opcion(
     nombre_archivo: &str,
     conservar_estadisticas: bool,
 ) -> Result<(), String> {
+    let _ = crate::uso_catalogos::asegurar_uso_inicializado_actual();
     eliminar_archivo_en(&obtener_carpeta_archivos(), nombre_archivo, conservar_estadisticas)
 }
 
@@ -1275,10 +1279,12 @@ pub fn guardar_nueva_audiencia(
     datos: &AudienciaInput,
     permitir_duplicado: bool,
 ) -> Result<TotalesExcel, String> {
+    let _ = crate::uso_catalogos::asegurar_uso_inicializado_actual();
     let ruta = ruta_archivo(nombre_archivo)?;
     let totales = guardar_nueva_audiencia_en(&ruta, datos, permitir_duplicado)?;
     let base = obtener_carpeta_archivos();
     let _ = actualizar_priors_incremental_en(&base, None, Some(datos));
+    let _ = crate::uso_catalogos::registrar_delta_audiencia_actual(None, Some(datos));
     Ok(totales)
 }
 
@@ -1401,6 +1407,7 @@ pub fn actualizar_audiencia_existente(
     datos: &AudienciaInput,
     permitir_duplicado: bool,
 ) -> Result<TotalesExcel, String> {
+    let _ = crate::uso_catalogos::asegurar_uso_inicializado_actual();
     let ruta = ruta_archivo(nombre_archivo)?;
     let (totales, anterior) = actualizar_audiencia_en_con_anterior(
         &ruta,
@@ -1411,6 +1418,7 @@ pub fn actualizar_audiencia_existente(
     )?;
     let base = obtener_carpeta_archivos();
     let _ = actualizar_priors_incremental_en(&base, anterior.as_ref(), Some(datos));
+    let _ = crate::uso_catalogos::registrar_delta_audiencia_actual(anterior.as_ref(), Some(datos));
     Ok(totales)
 }
 
@@ -1458,12 +1466,34 @@ pub fn eliminar_registro_audiencia(
     fila_excel: u32,
     radicado_esperado: &str,
 ) -> Result<TotalesExcel, String> {
+    let _ = crate::uso_catalogos::asegurar_uso_inicializado_actual();
     let ruta = ruta_archivo(nombre_archivo)?;
     let (totales, anterior) =
         eliminar_registro_en_con_anterior(&ruta, fila_excel, radicado_esperado)?;
     let base = obtener_carpeta_archivos();
     let _ = actualizar_priors_incremental_en(&base, anterior.as_ref(), None);
+    let _ = crate::uso_catalogos::registrar_delta_audiencia_actual(anterior.as_ref(), None);
     Ok(totales)
+}
+
+pub(crate) fn recolectar_radicados_en(carpeta: &Path) -> Vec<String> {
+    let Ok(nombres) = listar_archivos_en(carpeta) else {
+        return Vec::new();
+    };
+    let mut vistos = HashSet::new();
+    let mut salida = Vec::new();
+    for nombre in nombres {
+        let ruta = carpeta.join(nombre);
+        if let Ok((registros, _, _)) = leer_archivo_en(&ruta) {
+            for r in registros {
+                let rad = r.radicado.trim();
+                if !rad.is_empty() && vistos.insert(rad.to_string()) {
+                    salida.push(rad.to_string());
+                }
+            }
+        }
+    }
+    salida
 }
 
 fn nombre_mes_es(mes: u32) -> &'static str {

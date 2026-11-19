@@ -12,8 +12,10 @@ use flate2::Compression;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    cargar_settings, guardar_settings, normalizar_lista_defensores, AppSettings,
+    cargar_settings, guardar_settings, normalizar_lista_catalogo_usuario,
+    normalizar_lista_defensores, AppSettings,
 };
+use crate::estadistica_ia::juzgados_base;
 use crate::excel::{
     asegurar_id_ruta, cargar_registro_estadisticas_en, carpeta_descargas,
     construir_resumen_desde_lectura, crear_respaldo_en, explorar_carpeta_en,
@@ -22,7 +24,10 @@ use crate::excel::{
     segmentos_ruta_relativa, upsert_resumen_archivado, validar_color_carpeta,
     RegistroEstadisticasLocal,
 };
-use crate::models::ResumenPlanillaArchivada;
+use crate::models::{ResumenPlanillaArchivada, TIPOS_AUDIENCIA};
+use crate::uso_catalogos::{
+    asegurar_uso_inicializado_en, fusionar_uso_importado_en, ruta_uso_catalogos, UsoCatalogos,
+};
 
 pub const FORMATO_PAQUETE: u32 = 1;
 const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
@@ -65,6 +70,8 @@ pub struct PaqueteLokus {
     pub planillas: Vec<PlanillaExportada>,
     pub resumenes_estadisticas: Vec<ResumenPlanillaArchivada>,
     pub configuracion: Option<ConfigExportada>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uso_catalogos: Option<UsoCatalogos>,
 }
 
 impl Default for PaqueteLokus {
@@ -81,6 +88,7 @@ impl Default for PaqueteLokus {
             planillas: Vec::new(),
             resumenes_estadisticas: Vec::new(),
             configuracion: None,
+            uso_catalogos: None,
         }
     }
 }
@@ -140,11 +148,12 @@ fn ruta_unica_descargas(carpeta_destino: &Path, stem: &str, ext: &str) -> PathBu
     destino
 }
 
-pub fn exportar_paquete_en(
+pub fn exportar_paquete_con_uso_en(
     carpeta_archivos: &Path,
     carpeta_destino: &Path,
     settings: &AppSettings,
     tipo_paquete: &str,
+    ruta_uso: Option<&Path>,
 ) -> Result<String, String> {
     let tipo = match tipo_paquete.trim() {
         "completo" => "completo",
@@ -208,6 +217,12 @@ pub fn exportar_paquete_en(
         );
     }
 
+    let uso_exportado = if tipo == "completo" {
+        ruta_uso.map(|r| asegurar_uso_inicializado_en(r, carpeta_archivos, settings))
+    } else {
+        None
+    };
+
     let paquete = PaqueteLokus {
         app: "Lokus".to_string(),
         version_app: env!("CARGO_PKG_VERSION").to_string(),
@@ -236,6 +251,7 @@ pub fn exportar_paquete_en(
         } else {
             None
         },
+        uso_catalogos: uso_exportado,
     };
 
     fs::create_dir_all(carpeta_destino)
@@ -274,6 +290,15 @@ pub fn exportar_paquete_en(
     };
 
     Ok(destino.to_string_lossy().to_string())
+}
+
+pub fn exportar_paquete_en(
+    carpeta_archivos: &Path,
+    carpeta_destino: &Path,
+    settings: &AppSettings,
+    tipo_paquete: &str,
+) -> Result<String, String> {
+    exportar_paquete_con_uso_en(carpeta_archivos, carpeta_destino, settings, tipo_paquete, None)
 }
 
 pub fn decodificar_paquete_bytes(raw: &[u8]) -> Result<PaqueteLokus, String> {
@@ -458,12 +483,13 @@ fn escribir_excel_importado(destino: &Path, bytes: &[u8], hacer_respaldo: bool) 
     Ok(())
 }
 
-pub fn importar_paquete_en(
+pub fn importar_paquete_con_uso_en(
     carpeta_archivos: &Path,
     contenido_b64: &str,
     modo_conflicto: &str,
     importar_config: bool,
-    settings_actual: Option<&mut AppSettings>,
+    mut settings_actual: Option<&mut AppSettings>,
+    ruta_uso: Option<&Path>,
 ) -> Result<ResultadoImportacion, String> {
     let modo = match modo_conflicto.trim() {
         "omitir" => "omitir",
@@ -473,6 +499,18 @@ pub fn importar_paquete_en(
     };
 
     let paquete = decodificar_paquete_b64(contenido_b64)?;
+    if paquete.tipo_paquete == "completo" {
+        if let Some(r_uso) = ruta_uso {
+            let s_ref = settings_actual.as_deref();
+            let defecto = AppSettings::default();
+            let _ = asegurar_uso_inicializado_en(
+                r_uso,
+                carpeta_archivos,
+                s_ref.unwrap_or(&defecto),
+            );
+        }
+    }
+
     let (archivos_locales, _) = explorar_carpeta_en(carpeta_archivos)?;
     let mut reg = cargar_registro_estadisticas_en(carpeta_archivos);
     let (mut ruta_por_id, mut rutas_activas, _) =
@@ -482,6 +520,7 @@ pub fn importar_paquete_en(
         tipo_paquete: paquete.tipo_paquete.clone(),
         ..Default::default()
     };
+    let mut planillas_nuevas_rel: Vec<String> = Vec::new();
 
     // 1. Recrear estructura de carpetas (incluyendo carpetas vacías)
     for carpeta_rel in &paquete.carpetas {
@@ -533,7 +572,8 @@ pub fn importar_paquete_en(
                     escribir_excel_importado(&destino_abs, &bytes, false)?;
                     reg.ids_por_ruta.insert(nueva_rel.clone(), nuevo_id.clone());
                     ruta_por_id.insert(nuevo_id, nueva_rel.clone());
-                    rutas_activas.insert(nueva_rel);
+                    rutas_activas.insert(nueva_rel.clone());
+                    planillas_nuevas_rel.push(nueva_rel);
                     res.planillas_importadas += 1;
                 }
                 _ => {}
@@ -550,7 +590,8 @@ pub fn importar_paquete_en(
             // Si antes estaba archivada con el mismo ID, el Excel vivo reemplaza al resumen
             reg.archivadas.retain(|a| a.id != final_id);
             ruta_por_id.insert(final_id, ruta_limpia.clone());
-            rutas_activas.insert(ruta_limpia);
+            rutas_activas.insert(ruta_limpia.clone());
+            planillas_nuevas_rel.push(ruta_limpia);
             res.planillas_importadas += 1;
         }
     }
@@ -612,33 +653,73 @@ pub fn importar_paquete_en(
 
     // 4. Fusionar listas de usuario (sin borrar las actuales ni sobrescribir API keys)
     if importar_config {
-        if let (Some(cfg), Some(s)) = (&paquete.configuracion, settings_actual) {
+        if let (Some(cfg), Some(s)) = (&paquete.configuracion, settings_actual.as_deref_mut()) {
             let mut defs = std::mem::take(&mut s.defensores);
             defs.extend(cfg.defensores.iter().cloned());
             s.defensores = normalizar_lista_defensores(defs);
 
             let mut juzs = std::mem::take(&mut s.juzgados);
             juzs.extend(cfg.juzgados.iter().cloned());
-            s.juzgados = normalizar_lista_defensores(juzs);
+            s.juzgados = normalizar_lista_catalogo_usuario(juzs, juzgados_base());
 
+            let tipos_default: Vec<String> = TIPOS_AUDIENCIA
+                .iter()
+                .filter(|&&t| t != "Otra")
+                .map(|&t| t.to_string())
+                .collect();
             let mut tipos = std::mem::take(&mut s.tipos_audiencia);
             tipos.extend(cfg.tipos_audiencia.iter().cloned());
-            s.tipos_audiencia = normalizar_lista_defensores(tipos);
+            s.tipos_audiencia = normalizar_lista_catalogo_usuario(tipos, &tipos_default);
 
             res.config_fusionada = true;
+        }
+    }
+
+    // 5. Fusionar o restaurar historial de uso de catálogos en copias completas
+    if paquete.tipo_paquete == "completo" {
+        if let Some(r_uso) = ruta_uso {
+            let defecto = AppSettings::default();
+            let s_ref = settings_actual.as_deref().unwrap_or(&defecto);
+            fusionar_uso_importado_en(
+                r_uso,
+                carpeta_archivos,
+                s_ref,
+                paquete.uso_catalogos.as_ref(),
+                &planillas_nuevas_rel,
+                modo,
+            )?;
         }
     }
 
     Ok(res)
 }
 
+pub fn importar_paquete_en(
+    carpeta_archivos: &Path,
+    contenido_b64: &str,
+    modo_conflicto: &str,
+    importar_config: bool,
+    settings_actual: Option<&mut AppSettings>,
+) -> Result<ResultadoImportacion, String> {
+    importar_paquete_con_uso_en(
+        carpeta_archivos,
+        contenido_b64,
+        modo_conflicto,
+        importar_config,
+        settings_actual,
+        None,
+    )
+}
+
 pub fn exportar_paquete(tipo_paquete: &str) -> Result<String, String> {
     let settings = cargar_settings();
-    exportar_paquete_en(
+    let ruta_uso = ruta_uso_catalogos();
+    exportar_paquete_con_uso_en(
         &obtener_carpeta_archivos(),
         &carpeta_descargas()?,
         &settings,
         tipo_paquete,
+        Some(&ruta_uso),
     )
 }
 
@@ -652,12 +733,14 @@ pub fn importar_paquete(
     importar_config: bool,
 ) -> Result<ResultadoImportacion, String> {
     let mut settings = cargar_settings();
-    let res = importar_paquete_en(
+    let ruta_uso = ruta_uso_catalogos();
+    let res = importar_paquete_con_uso_en(
         &obtener_carpeta_archivos(),
         contenido_b64,
         modo_conflicto,
         importar_config,
         Some(&mut settings),
+        Some(&ruta_uso),
     )?;
     if res.config_fusionada {
         guardar_settings(&settings)?;
@@ -835,5 +918,126 @@ mod tests {
         assert!(importar_paquete_en(&dir, &b64, "omitir", false, None).is_err());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_paquete_completo_transporta_uso_catalogos_y_estadisticas_no_lo_incluye() {
+        use crate::models::AudienciaInput;
+        use crate::uso_catalogos::{
+            cargar_uso_sin_lock_en, registrar_delta_audiencia_en, NOMBRE_ARCHIVO_USO,
+        };
+
+        let orig = preparar_dir("uso_orig");
+        let desc = preparar_dir("uso_desc");
+        let dest = preparar_dir("uso_dest");
+        let uso_orig = orig.join("config").join(NOMBRE_ARCHIVO_USO);
+        let uso_dest = dest.join("config").join(NOMBRE_ARCHIVO_USO);
+
+        plantilla_con_datos(
+            &orig.join("2026/marzo.xlsx"),
+            "Dra. Ana López",
+            "10/03/2026",
+            "RAD-300",
+        );
+
+        let mut settings_orig = AppSettings::default();
+        settings_orig.juzgados = vec!["Juzgado Propio Portable".into()];
+
+        // Además de la audiencia del Excel (sembrada: 1), agregamos otra histórica que ya no está en Excel
+        let aud_hist = AudienciaInput {
+            radicado: "RAD-HIST".into(),
+            tipo: "Audiencia de nulidad".into(),
+            fecha: "05/03/2026".into(),
+            hora: "15:00".into(),
+            juzgado: "Juzgado Propio Portable".into(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+        registrar_delta_audiencia_en(&uso_orig, &orig, &settings_orig, None, Some(&aud_hist))
+            .unwrap();
+
+        // 1) Paquete de solo estadísticas NO debe incluir uso_catalogos en su JSON
+        let ruta_est =
+            exportar_paquete_con_uso_en(&orig, &desc, &settings_orig, "estadisticas", Some(&uso_orig))
+                .unwrap();
+        let json_est = fs::read_to_string(&ruta_est).unwrap();
+        assert!(!json_est.contains("uso_catalogos"));
+
+        // 2) Paquete completo .lokus SÍ transporta uso_catalogos (2 audiencias totales) a PC destino
+        let ruta_full =
+            exportar_paquete_con_uso_en(&orig, &desc, &settings_orig, "completo", Some(&uso_orig))
+                .unwrap();
+        let b64_full = BASE64.encode(fs::read(&ruta_full).unwrap());
+        let mut settings_dest = AppSettings::default();
+        importar_paquete_con_uso_en(
+            &dest,
+            &b64_full,
+            "omitir",
+            true,
+            Some(&mut settings_dest),
+            Some(&uso_dest),
+        )
+        .unwrap();
+
+        let uso_imp = cargar_uso_sin_lock_en(&uso_dest);
+        assert_eq!(uso_imp.total_audiencias_contabilizadas, 2);
+        assert_eq!(uso_imp.horas_exactas.get("15:00").copied(), Some(1));
+        assert_eq!(uso_imp.horas_exactas.get("09:00").copied(), Some(1));
+
+        // Reimportar el mismo paquete en modo omitir NO duplica frecuencias
+        importar_paquete_con_uso_en(
+            &dest,
+            &b64_full,
+            "omitir",
+            true,
+            Some(&mut settings_dest),
+            Some(&uso_dest),
+        )
+        .unwrap();
+        let uso_imp2 = cargar_uso_sin_lock_en(&uso_dest);
+        assert_eq!(uso_imp2.total_audiencias_contabilizadas, 2);
+
+        // 3) Si el equipo origen añade una nueva planilla y genera un segundo respaldo, importarlo en modo "omitir"
+        //    SÍ debe contabilizar las audiencias nuevas de la planilla nueva sin duplicar las anteriores.
+        plantilla_con_datos(
+            &orig.join("2026/abril.xlsx"),
+            "Dra. Ana López",
+            "12/04/2026",
+            "RAD-301",
+        );
+        // Forzar actualización incremental en origen (simulando nueva audiencia guardada allá)
+        let aud_abril = AudienciaInput {
+            radicado: "RAD-301".into(),
+            tipo: "Audiencia concentrada".into(),
+            fecha: "12/04/2026".into(),
+            hora: "10:00".into(),
+            juzgado: String::new(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+        registrar_delta_audiencia_en(&uso_orig, &orig, &settings_orig, None, Some(&aud_abril))
+            .unwrap();
+        let ruta_full2 =
+            exportar_paquete_con_uso_en(&orig, &desc, &settings_orig, "completo", Some(&uso_orig))
+                .unwrap();
+        let b64_full2 = BASE64.encode(fs::read(&ruta_full2).unwrap());
+        importar_paquete_con_uso_en(
+            &dest,
+            &b64_full2,
+            "omitir",
+            true,
+            Some(&mut settings_dest),
+            Some(&uso_dest),
+        )
+        .unwrap();
+        let uso_imp3 = cargar_uso_sin_lock_en(&uso_dest);
+        assert_eq!(uso_imp3.total_audiencias_contabilizadas, 3);
+        assert_eq!(uso_imp3.horas_exactas.get("09:00").copied(), Some(2));
+
+        let _ = fs::remove_dir_all(&orig);
+        let _ = fs::remove_dir_all(&desc);
+        let _ = fs::remove_dir_all(&dest);
     }
 }

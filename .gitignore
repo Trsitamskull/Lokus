@@ -14,6 +14,7 @@ config/config.py
 config/config_local.py
 config/settings.json
 config/ia_aprendizaje.json*
+config/uso_catalogos.json*
 *.env
 *.env.*
 

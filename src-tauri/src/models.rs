@@ -33,6 +33,15 @@ pub const TIPOS_AUDIENCIA: [&str; 18] = [
     "Otra",
 ];
 
+pub const HORAS_RAPIDAS: [(&str, &str); 6] = [
+    ("08:00", "8:00 AM"),
+    ("09:00", "9:00 AM"),
+    ("10:00", "10:00 AM"),
+    ("14:00", "2:00 PM"),
+    ("15:00", "3:00 PM"),
+    ("16:00", "4:00 PM"),
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AudienciaInput {
     pub radicado: String,
@@ -203,11 +212,14 @@ pub fn normalizar_texto_sin_tildes(texto: &str) -> String {
     let mut out = String::with_capacity(texto.len());
     let mut prev_space = true;
     for ch in texto.trim().to_lowercase().chars() {
+        if ('\u{0300}'..='\u{036f}').contains(&ch) {
+            continue;
+        }
         let mapped = match ch {
-            'á' | 'à' | 'ä' | 'â' => 'a',
+            'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
             'é' | 'è' | 'ë' | 'ê' => 'e',
             'í' | 'ì' | 'ï' | 'î' => 'i',
-            'ó' | 'ò' | 'ö' | 'ô' => 'o',
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
             'ú' | 'ù' | 'ü' | 'û' => 'u',
             'ñ' => 'n',
             c if c.is_alphanumeric() => c,
@@ -224,6 +236,12 @@ pub fn normalizar_texto_sin_tildes(texto: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+/// Normaliza nombres de catálogos (`tipo`, `juzgado`) unificando mayúsculas, tildes (NFC/NFD)
+/// y espacios adicionales sin colapsar variantes jurídicas reales ni convertir ordinales ("Segundo" != "2").
+pub fn normalizar_clave_catalogo(texto: &str) -> String {
+    normalizar_texto_sin_tildes(texto)
 }
 
 /// Extrae secuencias numéricas de >= 6 dígitos (ignorando guiones/puntos/barras internos como 11001-60-00000-2025-00001-00).

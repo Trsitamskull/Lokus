@@ -31,6 +31,8 @@
     return String(s || "")
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim()
       .toLowerCase();
   }
 
@@ -38,19 +40,15 @@
     const out = [];
     for (const opt of options) {
       if (typeof opt === "string") {
-        if (!opt.startsWith("--")) {
-          out.push({ value: opt, label: opt, deletable: false });
-        }
+        out.push({ value: opt, label: opt, deletable: false });
       } else if (opt && typeof opt === "object") {
         const val = opt.value ?? "";
         const lbl = String(opt.label ?? val);
-        if (!lbl.startsWith("--")) {
-          out.push({
-            value: val,
-            label: lbl,
-            deletable: Boolean(opt.deletable),
-          });
-        }
+        out.push({
+          value: val,
+          label: lbl,
+          deletable: Boolean(opt.deletable),
+        });
       }
     }
     return out;
@@ -110,13 +108,18 @@
   async function confirmAddNew() {
     const limpio = newOptionText.trim().replace(/\s+/g, " ");
     if (!limpio) return;
-    await onAddOption?.(limpio);
-    value = limpio;
+    const resultado = onAddOption ? await onAddOption(limpio) : limpio;
+    if (resultado === null || resultado === false) return;
+    const finalValor =
+      typeof resultado === "string" && resultado.trim()
+        ? resultado.trim()
+        : limpio;
+    value = finalValor;
     addingNew = false;
     newOptionText = "";
     searchQuery = "";
     open = false;
-    onchange?.(limpio);
+    onchange?.(finalValor);
   }
 
   async function handleDeleteOption(opt) {

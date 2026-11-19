@@ -5,17 +5,19 @@ pub mod estadistica_ia;
 pub mod excel;
 pub mod models;
 pub mod paquete;
+pub mod uso_catalogos;
 
 use ai::{
     analizar_cluster_correcciones_ia, analizar_correccion_ia, extraer_datos_audiencia_ia,
     AiAudienciaOutput,
 };
 use aprendizaje::{
-    aplicar_analisis_cluster_ia, aplicar_analisis_en, descartar_aclaracion_en,
-    exportar_aprendizaje_ia, guardar_nota_aclaracion_en, intentar_reservar_cluster_induccion,
-    liberar_cluster_induccion, obtener_cluster_listo_para_inducir_ia,
-    obtener_diagnostico_aprendizaje, obtener_resumen_aprendizaje,
-    registrar_resultado_ia_con_traza, ruta_memoria, DiagnosticoAprendizaje, ResumenAprendizaje,
+    aplicar_analisis_cluster_ia, aplicar_analisis_en, combinar_resumen_con_uso,
+    descartar_aclaracion_en, exportar_aprendizaje_ia, guardar_nota_aclaracion_en,
+    intentar_reservar_cluster_induccion, liberar_cluster_induccion,
+    obtener_cluster_listo_para_inducir_ia, obtener_diagnostico_aprendizaje,
+    obtener_resumen_aprendizaje, registrar_resultado_ia_con_traza, ruta_memoria,
+    DiagnosticoAprendizaje, ResumenAprendizaje,
 };
 use config::{
     actualizar_config, actualizar_tema, agregar_defensor, agregar_juzgado, agregar_tipo_audiencia,
@@ -325,6 +327,12 @@ async fn cmd_autocompletar_ia(texto: String) -> Result<AiAudienciaOutput, String
 
 /// Compara lo que propuso la IA con lo que el usuario guardó, almacena la corrección en cola
 /// de clústeres y ejecuta inducción agrupada con LLM únicamente cuando un patrón alcanza `N >= 2`.
+fn combinar_con_uso_actual(resumen: ResumenAprendizaje) -> ResumenAprendizaje {
+    let settings = config::cargar_settings();
+    let uso = uso_catalogos::asegurar_uso_inicializado_actual();
+    combinar_resumen_con_uso(resumen, &uso, &settings)
+}
+
 #[tauri::command]
 async fn cmd_registrar_resultado_ia(
     texto: String,
@@ -358,7 +366,7 @@ async fn cmd_registrar_resultado_ia(
         }
     }
 
-    Ok(resumen)
+    ejecutar_en_hilo_io(move || Ok(combinar_con_uso_actual(resumen))).await
 }
 
 #[tauri::command]
@@ -386,12 +394,16 @@ async fn cmd_responder_aclaracion_ia(
         }
     }
 
-    Ok(resumen)
+    ejecutar_en_hilo_io(move || Ok(combinar_con_uso_actual(resumen))).await
 }
 
 #[tauri::command]
 async fn cmd_descartar_aclaracion_ia(correccion_id: String) -> Result<ResumenAprendizaje, String> {
-    ejecutar_en_hilo_io(move || descartar_aclaracion_en(&ruta_memoria(), &correccion_id)).await
+    ejecutar_en_hilo_io(move || {
+        let resumen = descartar_aclaracion_en(&ruta_memoria(), &correccion_id)?;
+        Ok(combinar_con_uso_actual(resumen))
+    })
+    .await
 }
 
 #[tauri::command]

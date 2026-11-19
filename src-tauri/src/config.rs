@@ -5,6 +5,9 @@ use std::path::PathBuf;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::estadistica_ia::juzgados_base;
+use crate::models::{normalizar_clave_catalogo, TIPOS_AUDIENCIA};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -105,6 +108,41 @@ pub fn normalizar_lista_defensores(lista: Vec<String>) -> Vec<String> {
     salida
 }
 
+pub fn normalizar_lista_catalogo_usuario(lista: Vec<String>, defaults: &[String]) -> Vec<String> {
+    let mut claves_default: HashSet<String> = defaults
+        .iter()
+        .map(|d| normalizar_clave_catalogo(d))
+        .filter(|c| !c.is_empty())
+        .collect();
+    claves_default.insert("otra".to_string());
+
+    let mut vistos = HashSet::new();
+    let mut salida = Vec::new();
+    for item in lista {
+        let limpio = item.split_whitespace().collect::<Vec<_>>().join(" ");
+        if limpio.is_empty() {
+            continue;
+        }
+        let clave = normalizar_clave_catalogo(&limpio);
+        if clave.is_empty() || claves_default.contains(&clave) {
+            continue;
+        }
+        if vistos.insert(clave) {
+            salida.push(limpio);
+        }
+    }
+    salida.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    salida
+}
+
+fn tipos_audiencia_default_strings() -> Vec<String> {
+    TIPOS_AUDIENCIA
+        .iter()
+        .filter(|&&t| t != "Otra")
+        .map(|&t| t.to_string())
+        .collect()
+}
+
 fn obtener_ruta_config() -> PathBuf {
     if cfg!(debug_assertions) {
         if let Ok(cwd) = std::env::current_dir() {
@@ -179,15 +217,26 @@ pub fn cargar_settings() -> AppSettings {
     if let Ok(contenido) = fs::read_to_string(&ruta) {
         if let Ok(mut settings) = serde_json::from_str::<AppSettings>(&contenido) {
             settings.defensores = normalizar_lista_defensores(settings.defensores);
-            settings.juzgados = normalizar_lista_defensores(settings.juzgados);
-            settings.tipos_audiencia = normalizar_lista_defensores(settings.tipos_audiencia);
+            let tipos_default = tipos_audiencia_default_strings();
+            let juzgados_antes = settings.juzgados.clone();
+            let tipos_antes = settings.tipos_audiencia.clone();
+            settings.juzgados = normalizar_lista_catalogo_usuario(
+                std::mem::take(&mut settings.juzgados),
+                juzgados_base(),
+            );
+            settings.tipos_audiencia = normalizar_lista_catalogo_usuario(
+                std::mem::take(&mut settings.tipos_audiencia),
+                &tipos_default,
+            );
+            let cambio_catalogos =
+                settings.juzgados != juzgados_antes || settings.tipos_audiencia != tipos_antes;
             let gemini_norm = normalizar_modelo_gemini(&settings.gemini_model);
             let openai_norm = normalizar_modelo_openai(&settings.openai_model);
             let cambio_modelo =
                 gemini_norm != settings.gemini_model || openai_norm != settings.openai_model;
             settings.gemini_model = gemini_norm;
             settings.openai_model = openai_norm;
-            if cambio_modelo {
+            if cambio_modelo || cambio_catalogos {
                 let _ = guardar_settings(&settings);
             }
             return settings;
@@ -250,68 +299,159 @@ pub fn config_publica_desde_settings(s: &AppSettings) -> ConfigPublica {
     }
 }
 
-fn agregar_juzgado_en_memoria(mut actual: AppSettings, nombre: &str) -> Result<AppSettings, String> {
+fn agregar_juzgado_en_memoria(
+    mut actual: AppSettings,
+    nombre: &str,
+) -> Result<(AppSettings, Option<String>), String> {
     let limpio = nombre.split_whitespace().collect::<Vec<_>>().join(" ");
     if limpio.is_empty() {
         return Err("Ingresa el nombre del juzgado o despacho.".to_string());
     }
-    actual.juzgados.push(limpio);
-    actual.juzgados = normalizar_lista_defensores(actual.juzgados);
-    Ok(actual)
+    let clave = normalizar_clave_catalogo(&limpio);
+    if clave.is_empty() || clave == "otra" {
+        return Err("Ese nombre no es válido para la lista de juzgados.".to_string());
+    }
+    let ya_en_default = juzgados_base()
+        .iter()
+        .any(|d| normalizar_clave_catalogo(d) == clave);
+    let ya_en_usuario = actual
+        .juzgados
+        .iter()
+        .any(|u| normalizar_clave_catalogo(u) == clave);
+    if ya_en_default || ya_en_usuario {
+        actual.juzgados = normalizar_lista_catalogo_usuario(actual.juzgados, juzgados_base());
+        return Ok((actual, None));
+    }
+    actual.juzgados.push(limpio.clone());
+    actual.juzgados = normalizar_lista_catalogo_usuario(actual.juzgados, juzgados_base());
+    Ok((actual, Some(limpio)))
 }
 
-fn eliminar_juzgado_en_memoria(mut actual: AppSettings, nombre: &str) -> AppSettings {
-    let target = nombre.trim().to_lowercase();
-    actual.juzgados.retain(|j| j.to_lowercase() != target);
-    actual
+fn eliminar_juzgado_en_memoria(
+    mut actual: AppSettings,
+    nombre: &str,
+) -> (AppSettings, Option<String>) {
+    let target = normalizar_clave_catalogo(nombre);
+    let mut eliminado = None;
+    actual.juzgados.retain(|j| {
+        if normalizar_clave_catalogo(j) == target {
+            if eliminado.is_none() {
+                eliminado = Some(j.clone());
+            }
+            false
+        } else {
+            true
+        }
+    });
+    (actual, eliminado)
 }
 
 fn agregar_tipo_audiencia_en_memoria(
     mut actual: AppSettings,
     nombre: &str,
-) -> Result<AppSettings, String> {
+) -> Result<(AppSettings, Option<String>), String> {
     let limpio = nombre.split_whitespace().collect::<Vec<_>>().join(" ");
     if limpio.is_empty() {
         return Err("Ingresa el nombre del tipo de audiencia.".to_string());
     }
-    actual.tipos_audiencia.push(limpio);
-    actual.tipos_audiencia = normalizar_lista_defensores(actual.tipos_audiencia);
-    Ok(actual)
+    let clave = normalizar_clave_catalogo(&limpio);
+    if clave.is_empty() || clave == "otra" {
+        return Err("Ese nombre no es válido para la lista de tipos de audiencia.".to_string());
+    }
+    let defaults = tipos_audiencia_default_strings();
+    let ya_en_default = defaults
+        .iter()
+        .any(|d| normalizar_clave_catalogo(d) == clave);
+    let ya_en_usuario = actual
+        .tipos_audiencia
+        .iter()
+        .any(|u| normalizar_clave_catalogo(u) == clave);
+    if ya_en_default || ya_en_usuario {
+        actual.tipos_audiencia =
+            normalizar_lista_catalogo_usuario(actual.tipos_audiencia, &defaults);
+        return Ok((actual, None));
+    }
+    actual.tipos_audiencia.push(limpio.clone());
+    actual.tipos_audiencia = normalizar_lista_catalogo_usuario(actual.tipos_audiencia, &defaults);
+    Ok((actual, Some(limpio)))
 }
 
-fn eliminar_tipo_audiencia_en_memoria(mut actual: AppSettings, nombre: &str) -> AppSettings {
-    let target = nombre.trim().to_lowercase();
-    actual
-        .tipos_audiencia
-        .retain(|t| t.to_lowercase() != target);
-    actual
+fn eliminar_tipo_audiencia_en_memoria(
+    mut actual: AppSettings,
+    nombre: &str,
+) -> (AppSettings, Option<String>) {
+    let target = normalizar_clave_catalogo(nombre);
+    let mut eliminado = None;
+    actual.tipos_audiencia.retain(|t| {
+        if normalizar_clave_catalogo(t) == target {
+            if eliminado.is_none() {
+                eliminado = Some(t.clone());
+            }
+            false
+        } else {
+            true
+        }
+    });
+    (actual, eliminado)
 }
 
 pub fn agregar_juzgado(nombre: &str) -> Result<ConfigPublica, String> {
     let actual = cargar_settings();
-    let nuevo = agregar_juzgado_en_memoria(actual, nombre)?;
-    guardar_settings(&nuevo)?;
+    let (nuevo, agregado) = agregar_juzgado_en_memoria(actual, nombre)?;
+    if agregado.is_some() {
+        guardar_settings(&nuevo)?;
+        crate::uso_catalogos::registrar_cambio_lista_usuario_actual(
+            &nuevo,
+            true,
+            agregado.as_deref(),
+            None,
+        );
+    }
     Ok(config_publica_desde_settings(&nuevo))
 }
 
 pub fn eliminar_juzgado(nombre: &str) -> Result<ConfigPublica, String> {
     let actual = cargar_settings();
-    let nuevo = eliminar_juzgado_en_memoria(actual, nombre);
-    guardar_settings(&nuevo)?;
+    let (nuevo, eliminado) = eliminar_juzgado_en_memoria(actual, nombre);
+    if eliminado.is_some() {
+        guardar_settings(&nuevo)?;
+        crate::uso_catalogos::registrar_cambio_lista_usuario_actual(
+            &nuevo,
+            true,
+            None,
+            eliminado.as_deref(),
+        );
+    }
     Ok(config_publica_desde_settings(&nuevo))
 }
 
 pub fn agregar_tipo_audiencia(nombre: &str) -> Result<ConfigPublica, String> {
     let actual = cargar_settings();
-    let nuevo = agregar_tipo_audiencia_en_memoria(actual, nombre)?;
-    guardar_settings(&nuevo)?;
+    let (nuevo, agregado) = agregar_tipo_audiencia_en_memoria(actual, nombre)?;
+    if agregado.is_some() {
+        guardar_settings(&nuevo)?;
+        crate::uso_catalogos::registrar_cambio_lista_usuario_actual(
+            &nuevo,
+            false,
+            agregado.as_deref(),
+            None,
+        );
+    }
     Ok(config_publica_desde_settings(&nuevo))
 }
 
 pub fn eliminar_tipo_audiencia(nombre: &str) -> Result<ConfigPublica, String> {
     let actual = cargar_settings();
-    let nuevo = eliminar_tipo_audiencia_en_memoria(actual, nombre);
-    guardar_settings(&nuevo)?;
+    let (nuevo, eliminado) = eliminar_tipo_audiencia_en_memoria(actual, nombre);
+    if eliminado.is_some() {
+        guardar_settings(&nuevo)?;
+        crate::uso_catalogos::registrar_cambio_lista_usuario_actual(
+            &nuevo,
+            false,
+            None,
+            eliminado.as_deref(),
+        );
+    }
     Ok(config_publica_desde_settings(&nuevo))
 }
 
@@ -529,5 +669,54 @@ mod tests {
 
         s = eliminar_defensor_en_memoria(s, "Carlos Mendoza");
         assert_eq!(s.defensores, vec!["Ana María Gómez".to_string()]);
+    }
+
+    #[test]
+    fn test_catalogos_usuario_no_duplican_predeterminados_con_tildes_o_mayusculas() {
+        let mut s = AppSettings::default();
+        // Variante sin tilde de un tipo oficial -> no debe duplicarse en tipos_audiencia
+        let (s1, agr1) =
+            agregar_tipo_audiencia_en_memoria(s, "audiencia de acusacion").unwrap();
+        assert!(agr1.is_none());
+        assert!(s1.tipos_audiencia.is_empty());
+
+        // Variante sin tilde de juzgado base -> no debe duplicarse en juzgados
+        let (s2, agr2) = agregar_juzgado_en_memoria(
+            s1,
+            "Juzgado 1 Penal Municipal con Funcion de Control de Garantias de Valledupar",
+        )
+        .unwrap();
+        assert!(agr2.is_none());
+        assert!(s2.juzgados.is_empty());
+
+        // Variante jurídica distinta ("Juzgado 2 Penal" vs "Juzgado 2 Penal con Funciones de Conocimiento") SÍ es aceptada y separada
+        let (s3, agr3) = agregar_juzgado_en_memoria(s2, "Juzgado 2 Penal").unwrap();
+        assert_eq!(agr3.as_deref(), Some("Juzgado 2 Penal"));
+        let (s4, agr4) = agregar_juzgado_en_memoria(
+            s3,
+            "Juzgado 2 Penal con Funciones de Conocimiento",
+        )
+        .unwrap();
+        assert_eq!(
+            agr4.as_deref(),
+            Some("Juzgado 2 Penal con Funciones de Conocimiento")
+        );
+        // Mismo nombre solo cambiando tildes/mayúsculas NO duplica
+        let (s5, agr5) = agregar_juzgado_en_memoria(s4, "  juzgado 2 penal  ").unwrap();
+        assert!(agr5.is_none());
+        assert_eq!(s5.juzgados.len(), 2);
+
+        // "Segundo" y "2" se mantienen separados
+        let (s6, agr6) = agregar_juzgado_en_memoria(s5, "Juzgado Segundo Penal").unwrap();
+        assert_eq!(agr6.as_deref(), Some("Juzgado Segundo Penal"));
+        assert_eq!(s6.juzgados.len(), 3);
+
+        // Eliminar sin tildes funciona
+        let (s7, elim) = eliminar_juzgado_en_memoria(s6, "juzgado segundo penal");
+        assert_eq!(elim.as_deref(), Some("Juzgado Segundo Penal"));
+        assert_eq!(s7.juzgados.len(), 2);
+
+        s = s7;
+        assert!(agregar_tipo_audiencia_en_memoria(s, "Otra").is_err());
     }
 }

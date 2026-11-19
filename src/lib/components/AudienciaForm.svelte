@@ -13,6 +13,7 @@
     MOTIVOS_LABELS,
     HORAS_RAPIDAS,
     JUZGADOS_BASE,
+    normalizarClaveCatalogo,
   } from "../constants.js";
 
   let {
@@ -315,15 +316,15 @@
     const vistos = new Set();
     const lista = [{ value: "", label: "Sin especificar (dejar vacío)" }];
     for (const j of juzgadosGuardados) {
-      const k = j.trim().toLowerCase();
-      if (k && !vistos.has(k)) {
+      const k = normalizarClaveCatalogo(j);
+      if (k && k !== "otra" && !vistos.has(k)) {
         vistos.add(k);
         lista.push({ value: j.trim(), label: j.trim(), deletable: true });
       }
     }
     for (const j of JUZGADOS_BASE) {
-      const k = j.trim().toLowerCase();
-      if (k && !vistos.has(k)) {
+      const k = normalizarClaveCatalogo(j);
+      if (k && k !== "otra" && !vistos.has(k)) {
         vistos.add(k);
         lista.push({ value: j.trim(), label: j.trim(), deletable: false });
       }
@@ -339,14 +340,14 @@
     const vistos = new Set();
     const lista = [{ value: "", label: "Sin especificar (dejar vacío)" }];
     for (const t of tiposGuardados) {
-      const k = t.trim().toLowerCase();
+      const k = normalizarClaveCatalogo(t);
       if (k && k !== "otra" && !vistos.has(k)) {
         vistos.add(k);
         lista.push({ value: t.trim(), label: t.trim(), deletable: true });
       }
     }
     for (const t of TIPOS_AUDIENCIA) {
-      const k = t.trim().toLowerCase();
+      const k = normalizarClaveCatalogo(t);
       if (k && k !== "otra" && !vistos.has(k)) {
         vistos.add(k);
         lista.push({ value: t.trim(), label: t.trim(), deletable: false });
@@ -639,7 +640,7 @@
         {/if}
       </div>
 
-      <div class="field-group">
+      <div class="field-group time-field-group">
         <div class="field-header">
           <label class="field-label" for="hora">Hora</label>
           <span class="shortcut-hint">12h · Opcional</span>
@@ -700,17 +701,18 @@
               PM
             </button>
           </div>
-          <div class="time-presets">
-            {#each HORAS_RAPIDAS as preset}
-              <button
-                type="button"
-                class="preset-btn {hora === preset.h24 && minuto === preset.m ? 'active' : ''}"
-                onclick={() => aplicarHoraRapida(preset)}
-              >
-                {preset.label}
-              </button>
-            {/each}
-          </div>
+        </div>
+        <div class="time-presets" role="group" aria-label="Accesos rápidos de hora">
+          {#each HORAS_RAPIDAS as preset}
+            <button
+              type="button"
+              class="preset-btn {hora === preset.h24 && minuto === preset.m ? 'active' : ''}"
+              aria-pressed={hora === preset.h24 && minuto === preset.m}
+              onclick={() => aplicarHoraRapida(preset)}
+            >
+              {preset.label}
+            </button>
+          {/each}
         </div>
         {#if errorHora}
           <span id="hora-error-msg" class="field-error-msg">{errorHora}</span>

@@ -16,6 +16,7 @@
     TIPOS_AUDIENCIA,
     MOTIVOS_LABELS,
     JUZGADOS_BASE,
+    normalizarClaveCatalogo,
   } from "./lib/constants.js";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import AudienciaForm from "./lib/components/AudienciaForm.svelte";
@@ -85,6 +86,10 @@
     total_correcciones: 0,
     total_reglas: 0,
     pendientes_exportar: 0,
+    pendientes_ia: 0,
+    pendientes_uso: 0,
+    total_audiencias_contabilizadas: 0,
+    puede_exportar: false,
     aclaracion_pendiente: null,
   });
   let exportandoAprendizaje = $state(false);
@@ -440,6 +445,7 @@
         limpiarFormulario();
         modalActivo = null;
         mostrarToast("Registro actualizado en Excel", "success");
+        cargarResumenAprendizaje();
       } else {
         const snapshotIa = iaSnapshot;
         totales = await invoke("cmd_guardar_audiencia", {
@@ -453,7 +459,11 @@
         limpiarFormulario();
         modalActivo = null;
         mostrarToast("Audiencia registrada correctamente", "success");
-        if (snapshotIa) registrarResultadoIa(snapshotIa, datos);
+        if (snapshotIa) {
+          registrarResultadoIa(snapshotIa, datos);
+        } else {
+          cargarResumenAprendizaje();
+        }
       }
     } catch (err) {
       const msg = String(err);
@@ -678,6 +688,7 @@
       if (vistaActiva === "estadisticas") {
         cargarEstadisticas();
       }
+      cargarResumenAprendizaje();
       mostrarToast(
         eliminarContenido && conservarEstadisticas
           ? `Carpeta '${carpeta}' eliminada (estadísticas conservadas)`
@@ -783,6 +794,7 @@
       });
       await refrescarListaArchivos();
       await cargarConfigInicial();
+      await cargarResumenAprendizaje();
       if (!archivoActual && archivosDisponibles.length > 0) {
         archivoActual = archivosDisponibles[0];
         await recargarArchivoActual();
@@ -931,6 +943,7 @@
       if (vistaActiva === "estadisticas") {
         cargarEstadisticas();
       }
+      cargarResumenAprendizaje();
       mostrarToast(
         conservarEstadisticas
           ? `Archivo '${nombre}' eliminado (estadísticas conservadas)`
@@ -1138,20 +1151,22 @@
       tipoOtra = "";
       return;
     }
-    if (limpio === "Otra") {
+    const key = normalizarClaveCatalogo(limpio);
+    if (key === "otra") {
       tipoSeleccionado = "Otra";
       tipoOtra = (otraExplicita || "").trim();
       return;
     }
-    const lower = limpio.toLowerCase();
-    const matchGuardado = tiposGuardados.find((t) => t.toLowerCase() === lower);
+    const matchGuardado = tiposGuardados.find(
+      (t) => normalizarClaveCatalogo(t) === key
+    );
     if (matchGuardado) {
       tipoSeleccionado = matchGuardado;
       tipoOtra = "";
       return;
     }
     const matchBase = TIPOS_AUDIENCIA.find(
-      (t) => t !== "Otra" && t.toLowerCase() === lower
+      (t) => t !== "Otra" && normalizarClaveCatalogo(t) === key
     );
     if (matchBase) {
       tipoSeleccionado = matchBase;
@@ -1169,16 +1184,23 @@
       juzgadoOtra = "";
       return;
     }
-    const lower = limpio.toLowerCase();
+    const key = normalizarClaveCatalogo(limpio);
+    if (key === "otra") {
+      juzgadoSeleccionado = "Otra";
+      juzgadoOtra = "";
+      return;
+    }
     const matchGuardado = juzgadosGuardados.find(
-      (j) => j.toLowerCase() === lower
+      (j) => normalizarClaveCatalogo(j) === key
     );
     if (matchGuardado) {
       juzgadoSeleccionado = matchGuardado;
       juzgadoOtra = "";
       return;
     }
-    const matchBase = JUZGADOS_BASE.find((j) => j.toLowerCase() === lower);
+    const matchBase = JUZGADOS_BASE.find(
+      (j) => normalizarClaveCatalogo(j) === key
+    );
     if (matchBase) {
       juzgadoSeleccionado = matchBase;
       juzgadoOtra = "";
@@ -1190,12 +1212,28 @@
 
   async function agregarJuzgadoUsuario(nombre) {
     try {
+      const key = normalizarClaveCatalogo(nombre);
+      const prevKeys = new Set(juzgadosGuardados.map((j) => normalizarClaveCatalogo(j)));
       const cfg = await invoke("cmd_agregar_juzgado", { nombre });
-      juzgadosGuardados = cfg.juzgados || [];
+      const nuevaLista = cfg.juzgados || [];
+      const enUsuario = nuevaLista.find((j) => normalizarClaveCatalogo(j) === key);
+      const enBase = JUZGADOS_BASE.find((j) => normalizarClaveCatalogo(j) === key);
+      const canonical = enUsuario || enBase || nombre.trim().replace(/\s+/g, " ");
+      const yaExistia = Boolean(enBase) || prevKeys.has(key);
+      juzgadosGuardados = nuevaLista;
       juzgadoOtra = "";
-      mostrarToast(`'${nombre}' agregado a la lista de juzgados`, "success", 2400);
+      cargarResumenAprendizaje();
+      mostrarToast(
+        yaExistia
+          ? `'${canonical}' ya existe en la lista de juzgados`
+          : `'${canonical}' agregado a la lista de juzgados`,
+        yaExistia ? "info" : "success",
+        2400
+      );
+      return canonical;
     } catch (e) {
       mostrarToast(String(e), "error");
+      return null;
     }
   }
 
@@ -1203,6 +1241,7 @@
     try {
       const cfg = await invoke("cmd_eliminar_juzgado", { nombre });
       juzgadosGuardados = cfg.juzgados || [];
+      cargarResumenAprendizaje();
       mostrarToast(`'${nombre}' eliminado de la lista`, "info", 2200);
     } catch (e) {
       mostrarToast(String(e), "error");
@@ -1211,12 +1250,30 @@
 
   async function agregarTipoAudienciaUsuario(nombre) {
     try {
+      const key = normalizarClaveCatalogo(nombre);
+      const prevKeys = new Set(tiposGuardados.map((t) => normalizarClaveCatalogo(t)));
       const cfg = await invoke("cmd_agregar_tipo_audiencia", { nombre });
-      tiposGuardados = cfg.tipos_audiencia || [];
+      const nuevaLista = cfg.tipos_audiencia || [];
+      const enUsuario = nuevaLista.find((t) => normalizarClaveCatalogo(t) === key);
+      const enBase = TIPOS_AUDIENCIA.find(
+        (t) => t !== "Otra" && normalizarClaveCatalogo(t) === key
+      );
+      const canonical = enUsuario || enBase || nombre.trim().replace(/\s+/g, " ");
+      const yaExistia = Boolean(enBase) || prevKeys.has(key);
+      tiposGuardados = nuevaLista;
       tipoOtra = "";
-      mostrarToast(`'${nombre}' agregado a los tipos de audiencia`, "success", 2400);
+      cargarResumenAprendizaje();
+      mostrarToast(
+        yaExistia
+          ? `'${canonical}' ya existe en los tipos de audiencia`
+          : `'${canonical}' agregado a los tipos de audiencia`,
+        yaExistia ? "info" : "success",
+        2400
+      );
+      return canonical;
     } catch (e) {
       mostrarToast(String(e), "error");
+      return null;
     }
   }
 
@@ -1224,6 +1281,7 @@
     try {
       const cfg = await invoke("cmd_eliminar_tipo_audiencia", { nombre });
       tiposGuardados = cfg.tipos_audiencia || [];
+      cargarResumenAprendizaje();
       mostrarToast(`'${nombre}' eliminado de la lista`, "info", 2200);
     } catch (e) {
       mostrarToast(String(e), "error");
@@ -1279,6 +1337,7 @@
             radicadoEsperado: reg.radicado,
           });
           await recargarArchivoActual();
+          cargarResumenAprendizaje();
           if (modoEdicion && filaEditando === reg.fila_excel) {
             cancelarEdicion();
           }
@@ -1434,8 +1493,17 @@
     exportandoAprendizaje = true;
     try {
       const ruta = await invoke("cmd_exportar_aprendizaje_ia");
-      aprendizaje = { ...aprendizaje, pendientes_exportar: 0 };
-      mostrarToast(`Aprendizaje de la IA exportado en: ${ruta}`, "success", 5000);
+      aprendizaje = {
+        ...aprendizaje,
+        pendientes_exportar: 0,
+        pendientes_ia: 0,
+        pendientes_uso: 0,
+      };
+      mostrarToast(
+        `Uso de catálogos y aprendizaje exportados en: ${ruta}`,
+        "success",
+        5000
+      );
     } catch (e) {
       mostrarToast(String(e), "info", 4200);
     } finally {
@@ -1684,10 +1752,10 @@
           class="mini-icon-btn share-learning-btn"
           onclick={exportarAprendizajeIa}
           disabled={exportandoAprendizaje}
-          title={aprendizaje.total_correcciones > 0
-            ? `Compartir aprendizaje de la IA (${aprendizaje.total_correcciones} correcciones, ${aprendizaje.pendientes_exportar} nuevas)`
-            : "Compartir aprendizaje de la IA (aún sin correcciones)"}
-          aria-label="Compartir aprendizaje de la IA"
+          title={aprendizaje.puede_exportar || aprendizaje.total_correcciones > 0 || aprendizaje.total_audiencias_contabilizadas > 0
+            ? `Compartir uso de catálogos y aprendizaje IA (${aprendizaje.total_audiencias_contabilizadas ?? 0} audiencias, ${aprendizaje.total_correcciones} correcciones, ${aprendizaje.pendientes_exportar} novedades)`
+            : "Compartir uso de catálogos y aprendizaje IA (aún sin registros ni correcciones)"}
+          aria-label="Compartir uso de catálogos y aprendizaje IA"
         >
           <Share2 size={15} />
           {#if aprendizaje.pendientes_exportar > 0}
