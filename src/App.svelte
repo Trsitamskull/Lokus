@@ -95,6 +95,9 @@
   let exportandoAprendizaje = $state(false);
   let diagnosticoIa = $state(null);
   let cargandoDiagnosticoIa = $state(false);
+  let consolidandoIa = $state(false);
+  let respondiendoAclaracion = $state(false);
+  let aclaracionOcultadaId = $state("");
 
   // Edición
   let modoEdicion = $state(false);
@@ -108,6 +111,7 @@
   let defensorNuevoArchivo = $state("");
   let carpetaNuevoArchivo = $state("");
   let errorModalCrear = $state("");
+  let errorModalDefensor = $state("");
   let carpetaPadreNueva = $state("");
   let nombreNuevaCarpeta = $state("");
   let colorNuevaCarpeta = $state("");
@@ -172,6 +176,8 @@
     openai_model: "gpt-5-mini",
     gemini_model: "gemini-2.5-flash",
     theme: "dark",
+    consolidacion_ia_activa: true,
+    usar_resumen_consolidado: true,
   });
 
   let aiStatus = $state({
@@ -222,6 +228,8 @@
         openai_model: res.openai_model || "gpt-5-mini",
         gemini_model: res.gemini_model || "gemini-2.5-flash",
         theme: res.theme || "dark",
+        consolidacion_ia_activa: Boolean(res.consolidacion_ia_activa ?? true),
+        usar_resumen_consolidado: Boolean(res.usar_resumen_consolidado ?? true),
       };
       defensores = res.defensores || [];
       juzgadosGuardados = res.juzgados || [];
@@ -229,7 +237,7 @@
       aiStatus = res.status;
       aplicarTema(settings.theme);
     } catch (_) {
-      aplicarTema("dark");
+      aplicarTema(settings.theme || "dark");
     }
   }
 
@@ -487,29 +495,39 @@
     defensorNuevoArchivo = "";
     carpetaNuevoArchivo = typeof carpetaInicial === "string" ? carpetaInicial : "";
     errorModalCrear = "";
+    errorModalDefensor = "";
     modalActivo = "crear";
   }
 
   async function crearNuevoArchivo() {
-    if (!nombreNuevoArchivo.trim()) {
+    errorModalCrear = "";
+    errorModalDefensor = "";
+    const nombreTrim = nombreNuevoArchivo.trim();
+    const defensorTrim = defensorNuevoArchivo.trim();
+    if (!nombreTrim) {
       errorModalCrear = "Ingresa un nombre para el archivo";
+    }
+    if (!defensorTrim) {
+      errorModalDefensor = "Debes asignar un Defensor Público para crear la planilla";
+    }
+    if (!nombreTrim || !defensorTrim) {
       return;
     }
-    const defensorTrim = defensorNuevoArchivo.trim();
     const carpetaTrim = carpetaNuevoArchivo.trim();
     try {
       const creado = await invoke("cmd_crear_archivo", {
-        nombre: nombreNuevoArchivo.trim(),
-        defensor: defensorTrim || null,
+        nombre: nombreTrim,
+        defensor: defensorTrim,
         carpeta: carpetaTrim || null,
       });
-      if (defensorTrim) {
-        try {
-          const cfg = await invoke("cmd_agregar_defensor", { nombre: defensorTrim });
-          defensores = cfg.defensores || [];
-        } catch (_) {}
-      }
+      try {
+        const cfg = await invoke("cmd_agregar_defensor", { nombre: defensorTrim });
+        defensores = cfg.defensores || [];
+      } catch (_) {}
       await refrescarListaArchivos();
+      if (creado !== archivoActual) {
+        ocultarAclaracionDescontextualizada();
+      }
       archivoActual = creado;
       await recargarArchivoActual();
       modalActivo = null;
@@ -517,9 +535,15 @@
       defensorNuevoArchivo = "";
       carpetaNuevoArchivo = "";
       errorModalCrear = "";
+      errorModalDefensor = "";
       mostrarToast(`Archivo '${creado}' creado`, "success");
     } catch (e) {
-      errorModalCrear = String(e);
+      const msg = String(e);
+      if (msg.toLowerCase().includes("defensor")) {
+        errorModalDefensor = msg;
+      } else {
+        errorModalCrear = msg;
+      }
     }
   }
 
@@ -668,6 +692,7 @@
       const prefijo = `${carpeta}/`;
       await refrescarListaArchivos();
       if (archivoActual && archivoActual.startsWith(prefijo)) {
+        ocultarAclaracionDescontextualizada();
         archivoActual = archivosDisponibles[0] || null;
         if (archivoActual) {
           await recargarArchivoActual();
@@ -895,7 +920,18 @@
     } catch (_) {}
   }
 
+  function ocultarAclaracionDescontextualizada() {
+    const id = aprendizaje.aclaracion_pendiente?.correccion_id;
+    if (id) {
+      aclaracionOcultadaId = id;
+      aprendizaje = { ...aprendizaje, aclaracion_pendiente: null };
+    }
+  }
+
   async function seleccionarArchivo(nombre) {
+    if (nombre !== archivoActual) {
+      ocultarAclaracionDescontextualizada();
+    }
     archivoActual = nombre;
     await recargarArchivoActual();
   }
@@ -926,6 +962,7 @@
       });
       await refrescarListaArchivos();
       if (archivoActual === nombre) {
+        ocultarAclaracionDescontextualizada();
         archivoActual = archivosDisponibles[0] || null;
         if (archivoActual) {
           await recargarArchivoActual();
@@ -1028,6 +1065,7 @@
     const target = defensorTargetArchivo || archivoActual;
     if (!target) return;
     const limpio = nombreDefensor.trim();
+    const defensorAnterior = defensorArchivo.trim();
     errorDefensores = "";
     try {
       const guardado = await invoke("cmd_actualizar_defensor_archivo", {
@@ -1037,6 +1075,9 @@
       defensorTargetNombre = guardado;
       defensorPlanillaDraft = guardado;
       if (target === archivoActual) {
+        if (guardado.trim() !== defensorAnterior) {
+          ocultarAclaracionDescontextualizada();
+        }
         defensorArchivo = guardado;
       }
       if (limpio) {
@@ -1102,6 +1143,61 @@
         }
       }
     );
+  }
+
+  async function renombrarDefensorDirecto(actual, nuevo) {
+    const limpioNuevo = (nuevo || "").trim().replace(/\s+/g, " ");
+    if (!limpioNuevo) {
+      return { ok: false, error: "El nuevo nombre del defensor no puede estar vacío." };
+    }
+    try {
+      const cfg = await invoke("cmd_renombrar_defensor", {
+        actual,
+        nuevo: limpioNuevo,
+      });
+      const lista = cfg.defensores || [];
+      defensores = lista;
+      const actualLower = actual.trim().toLowerCase();
+      const nuevoLower = limpioNuevo.toLowerCase();
+      const guardado =
+        lista.find((d) => d.toLowerCase() === nuevoLower) || limpioNuevo;
+      if (defensorNuevoArchivo.trim().toLowerCase() === actualLower) {
+        defensorNuevoArchivo = guardado;
+      }
+      if (defensorPlanillaDraft.trim().toLowerCase() === actualLower) {
+        defensorPlanillaDraft = guardado;
+      }
+      if (defensorEditando && defensorEditando.trim().toLowerCase() === actualLower) {
+        defensorEditando = null;
+        defensorEditandoValor = "";
+      }
+      cargarResumenAprendizaje();
+      mostrarToast(`Defensor renombrado a '${guardado}'`, "success");
+      return { ok: true, valor: guardado };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  async function eliminarDefensorDirecto(nombre) {
+    try {
+      const cfg = await invoke("cmd_eliminar_defensor", { nombre });
+      defensores = cfg.defensores || [];
+      const targetLower = nombre.trim().toLowerCase();
+      if (defensorNuevoArchivo.trim().toLowerCase() === targetLower) {
+        defensorNuevoArchivo = "";
+      }
+      if (defensorPlanillaDraft.trim().toLowerCase() === targetLower) {
+        defensorPlanillaDraft = "";
+      }
+      if (defensorEditando && defensorEditando.trim().toLowerCase() === targetLower) {
+        defensorEditando = null;
+        defensorEditandoValor = "";
+      }
+      mostrarToast(`'${nombre}' eliminado de los defensores guardados`, "info");
+    } catch (e) {
+      mostrarToast(`Error: ${e}`, "error");
+    }
   }
 
   async function abrirRespaldos(nombre) {
@@ -1360,11 +1456,12 @@
     }
   }
 
-  function abrirConfiguracionIa() {
+  async function abrirConfiguracionIa() {
     nuevaOpenAiKey = "";
     nuevaGeminiKey = "";
     mostrarOpenAiKey = false;
     mostrarGeminiKey = false;
+    await cargarConfigInicial();
     modalActivo = "config_ia";
     cargarDiagnosticoIa();
   }
@@ -1400,7 +1497,11 @@
     errorIa = "";
     procesandoIa = true;
     try {
-      const datos = await invoke("cmd_autocompletar_ia", { texto: textoIa });
+      const defensorActivo = defensorArchivo.trim() || null;
+      const datos = await invoke("cmd_autocompletar_ia", {
+        texto: textoIa,
+        defensor: defensorActivo,
+      });
       radicado = datos.radicado || "";
       aplicarTipoAlFormulario(
         datos.tipo_audiencia === "Otra"
@@ -1429,6 +1530,7 @@
         reglas_inyectadas: datos.reglas_inyectadas || [],
         ejemplos_inyectados: datos.ejemplos_inyectados || [],
         prediccion_local: datos.prediccion_local || null,
+        defensor: defensorActivo,
       };
 
       modalActivo = null;
@@ -1442,15 +1544,33 @@
     }
   }
 
+  function aplicarResumenAprendizajeSeguro(res) {
+    if (!res) return;
+    const id = res.aclaracion_pendiente?.correccion_id;
+    if (id && id === aclaracionOcultadaId) {
+      aprendizaje = { ...res, aclaracion_pendiente: null };
+      return;
+    }
+    if (id) {
+      aclaracionOcultadaId = "";
+    }
+    aprendizaje = res;
+  }
+
   // Aprendizaje silencioso: compara lo propuesto por la IA con lo guardado (no bloquea al usuario)
   async function registrarResultadoIa(snapshot, datosFinales) {
     try {
-      aprendizaje = await invoke("cmd_registrar_resultado_ia", {
+      const defensorEfectivo =
+        snapshot.defensor || defensorArchivo.trim() || null;
+      const res = await invoke("cmd_registrar_resultado_ia", {
         texto: snapshot.texto,
         prediccion: snapshot.prediccion,
         finalUsuario: datosFinales,
         reglasInyectadas: snapshot.reglas_inyectadas || [],
+        defensor: defensorEfectivo,
+        prediccionLocal: snapshot.prediccion_local || null,
       });
+      aplicarResumenAprendizajeSeguro(res);
     } catch (e) {
       console.warn("No se pudo registrar el aprendizaje de la IA:", e);
     }
@@ -1458,33 +1578,83 @@
 
   async function cargarResumenAprendizaje() {
     try {
-      aprendizaje = await invoke("cmd_resumen_aprendizaje_ia");
+      const res = await invoke("cmd_resumen_aprendizaje_ia");
+      aplicarResumenAprendizajeSeguro(res);
     } catch (_) {}
   }
 
-  async function responderAclaracionIa(nota) {
+  async function responderAclaracionIa(nota, esDatoExterno = false) {
     const id = aprendizaje.aclaracion_pendiente?.correccion_id;
-    if (!id) return;
+    if (!id || respondiendoAclaracion) return false;
+    const notaTexto = (nota || "").trim();
+    if (!esDatoExterno && !notaTexto) return false;
+    respondiendoAclaracion = true;
     try {
-      aprendizaje = await invoke("cmd_responder_aclaracion_ia", {
+      const res = await invoke("cmd_responder_aclaracion_ia", {
         correccionId: id,
-        nota,
+        nota: esDatoExterno
+          ? notaTexto || "Dato externo (no estaba en el texto)"
+          : notaTexto,
+        esDatoExterno: Boolean(esDatoExterno),
       });
-      mostrarToast("Regla guardada en el aprendizaje de la IA", "success", 3200);
+      if (aclaracionOcultadaId === id) {
+        aclaracionOcultadaId = "";
+      }
+      aplicarResumenAprendizajeSeguro(res);
+      mostrarToast(
+        esDatoExterno
+          ? "Marcado como dato externo — no se creará regla"
+          : "Aclaración guardada en el aprendizaje de la IA",
+        esDatoExterno ? "info" : "success",
+        3200
+      );
+      return true;
     } catch (e) {
       mostrarToast(`No se pudo guardar la aclaración: ${e}`, "error");
+      return false;
+    } finally {
+      respondiendoAclaracion = false;
     }
   }
 
   async function omitirAclaracionIa() {
     const id = aprendizaje.aclaracion_pendiente?.correccion_id;
-    if (!id) return;
+    if (!id || respondiendoAclaracion) return;
+    respondiendoAclaracion = true;
     try {
-      aprendizaje = await invoke("cmd_descartar_aclaracion_ia", {
+      const res = await invoke("cmd_descartar_aclaracion_ia", {
         correccionId: id,
       });
+      if (aclaracionOcultadaId === id) {
+        aclaracionOcultadaId = "";
+      }
+      aplicarResumenAprendizajeSeguro(res);
     } catch (_) {
       aprendizaje = { ...aprendizaje, aclaracion_pendiente: null };
+    } finally {
+      respondiendoAclaracion = false;
+    }
+  }
+
+  async function consolidarMemoriaIaManual(ambito = null) {
+    if (consolidandoIa) return;
+    consolidandoIa = true;
+    try {
+      diagnosticoIa = await invoke("cmd_consolidar_memoria_ia", {
+        ambito: ambito || null,
+      });
+      await cargarResumenAprendizaje();
+      mostrarToast(
+        ambito && ambito !== "*"
+          ? `Memoria de IA consolidada para ${ambito}`
+          : "Memoria general de IA consolidada",
+        "success",
+        3200
+      );
+    } catch (e) {
+      mostrarToast(`No se pudo consolidar la memoria de IA: ${e}`, "error", 4200);
+    } finally {
+      consolidandoIa = false;
     }
   }
 
@@ -1521,9 +1691,24 @@
           gemini_api_key: nuevaGeminiKey.trim() || null,
           gemini_model: settings.gemini_model,
           theme: settings.theme,
+          consolidacion_ia_activa: Boolean(settings.consolidacion_ia_activa),
+          usar_resumen_consolidado: Boolean(settings.usar_resumen_consolidado),
         },
       });
       aiStatus = res.status;
+      settings = {
+        ...settings,
+        provider: res.provider || settings.provider,
+        openai_model: res.openai_model || settings.openai_model,
+        gemini_model: res.gemini_model || settings.gemini_model,
+        theme: res.theme || settings.theme,
+        consolidacion_ia_activa: Boolean(
+          res.consolidacion_ia_activa ?? settings.consolidacion_ia_activa
+        ),
+        usar_resumen_consolidado: Boolean(
+          res.usar_resumen_consolidado ?? settings.usar_resumen_consolidado
+        ),
+      };
       nuevaOpenAiKey = "";
       nuevaGeminiKey = "";
       mostrarOpenAiKey = false;
@@ -1795,10 +1980,12 @@
               onclick={() => abrirModalDefensoresArchivo(archivoActual)}
               title={defensorArchivo
                 ? `Defensor asignado: ${defensorArchivo} (clic para cambiar)`
-                : "Asignar Defensor Público a esta planilla"}
+                : "Planilla sin defensor asignado: la IA usará el perfil general. Haz clic para asignar un defensor."}
             >
               <UserCheck size={12} />
-              <span>{defensorArchivo || "Asignar defensor"}</span>
+              <span>
+                {defensorArchivo || "Sin defensor (perfil general) · Asignar"}
+              </span>
             </button>
             <span class="active-doc-sep" aria-hidden="true">·</span>
             <span class="active-doc-meta">{totales.num_registros}/100 reg.</span>
@@ -1854,6 +2041,7 @@
           onAgregarTipo={agregarTipoAudienciaUsuario}
           onEliminarTipo={eliminarTipoAudienciaUsuario}
           aclaracionPendiente={aprendizaje.aclaracion_pendiente}
+          {respondiendoAclaracion}
           onResponderAclaracion={responderAclaracionIa}
           onOmitirAclaracion={omitirAclaracionIa}
         />
@@ -1897,6 +2085,7 @@
   bind:defensorNuevoArchivo
   bind:carpetaNuevoArchivo
   {errorModalCrear}
+  {errorModalDefensor}
   bind:carpetaPadreNueva
   bind:nombreNuevaCarpeta
   bind:colorNuevaCarpeta
@@ -1944,7 +2133,11 @@
   {cargandoRespaldos}
   {diagnosticoIa}
   {cargandoDiagnosticoIa}
+  {defensorArchivo}
+  {consolidandoIa}
+  {toast}
   onRefrescarDiagnosticoIa={cargarDiagnosticoIa}
+  onConsolidarMemoriaIa={consolidarMemoriaIaManual}
   onCrearNuevoArchivo={crearNuevoArchivo}
   onCrearCarpeta={crearNuevaCarpeta}
   onRenombrarCarpeta={renombrarCarpetaExistente}
@@ -1965,10 +2158,12 @@
   onAgregarDefensor={agregarDefensorADirectorio}
   onGuardarRenombreDefensor={guardarRenombreDefensor}
   onEliminarDefensor={eliminarDefensorDeDirectorio}
+  onRenombrarDefensorDirecto={renombrarDefensorDirecto}
+  onEliminarDefensorDirecto={eliminarDefensorDirecto}
   onRestaurarRespaldo={solicitarRestaurarRespaldo}
 />
 
-{#if toast}
+{#if toast && !modalActivo}
   <div class="toast" role="status" aria-live="polite">
     <span>{toast.mensaje}</span>
   </div>

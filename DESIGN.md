@@ -1,6 +1,6 @@
 # DESIGN.md — Lokus Judicial Design System
 
-> Documento canónico de diseño para **Lokus — Gestor de Audiencias Judiciales** (`v3.2`, Tauri v2 + Svelte 5 + Vite 6 + CSS nativo). Cualquier nuevo token, variante de botón, elevación o componente reutilizable en `src/` debe reflejarse aquí y verificarse con `.agents/skills/lokus-ui-craft/scripts/audit_ui.py`.
+> Documento canónico de diseño para **Lokus — Gestor de Audiencias Judiciales** (`v4.1`, Tauri v2 + Svelte 5 + Vite 6 + CSS nativo). Cualquier nuevo token, variante de botón, elevación o componente reutilizable en `src/` debe reflejarse aquí y verificarse con `.agents/skills/lokus-ui-craft/scripts/audit_ui.py`.
 
 ## 1. Product & Visual Direction
 
@@ -65,7 +65,7 @@ Todos los colores en componentes `.svelte` y reglas de `src/app.css` deben refer
   - `--radius-chip`: `6px` (`.mini-icon-btn`, `.folder-context-item`, `.causal-filter-chip`, `.active-doc-defensor-btn`)
   - `--radius-pill`: `999px` (`.tab-count`, `.share-badge`, `.tag-si`, `.tag-no`, `.quota-bar`)
 - **Elevation vs. Border Rule**:
-  - **Superficies planas / ancladas**: usar `border: 1px solid var(--border-hairline)` y `box-shadow: none` (ej. `.sidebar-file-row`, `.sidebar-folder-row`, `.active-doc-bar`, `.extract-panel`).
+  - **Superficies planas / ancladas**: usar `border: 1px solid var(--border-hairline)` y `box-shadow: none` (ej. `.sidebar-file-row`, `.sidebar-folder-row`, `.active-doc-bar`, `.extract-panel`, `.ia-clarify-panel`, `.ia-diag-details`, `.ia-diag-rule-item`).
   - **Superficies elevadas / flotantes**: usan `--shadow-card` (tarjetas de contenido) o `--shadow-popover` (modales `<dialog>`, popovers de calendario/select, `.folder-context-menu`, `.tree-drag-ghost`, `.toast`).
 
 ---
@@ -77,8 +77,18 @@ Todos los colores en componentes `.svelte` y reglas de `src/app.css` deben refer
   - `.btn` (`padding: 7px 13px`, `font-size: 12.5px`, `font-weight: 600`, `border-radius: var(--radius-ctrl)`, `gap: 7px`).
   - Variantes: `.btn-solid` (primaria), `.btn-subtle` (secundaria con `--border-strong`), `.btn-ai-ready` / `.btn-ia-action` / `.btn-ai-warm`, `.btn-danger`.
   - `.mini-icon-btn`: botón cuadrado `26px × 26px` (`32px × 32px` en `.sidebar-toggle-btn`, `22px × 22px` en `.sidebar-collapse-btn`), `border-radius: var(--radius-chip)`.
-  - `.active-doc-defensor-btn`: botón discreto en `.active-doc-bar` para editar/asignar el defensor de la planilla activa en 1 clic.
+  - `.active-doc-defensor-btn`: botón discreto en `.active-doc-bar` para editar/asignar el defensor de la planilla activa en 1 clic. En planillas antiguas sin defensor asignado aplica la clase `.is-empty` sobre superficie cálida discreta (`--accent-warm`, `--accent-warm-soft`, `--accent-warm-border`, `max-width: 280px`) mostrando *"Sin defensor (perfil general) · Asignar"*.
 - **Icons**: Lucide SVG importado desde `@lucide/svelte` (`12px`–`16px`). Prohibido usar emojis Unicode como iconos de interfaz.
+
+### Modal de Nueva Planilla, Defensores y Diagnóstico Técnico
+- **Modal `Nuevo archivo de audiencias` (`modalActivo === "crear"` en `Modals.svelte`)**: exige **Defensor Público asignado** obligatorio (`allowEmptyOption={false}` en `<AutocompleteInput id="nuevo-archivo-defensor" />`, sin opción vacía y con feedback `role="alert"` en `--status-no`) para garantizar la separación de perfiles de autoaprendizaje desde la creación. Tanto en `crear` como en `defensores`, el desplegable `<AutocompleteInput>` admite edición inline (`.custom-select-edit-btn` con `Edit3`) y borrado directo (`.custom-select-delete-btn` con `Trash2`) sin cerrar el modal, además de mostrar la recomendación de escribir el nombre completo sin títulos (`Dr./Dra.`).
+- **Controles de consolidación y resumen (`modalActivo === "config_ia"` en `Modals.svelte`)**: utiliza el patrón accesible `.delete-archive-check` para los interruptores `Consolidación periódica automática con IA` (`consolidacion_ia_activa`) e `Inyectar resumen consolidado al extraer` (`usar_resumen_consolidado`) con descripciones breves en `.shortcut-hint`.
+- **Diagnóstico Técnico de Autoaprendizaje (`.ia-diag-details`)**: bloque colapsable `<details>` dentro del modal `config_ia` (`Modals.svelte`) sobre superficie plana (`--bg-input`, `--border-hairline`, `box-shadow: none`), métricas numéricas con `tabular-nums` (incluyendo `Perfiles def.`, `Mapa conex.`, `Consolidaciones`, `Presión global`, `Resp. aclarac.` y la preferencia adaptable `Instalada → SI`), botones manuales `Consolidar defensor` y `Consolidar general (*)` en `.ia-diag-toolbar` / `.ia-diag-actions`, subsección `<h3>Perfiles sintéticos consolidados</h3>` con tarjetas planas `.ia-diag-rule-item` (`General (transversal)` y perfiles por defensor), tabla de fiabilidad por campo, alertas de drift Page-Hinkley y ciclo de vida de reglas sin sobrecargar la vista diaria.
+
+### Cuadro Adaptativo de Aclaración IA (`.ia-clarify-panel` en `AudienciaForm.svelte`)
+- Superficie plana dentro de `.extract-panel` sobre tokens cálidos (`--accent-warm-soft`, `--accent-warm-border`, `border-left: 3px solid var(--accent-warm)`, `box-shadow: none`), cabecera con icono Lucide `HelpCircle` (`@lucide/svelte`), pregunta contextual y botón `Omitir`.
+- **Pills de cambio (`.ia-clarify-diff-strip` / `.ia-diag-pill`)**: muestran hasta 3 campos corregidos con etiquetas legibles (`Realizada`, `Motivo`, `Juzgado`, `Tipo`, `Observaciones`, `Radicado`, `Fecha`, `Hora`) en formato `IA → Usuario`.
+- **Chips rápidos de 1 clic (`.ia-clarify-chips` / `.ia-clarify-chip`)**: reutilizan `.preset-btn` sin `box-shadow` para descartar a `0` tokens (`"Dato externo (no estaba en el texto)"`, `esDatoExterno: true`) o prellenar el campo (`"Criterio de este defensor"`, `"Sigla / abreviación habitual"`). El cuadro se limpia automáticamente al cambiar de planilla o al cambiar el defensor de la planilla activa.
 
 ### Barra Lateral Plegable y Menú Contextual Unificado
 - `.desktop-frame.sidebar-collapsed`: colapsa la columna del sidebar a `0px` con transición suave de `grid-template-columns` (`0.18s`, respetando `prefers-reduced-motion`) y se alterna mediante `.sidebar-toggle-btn` (siempre visible) o `Ctrl+B`.
@@ -87,7 +97,6 @@ Todos los colores en componentes `.svelte` y reglas de `src/app.css` deben refer
 ### Controles de Fecha y Hora (`DatePickerInput.svelte` y `AudienciaForm.svelte`)
 - **Calendario (`.calendar-popover`)**: alterna vistas inline entre días (`.calendar-grid`), rejilla `4×3` de meses (`.calendar-months-matrix`) y rejilla `4×3` paginada de años `2018–2050` (`.calendar-years-matrix`) mediante `.calendar-cell-btn`, con navegación por rueda del ratón sobre mes, año y cuadrícula.
 - **Hora 12h (`.time-inline-box` + `.time-presets`)**: captura en formato `12h` (`01..12`) + selector `.time-meridiem-group` (`AM`/`PM`) con navegación por bordes mediante `ArrowLeft`/`ArrowRight` y conversión automática a `24h` (`HH:MM`) al persistir en Excel. Debajo del control `HH:MM AM/PM` se muestra una fila ordenada de `6` accesos rápidos (`.time-presets`: `8:00 AM`, `9:00 AM`, `10:00 AM`, `2:00 PM`, `3:00 PM`, `4:00 PM`) en grilla de `6` columnas (`minmax(0, 1fr)`), reduciéndose a `3×2` cuando la columna es estrecha (`@container timecol (width < 360px)` o `@container workspace (width < 520px)`).
-- **Diagnóstico Técnico de Autoaprendizaje (`.ia-diag-details`)**: bloque colapsable `<details>` dentro del modal `config_ia` (`Modals.svelte`) sobre superficie plana (`--bg-input`, `--border-hairline`, `box-shadow: none`), métricas numéricas con `tabular-nums`, tabla de fiabilidad por campo, alertas de drift Page-Hinkley y ciclo de vida de reglas sin sobrecargar la vista diaria.
 
 ### Container Queries
 - Contenedores declarados en `src/app.css`:

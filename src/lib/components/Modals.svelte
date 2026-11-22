@@ -41,6 +41,7 @@
     defensorNuevoArchivo = $bindable(""),
     carpetaNuevoArchivo = $bindable(""),
     errorModalCrear = "",
+    errorModalDefensor = "",
     carpetaPadreNueva = $bindable(""),
     nombreNuevaCarpeta = $bindable(""),
     colorNuevaCarpeta = $bindable(""),
@@ -88,7 +89,11 @@
     cargandoRespaldos = false,
     diagnosticoIa = null,
     cargandoDiagnosticoIa = false,
+    defensorArchivo = "",
+    consolidandoIa = false,
+    toast = null,
     onRefrescarDiagnosticoIa = null,
+    onConsolidarMemoriaIa = null,
     onCrearNuevoArchivo,
     onCrearCarpeta,
     onRenombrarCarpeta,
@@ -109,14 +114,23 @@
     onAgregarDefensor,
     onGuardarRenombreDefensor,
     onEliminarDefensor,
+    onRenombrarDefensorDirecto = null,
+    onEliminarDefensorDirecto = null,
     onRestaurarRespaldo,
   } = $props();
 
   let dialogEl = $state(null);
+  let consolidandoAmbito = $state("");
 
   $effect(() => {
     if (modalActivo && dialogEl && !dialogEl.open) {
       dialogEl.showModal();
+    }
+  });
+
+  $effect(() => {
+    if (!consolidandoIa) {
+      consolidandoAmbito = "";
     }
   });
 
@@ -199,6 +213,12 @@
         ? "modal-overflow-visible"
         : ""}
     aria-labelledby="dialog-heading"
+    oncancel={(e) => {
+      const until = Number(dialogEl?.dataset.blockCancelUntil || 0);
+      if (Date.now() <= until) {
+        e.preventDefault();
+      }
+    }}
     onclose={() => {
       modalActivo = null;
       confirmacionPendiente = null;
@@ -249,33 +269,49 @@
         <div class="field-group">
           <div class="field-header">
             <label class="field-label" for="nuevo-archivo-defensor">
-              Defensor Público asignado (opcional)
+              Defensor Público asignado
             </label>
           </div>
           <span id="nuevo-archivo-defensor-hint" class="shortcut-hint">
             {#if defensores.length > 0}
-              Elige un defensor de tu lista guardada o escribe un nombre nuevo.
+              Obligatorio: elige un defensor de tu lista o escribe un nombre nuevo. La IA aprenderá su estilo propio.
             {:else}
-              Opcional: escribe el nombre del defensor y se guardará en tu directorio.
+              Obligatorio: escribe el nombre del defensor y se guardará en tu directorio para personalizar la IA.
             {/if}
           </span>
           <AutocompleteInput
             id="nuevo-archivo-defensor"
             bind:value={defensorNuevoArchivo}
             suggestions={defensores}
+            invalid={Boolean(errorModalDefensor)}
             showDropdownButton={defensores.length > 0}
             headerText="Defensores guardados en tu directorio"
-            allowEmptyOption={true}
-            emptyOptionLabel="Dejar sin defensor asignado"
-            describedBy="nuevo-archivo-defensor-hint"
+            allowEmptyOption={false}
+            describedBy={errorModalDefensor
+              ? "nuevo-archivo-defensor-hint nuevo-archivo-defensor-error"
+              : "nuevo-archivo-defensor-hint"}
             maxSuggestions={100}
             autocorrect="off"
             spellcheck="false"
             placeholder={defensores.length > 0
               ? "Elige de tu lista o escribe un nombre nuevo"
-              : "Opcional: escribe el nombre del defensor"}
+              : "Escribe el nombre del Defensor Público"}
+            onEditOption={onRenombrarDefensorDirecto}
+            onDeleteOption={onEliminarDefensorDirecto}
             onEnter={onCrearNuevoArchivo}
           />
+          {#if errorModalDefensor}
+            <p
+              id="nuevo-archivo-defensor-error"
+              role="alert"
+              style="color: var(--status-no); font-size: 12px"
+            >
+              {errorModalDefensor}
+            </p>
+          {/if}
+          <span class="shortcut-hint">
+            Recomendación: escribe el nombre completo sin títulos (Dr./Dra.) para que la IA reconozca siempre al mismo defensor.
+          </span>
         </div>
 
         {#if carpetasDisponibles.length > 0 || carpetaNuevoArchivo}
@@ -1047,6 +1083,28 @@
           </div>
         {/if}
 
+        <div class="ia-config-toggles">
+          <label class="delete-archive-check">
+            <input type="checkbox" bind:checked={settings.consolidacion_ia_activa} />
+            <div>
+              <strong>Consolidación periódica automática con IA</strong>
+              <div class="shortcut-hint">
+                Sintetiza en segundo plano patrones acumulados y reglas redundantes cuando el sistema detecta presión estadística.
+              </div>
+            </div>
+          </label>
+
+          <label class="delete-archive-check">
+            <input type="checkbox" bind:checked={settings.usar_resumen_consolidado} />
+            <div>
+              <strong>Inyectar resumen consolidado al extraer</strong>
+              <div class="shortcut-hint">
+                Incluye el perfil sintético general y del defensor activo en el contexto enviado al modelo de IA.
+              </div>
+            </div>
+          </label>
+        </div>
+
         <details class="ia-diag-details">
           <summary class="ia-diag-summary">
             <span class="ia-diag-summary-left">
@@ -1072,15 +1130,55 @@
           <div class="ia-diag-body">
             <div class="ia-diag-toolbar">
               <span class="shortcut-hint">Telemetría local anonimizada para inspección técnica</span>
-              <button
-                type="button"
-                class="btn btn-subtle ia-diag-refresh-btn"
-                disabled={cargandoDiagnosticoIa}
-                onclick={() => onRefrescarDiagnosticoIa?.()}
-              >
-                <RefreshCw size={12} />
-                <span>{cargandoDiagnosticoIa ? "Cargando..." : "Actualizar"}</span>
-              </button>
+              <div class="ia-diag-actions">
+                {#if defensorArchivo.trim()}
+                  <button
+                    type="button"
+                    class="btn btn-subtle ia-diag-refresh-btn"
+                    disabled={consolidandoIa || !aiStatus.configured}
+                    onclick={() => {
+                      consolidandoAmbito = "defensor";
+                      onConsolidarMemoriaIa?.(defensorArchivo.trim());
+                    }}
+                    title={!aiStatus.configured
+                      ? "Configura una clave API de IA para consolidar"
+                      : `Consolidar memoria de IA para ${defensorArchivo.trim()}`}
+                  >
+                    <span>
+                      {consolidandoIa && consolidandoAmbito === "defensor"
+                        ? "Consolidando..."
+                        : "Consolidar defensor"}
+                    </span>
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="btn btn-subtle ia-diag-refresh-btn"
+                  disabled={consolidandoIa || !aiStatus.configured}
+                  onclick={() => {
+                    consolidandoAmbito = "general";
+                    onConsolidarMemoriaIa?.("*");
+                  }}
+                  title={!aiStatus.configured
+                    ? "Configura una clave API de IA para consolidar"
+                    : "Consolidar memoria general transversal (*)"}
+                >
+                  <span>
+                    {consolidandoIa && consolidandoAmbito === "general"
+                      ? "Consolidando..."
+                      : "Consolidar general (*)"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-subtle ia-diag-refresh-btn"
+                  disabled={cargandoDiagnosticoIa || consolidandoIa}
+                  onclick={() => onRefrescarDiagnosticoIa?.()}
+                >
+                  <RefreshCw size={12} />
+                  <span>{cargandoDiagnosticoIa ? "Cargando..." : "Actualizar"}</span>
+                </button>
+              </div>
             </div>
 
             {#if !diagnosticoIa}
@@ -1111,6 +1209,30 @@
                   <span class="ia-diag-metric-label">Cola clúster</span>
                   <span class="ia-diag-metric-value">
                     {diagnosticoIa.clusters_pendientes}/{diagnosticoIa.clusters_listos}
+                  </span>
+                </div>
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Perfiles def.</span>
+                  <span class="ia-diag-metric-value">{diagnosticoIa.perfiles_defensores ?? 0}</span>
+                </div>
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Mapa conex.</span>
+                  <span class="ia-diag-metric-value">{diagnosticoIa.conexiones_grafo ?? 0}</span>
+                </div>
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Consolidaciones</span>
+                  <span class="ia-diag-metric-value">{diagnosticoIa.consolidaciones_totales ?? 0}</span>
+                </div>
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Presión global</span>
+                  <span class="ia-diag-metric-value">
+                    {(diagnosticoIa.presion_consolidacion_global ?? 0).toFixed(2)}
+                  </span>
+                </div>
+                <div class="ia-diag-metric-box">
+                  <span class="ia-diag-metric-label">Resp. aclarac.</span>
+                  <span class="ia-diag-metric-value">
+                    {Math.round((diagnosticoIa.tasa_respuesta_aclaraciones ?? 1) * 100)}%
                   </span>
                 </div>
               </div>
@@ -1190,9 +1312,33 @@
                       "Se fija" &rarr; NO: {Math.round((diagnosticoIa.preferencias_estilo.se_fija_aplazamiento_prob ?? 0) * 100)}%
                     </span>
                     <span class="ia-diag-pill">
+                      Instalada &rarr; SI: {Math.round((diagnosticoIa.preferencias_estilo.instalada_reprogramada_si_prob ?? 0) * 100)}%
+                    </span>
+                    <span class="ia-diag-pill">
                       Alias validados: {diagnosticoIa.alias_validados?.length ?? 0}
                     </span>
                   </div>
+                </div>
+              {/if}
+
+              {#if diagnosticoIa.perfiles_sinteticos?.length > 0}
+                <div class="ia-diag-section">
+                  <h3 class="ia-diag-subtitle">Perfiles sintéticos consolidados</h3>
+                  <ul class="ia-diag-rules-list">
+                    {#each diagnosticoIa.perfiles_sinteticos as p}
+                      <li class="ia-diag-rule-item">
+                        <div class="ia-diag-rule-head">
+                          <span class="ia-diag-pill {p.ambito === '*' ? 'is-ok' : ''}">
+                            {p.ambito === "*" ? "General (transversal)" : (p.nombre_mostrar || p.ambito)}
+                          </span>
+                          <span class="ia-diag-rule-meta">
+                            v{p.version ?? 1}{p.ultima_actualizacion ? ` · ${p.ultima_actualizacion.slice(0, 10)}` : ""}
+                          </span>
+                        </div>
+                        <p class="ia-diag-rule-text">{p.resumen}</p>
+                      </li>
+                    {/each}
+                  </ul>
                 </div>
               {/if}
 
@@ -1343,6 +1489,8 @@
                   maxSuggestions={100}
                   headerText="Defensores guardados en tu directorio"
                   placeholder="Escribe, corrige o elige el defensor de esta planilla"
+                  onEditOption={onRenombrarDefensorDirecto}
+                  onDeleteOption={onEliminarDefensorDirecto}
                   onEnter={() => onAsignarDefensor(defensorPlanillaDraft)}
                 />
               </div>
@@ -1366,6 +1514,9 @@
             </div>
             <span class="shortcut-hint">
               Si te equivocaste al crear el archivo, corrige el nombre aquí y se actualizará directamente en el Excel.
+            </span>
+            <span class="shortcut-hint">
+              Recomendación: escribe el nombre completo sin títulos (Dr./Dra.) para que la IA reconozca siempre al mismo defensor.
             </span>
           </div>
           <div class="dossier-divider"></div>
@@ -1393,6 +1544,11 @@
               Agregar
             </button>
           </div>
+          {#if !defensorTargetArchivo}
+            <span class="shortcut-hint">
+              Recomendación: escribe el nombre completo sin títulos (Dr./Dra.) para que la IA reconozca siempre al mismo defensor.
+            </span>
+          {/if}
           {#if defensores.length > 6}
             <input
               type="search"
@@ -1622,6 +1778,11 @@
         <button type="button" class="btn btn-solid" onclick={() => (modalActivo = null)}>
           Cerrar
         </button>
+      </div>
+    {/if}
+    {#if toast}
+      <div class="toast" role="status" aria-live="polite">
+        <span>{toast.mensaje}</span>
       </div>
     {/if}
   </dialog>

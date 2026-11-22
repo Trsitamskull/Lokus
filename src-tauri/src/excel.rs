@@ -10,15 +10,17 @@ use serde::{Deserialize, Serialize};
 use umya_spreadsheet::{reader, writer, Spreadsheet, Worksheet};
 
 use crate::models::{
-    buscar_posible_duplicado, extraer_numeros_radicado, mapear_motivo_a_indice, AudienciaInput,
-    EstadisticasGlobales, IndicePriorsExcel, MesDisponible, PlanillaResumen, ProcesoHabitual,
-    RegistroAudiencia, ResumenDefensor, ResumenMesPlanilla, ResumenPlanillaArchivada,
-    TotalesExcel, MOTIVOS_LABELS,
+    buscar_posible_duplicado, extraer_numeros_radicado, extraer_prefijo_dane_radicado,
+    extraer_siglas_cortas_juzgado, mapear_motivo_a_indice, normalizar_clave_catalogo,
+    normalizar_clave_defensor, AudienciaInput, EstadisticasGlobales, IndicePriorsExcel,
+    MesDisponible, PlanillaResumen, ProcesoHabitual, RegistroAudiencia, ResumenDefensor,
+    ResumenMesPlanilla, ResumenPlanillaArchivada, TotalesExcel, MOTIVOS_LABELS,
 };
 
 const PLANTILLA_BYTES: &[u8] = include_bytes!("../../templates/plantilla_audiencias.xlsx");
 pub const NOMBRE_INDICE_ESTADISTICAS: &str = ".lokus_estadisticas.json";
 pub const NOMBRE_INDICE_PRIORS: &str = ".lokus_priors.json";
+const FORMATO_PRIORS_ACTUAL: u32 = 3;
 
 pub const FILA_DEFENSOR: u32 = 8;
 pub const COL_DEFENSOR: u32 = 2; // B8
@@ -1225,14 +1227,16 @@ fn actualizar_defensor_en(ruta: &Path, defensor: &str) -> Result<String, String>
 
 pub fn actualizar_defensor_archivo(nombre_archivo: &str, defensor: &str) -> Result<String, String> {
     let ruta = ruta_archivo(nombre_archivo)?;
-    actualizar_defensor_en(&ruta, defensor)
+    let res = actualizar_defensor_en(&ruta, defensor)?;
+    invalidar_priors_en(&obtener_carpeta_archivos());
+    Ok(res)
 }
 
-fn guardar_nueva_audiencia_en(
+fn guardar_nueva_audiencia_en_con_defensor(
     ruta: &Path,
     datos: &AudienciaInput,
     permitir_duplicado: bool,
-) -> Result<TotalesExcel, String> {
+) -> Result<(TotalesExcel, String), String> {
     if !ruta.exists() {
         return Err("El archivo seleccionado no existe.".to_string());
     }
@@ -1242,6 +1246,7 @@ fn guardar_nueva_audiencia_en(
     let ws = book
         .get_sheet_mut(&0)
         .ok_or_else(|| "No se pudo acceder a la hoja de trabajo".to_string())?;
+    let defensor = leer_defensor_de_hoja(ws);
 
     if !permitir_duplicado {
         let existentes = extraer_registros_de_hoja(ws);
@@ -1271,7 +1276,16 @@ fn guardar_nueva_audiencia_en(
 
     let totales = reordenar_y_recalcular(ws);
     guardar_libro(&book, ruta)?;
-    Ok(totales)
+    Ok((totales, defensor))
+}
+
+#[cfg(test)]
+fn guardar_nueva_audiencia_en(
+    ruta: &Path,
+    datos: &AudienciaInput,
+    permitir_duplicado: bool,
+) -> Result<TotalesExcel, String> {
+    guardar_nueva_audiencia_en_con_defensor(ruta, datos, permitir_duplicado).map(|(t, _)| t)
 }
 
 pub fn guardar_nueva_audiencia(
@@ -1281,9 +1295,9 @@ pub fn guardar_nueva_audiencia(
 ) -> Result<TotalesExcel, String> {
     let _ = crate::uso_catalogos::asegurar_uso_inicializado_actual();
     let ruta = ruta_archivo(nombre_archivo)?;
-    let totales = guardar_nueva_audiencia_en(&ruta, datos, permitir_duplicado)?;
+    let (totales, defensor) = guardar_nueva_audiencia_en_con_defensor(&ruta, datos, permitir_duplicado)?;
     let base = obtener_carpeta_archivos();
-    let _ = actualizar_priors_incremental_en(&base, None, Some(datos));
+    let _ = actualizar_priors_incremental_con_defensor_en(&base, &defensor, None, Some(datos));
     let _ = crate::uso_catalogos::registrar_delta_audiencia_actual(None, Some(datos));
     Ok(totales)
 }
@@ -1346,7 +1360,7 @@ fn actualizar_audiencia_en_con_anterior(
     radicado_esperado: &str,
     datos: &AudienciaInput,
     permitir_duplicado: bool,
-) -> Result<(TotalesExcel, Option<AudienciaInput>), String> {
+) -> Result<(TotalesExcel, Option<AudienciaInput>, String), String> {
     if !(FILA_INICIO_DATOS..=FILA_MAXIMA_DATOS).contains(&fila_excel) {
         return Err(format!("Número de fila inválido: {}", fila_excel));
     }
@@ -1359,6 +1373,7 @@ fn actualizar_audiencia_en_con_anterior(
     let ws = book
         .get_sheet_mut(&0)
         .ok_or_else(|| "No se pudo acceder a la hoja de trabajo".to_string())?;
+    let defensor = leer_defensor_de_hoja(ws);
 
     validar_fila_y_radicado(ws, fila_excel, radicado_esperado)?;
     let anterior = leer_registro_en_fila_para_priors(ws, fila_excel);
@@ -1379,7 +1394,7 @@ fn actualizar_audiencia_en_con_anterior(
 
     let totales = reordenar_y_recalcular(ws);
     guardar_libro(&book, ruta)?;
-    Ok((totales, anterior))
+    Ok((totales, anterior, defensor))
 }
 
 #[cfg(test)]
@@ -1397,7 +1412,7 @@ fn actualizar_audiencia_en(
         datos,
         permitir_duplicado,
     )
-    .map(|(t, _)| t)
+    .map(|(t, _, _)| t)
 }
 
 pub fn actualizar_audiencia_existente(
@@ -1409,7 +1424,7 @@ pub fn actualizar_audiencia_existente(
 ) -> Result<TotalesExcel, String> {
     let _ = crate::uso_catalogos::asegurar_uso_inicializado_actual();
     let ruta = ruta_archivo(nombre_archivo)?;
-    let (totales, anterior) = actualizar_audiencia_en_con_anterior(
+    let (totales, anterior, defensor) = actualizar_audiencia_en_con_anterior(
         &ruta,
         fila_excel,
         radicado_esperado,
@@ -1417,7 +1432,12 @@ pub fn actualizar_audiencia_existente(
         permitir_duplicado,
     )?;
     let base = obtener_carpeta_archivos();
-    let _ = actualizar_priors_incremental_en(&base, anterior.as_ref(), Some(datos));
+    let _ = actualizar_priors_incremental_con_defensor_en(
+        &base,
+        &defensor,
+        anterior.as_ref(),
+        Some(datos),
+    );
     let _ = crate::uso_catalogos::registrar_delta_audiencia_actual(anterior.as_ref(), Some(datos));
     Ok(totales)
 }
@@ -1426,7 +1446,7 @@ fn eliminar_registro_en_con_anterior(
     ruta: &Path,
     fila_excel: u32,
     radicado_esperado: &str,
-) -> Result<(TotalesExcel, Option<AudienciaInput>), String> {
+) -> Result<(TotalesExcel, Option<AudienciaInput>, String), String> {
     if !(FILA_INICIO_DATOS..=FILA_MAXIMA_DATOS).contains(&fila_excel) {
         return Err(format!("Número de fila inválido: {}", fila_excel));
     }
@@ -1439,6 +1459,7 @@ fn eliminar_registro_en_con_anterior(
     let ws = book
         .get_sheet_mut(&0)
         .ok_or_else(|| "No se pudo acceder a la hoja de trabajo".to_string())?;
+    let defensor = leer_defensor_de_hoja(ws);
 
     validar_fila_y_radicado(ws, fila_excel, radicado_esperado)?;
     let anterior = leer_registro_en_fila_para_priors(ws, fila_excel);
@@ -1449,7 +1470,7 @@ fn eliminar_registro_en_con_anterior(
 
     let totales = reordenar_y_recalcular(ws);
     guardar_libro(&book, ruta)?;
-    Ok((totales, anterior))
+    Ok((totales, anterior, defensor))
 }
 
 #[cfg(test)]
@@ -1458,7 +1479,7 @@ fn eliminar_registro_en(
     fila_excel: u32,
     radicado_esperado: &str,
 ) -> Result<TotalesExcel, String> {
-    eliminar_registro_en_con_anterior(ruta, fila_excel, radicado_esperado).map(|(t, _)| t)
+    eliminar_registro_en_con_anterior(ruta, fila_excel, radicado_esperado).map(|(t, _, _)| t)
 }
 
 pub fn eliminar_registro_audiencia(
@@ -1468,10 +1489,10 @@ pub fn eliminar_registro_audiencia(
 ) -> Result<TotalesExcel, String> {
     let _ = crate::uso_catalogos::asegurar_uso_inicializado_actual();
     let ruta = ruta_archivo(nombre_archivo)?;
-    let (totales, anterior) =
+    let (totales, anterior, defensor) =
         eliminar_registro_en_con_anterior(&ruta, fila_excel, radicado_esperado)?;
     let base = obtener_carpeta_archivos();
-    let _ = actualizar_priors_incremental_en(&base, anterior.as_ref(), None);
+    let _ = actualizar_priors_incremental_con_defensor_en(&base, &defensor, anterior.as_ref(), None);
     let _ = crate::uso_catalogos::registrar_delta_audiencia_actual(anterior.as_ref(), None);
     Ok(totales)
 }
@@ -1916,7 +1937,7 @@ pub fn calcular_estadisticas_en(
     let mut defensores_map: HashMap<String, AcumuladorDefensor> = HashMap::new();
     let mut defensores_disponibles_map: HashMap<String, String> = HashMap::new();
     let mut priors_acum = IndicePriorsExcel {
-        formato: 1,
+        formato: FORMATO_PRIORS_ACTUAL,
         actualizada: Local::now().to_rfc3339(),
         ..Default::default()
     };
@@ -1932,8 +1953,9 @@ pub fn calcular_estadisticas_en(
         let (registros, _totales, defensor) = leer_archivo_en(&ruta)
             .map_err(|e| format!("Error leyendo '{}': {}", nombre, e))?;
         for r in &registros {
-            acumular_registro_en_priors(
+            acumular_registro_en_priors_con_defensor(
                 &mut priors_acum,
+                &defensor,
                 &r.radicado,
                 &r.tipo,
                 &r.hora,
@@ -2102,8 +2124,47 @@ fn extraer_hora_num(hora: &str) -> Option<u32> {
     }
 }
 
-pub fn acumular_registro_en_priors(
+fn incrementar_arista(
+    mapa: &mut BTreeMap<String, BTreeMap<String, u32>>,
+    origen: &str,
+    destino: &str,
+) {
+    if origen.is_empty() || destino.is_empty() {
+        return;
+    }
+    *mapa
+        .entry(origen.to_string())
+        .or_default()
+        .entry(destino.to_string())
+        .or_insert(0) += 1;
+}
+
+fn decrementar_arista(
+    mapa: &mut BTreeMap<String, BTreeMap<String, u32>>,
+    origen: &str,
+    destino: &str,
+) {
+    if origen.is_empty() || destino.is_empty() {
+        return;
+    }
+    let mut quitar_origen = false;
+    if let Some(dests) = mapa.get_mut(origen) {
+        if let Some(c) = dests.get_mut(destino) {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                dests.remove(destino);
+            }
+        }
+        quitar_origen = dests.is_empty();
+    }
+    if quitar_origen {
+        mapa.remove(origen);
+    }
+}
+
+pub fn acumular_registro_en_priors_con_defensor(
     priors: &mut IndicePriorsExcel,
+    defensor: &str,
     radicado: &str,
     tipo: &str,
     hora: &str,
@@ -2131,7 +2192,10 @@ pub fn acumular_registro_en_priors(
             priors.motivos_freq[idx] = priors.motivos_freq[idx].saturating_add(1);
         }
     }
+    let def_limpio = defensor.split_whitespace().collect::<Vec<_>>().join(" ");
+    let def_clave = normalizar_clave_defensor(&def_limpio);
     let rad_limpio = radicado.split_whitespace().collect::<Vec<_>>().join(" ");
+
     for num in extraer_numeros_radicado(&rad_limpio) {
         let entry = priors
             .procesos_por_numero
@@ -2147,10 +2211,61 @@ pub fn acumular_registro_en_priors(
         if !tipo_limpio.is_empty() {
             entry.tipo_habitual = tipo_limpio.clone();
         }
+        if !def_limpio.is_empty() {
+            entry.defensor_habitual = def_limpio.clone();
+        }
+    }
+
+    // Aristas del Mapa de Conexiones ligero (GrafoAsociaciones)
+    if !def_clave.is_empty() {
+        incrementar_arista(&mut priors.grafo.defensor_a_juzgados, &def_clave, &juz_limpio);
+        incrementar_arista(&mut priors.grafo.defensor_a_tipos, &def_clave, &tipo_limpio);
+        if !juz_limpio.is_empty() {
+            for sigla in extraer_siglas_cortas_juzgado(&juz_limpio) {
+                *priors
+                    .grafo
+                    .defensor_sigla_a_juzgado
+                    .entry(def_clave.clone())
+                    .or_default()
+                    .entry(sigla)
+                    .or_default()
+                    .entry(juz_limpio.clone())
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+    if let Some(prefijo) = extraer_prefijo_dane_radicado(&rad_limpio) {
+        incrementar_arista(
+            &mut priors.grafo.prefijo_radicado_a_juzgados,
+            &prefijo,
+            &juz_limpio,
+        );
+    }
+    let tipo_clave = normalizar_clave_catalogo(&tipo_limpio);
+    if !tipo_clave.is_empty() && tipo_clave != "otra" {
+        incrementar_arista(&mut priors.grafo.tipo_a_juzgados, &tipo_clave, &juz_limpio);
     }
 }
 
-fn restar_registro_de_priors(priors: &mut IndicePriorsExcel, reg: &AudienciaInput) {
+pub fn acumular_registro_en_priors(
+    priors: &mut IndicePriorsExcel,
+    radicado: &str,
+    tipo: &str,
+    hora: &str,
+    juzgado: &str,
+    realizada: &str,
+    motivo: &str,
+) {
+    acumular_registro_en_priors_con_defensor(
+        priors, "", radicado, tipo, hora, juzgado, realizada, motivo,
+    );
+}
+
+fn restar_registro_de_priors_con_defensor(
+    priors: &mut IndicePriorsExcel,
+    defensor: &str,
+    reg: &AudienciaInput,
+) {
     priors.total_registros = priors.total_registros.saturating_sub(1);
     let juz_limpio = reg.juzgado.split_whitespace().collect::<Vec<_>>().join(" ");
     if !juz_limpio.is_empty() {
@@ -2194,6 +2309,33 @@ fn restar_registro_de_priors(priors: &mut IndicePriorsExcel, reg: &AudienciaInpu
             }
         }
     }
+
+    let def_clave = normalizar_clave_defensor(defensor);
+    if !def_clave.is_empty() {
+        decrementar_arista(&mut priors.grafo.defensor_a_juzgados, &def_clave, &juz_limpio);
+        decrementar_arista(&mut priors.grafo.defensor_a_tipos, &def_clave, &tipo_limpio);
+        if !juz_limpio.is_empty() {
+            for sigla in extraer_siglas_cortas_juzgado(&juz_limpio) {
+                if let Some(por_sigla) = priors.grafo.defensor_sigla_a_juzgado.get_mut(&def_clave) {
+                    decrementar_arista(por_sigla, &sigla, &juz_limpio);
+                    if por_sigla.is_empty() {
+                        priors.grafo.defensor_sigla_a_juzgado.remove(&def_clave);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(prefijo) = extraer_prefijo_dane_radicado(&reg.radicado) {
+        decrementar_arista(
+            &mut priors.grafo.prefijo_radicado_a_juzgados,
+            &prefijo,
+            &juz_limpio,
+        );
+    }
+    let tipo_clave = normalizar_clave_catalogo(&tipo_limpio);
+    if !tipo_clave.is_empty() && tipo_clave != "otra" {
+        decrementar_arista(&mut priors.grafo.tipo_a_juzgados, &tipo_clave, &juz_limpio);
+    }
 }
 
 pub fn cargar_priors_en(carpeta: &Path) -> Option<IndicePriorsExcel> {
@@ -2227,16 +2369,17 @@ pub fn guardar_priors_en(carpeta: &Path, priors: &IndicePriorsExcel) -> Result<(
 pub fn reconstruir_priors_en(carpeta: &Path) -> Result<IndicePriorsExcel, String> {
     let nombres = listar_archivos_en(carpeta)?;
     let mut priors = IndicePriorsExcel {
-        formato: 1,
+        formato: FORMATO_PRIORS_ACTUAL,
         actualizada: Local::now().to_rfc3339(),
         ..Default::default()
     };
     for nombre in &nombres {
         let ruta = carpeta.join(nombre);
-        if let Ok((registros, _, _)) = leer_archivo_en(&ruta) {
+        if let Ok((registros, _, defensor)) = leer_archivo_en(&ruta) {
             for r in &registros {
-                acumular_registro_en_priors(
+                acumular_registro_en_priors_con_defensor(
                     &mut priors,
+                    &defensor,
                     &r.radicado,
                     &r.tipo,
                     &r.hora,
@@ -2253,25 +2396,32 @@ pub fn reconstruir_priors_en(carpeta: &Path) -> Result<IndicePriorsExcel, String
 
 pub fn cargar_o_inicializar_priors_en(carpeta: &Path) -> IndicePriorsExcel {
     if let Some(priors) = cargar_priors_en(carpeta) {
-        return priors;
+        if priors.formato >= FORMATO_PRIORS_ACTUAL {
+            return priors;
+        }
     }
     reconstruir_priors_en(carpeta).unwrap_or_default()
 }
 
-pub fn actualizar_priors_incremental_en(
+pub fn actualizar_priors_incremental_con_defensor_en(
     carpeta: &Path,
+    defensor: &str,
     anterior: Option<&AudienciaInput>,
     nuevo: Option<&AudienciaInput>,
 ) -> Result<IndicePriorsExcel, String> {
     let Some(mut priors) = cargar_priors_en(carpeta) else {
         return reconstruir_priors_en(carpeta);
     };
+    if priors.formato < FORMATO_PRIORS_ACTUAL {
+        return reconstruir_priors_en(carpeta);
+    }
     if let Some(ant) = anterior {
-        restar_registro_de_priors(&mut priors, ant);
+        restar_registro_de_priors_con_defensor(&mut priors, defensor, ant);
     }
     if let Some(n) = nuevo {
-        acumular_registro_en_priors(
+        acumular_registro_en_priors_con_defensor(
             &mut priors,
+            defensor,
             &n.radicado,
             &n.tipo,
             &n.hora,
@@ -2283,6 +2433,14 @@ pub fn actualizar_priors_incremental_en(
     priors.actualizada = Local::now().to_rfc3339();
     guardar_priors_en(carpeta, &priors)?;
     Ok(priors)
+}
+
+pub fn actualizar_priors_incremental_en(
+    carpeta: &Path,
+    anterior: Option<&AudienciaInput>,
+    nuevo: Option<&AudienciaInput>,
+) -> Result<IndicePriorsExcel, String> {
+    actualizar_priors_incremental_con_defensor_en(carpeta, "", anterior, nuevo)
 }
 
 pub(crate) fn invalidar_priors_en(carpeta: &Path) {
@@ -2815,6 +2973,152 @@ mod tests {
             .procesos_por_numero
             .contains_key("200016001075202500999"));
         assert_eq!(p_reconstruido.total_registros, 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_priors_v2_grafo_asociaciones_migracion_y_actualizacion_incremental_por_defensor() {
+        let dir = preparar_temp_dir("priors_v2_grafo");
+        let ruta_a = dir.join("planilla_ana.xlsx");
+        let ruta_b = dir.join("planilla_luis.xlsx");
+        crear_copia_plantilla_en(&ruta_a, Some("Dra. Ana Pérez")).unwrap();
+        crear_copia_plantilla_en(&ruta_b, Some("Dr. Luis Mora")).unwrap();
+
+        let reg_a = AudienciaInput {
+            radicado: "JUAN DIAZ - 200016001075202500111".into(),
+            tipo: "Audiencia de control de legalidad".into(),
+            fecha: "10/08/2025".into(),
+            hora: "09:00".into(),
+            juzgado: "Juzgado 4 Penal Municipal de Valledupar".into(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+        let reg_b = AudienciaInput {
+            radicado: "MARIA SOL - 470016001075202500222".into(),
+            tipo: "Audiencia de juicio oral".into(),
+            fecha: "11/08/2025".into(),
+            hora: "14:00".into(),
+            juzgado: "Juzgado 4 Penal del Circuito de Santa Marta".into(),
+            realizada: "NO".into(),
+            motivo: "Fiscalía".into(),
+            observaciones: String::new(),
+        };
+        guardar_nueva_audiencia_en(&ruta_a, &reg_a, false).unwrap();
+        guardar_nueva_audiencia_en(&ruta_b, &reg_b, false).unwrap();
+
+        // Simular archivo .lokus_priors.json en formato v1 antiguo -> debe reconstruir automáticamente a v2 con grafo
+        let priors_v1 = IndicePriorsExcel {
+            formato: 1,
+            actualizada: "2025-08-01T10:00:00-05:00".into(),
+            total_registros: 1,
+            ..Default::default()
+        };
+        guardar_priors_en(&dir, &priors_v1).unwrap();
+
+        let p = cargar_o_inicializar_priors_en(&dir);
+        assert_eq!(p.formato, FORMATO_PRIORS_ACTUAL);
+        assert_eq!(p.total_registros, 2);
+        assert_eq!(
+            p.procesos_por_numero
+                .get("200016001075202500111")
+                .map(|pr| pr.defensor_habitual.as_str()),
+            Some("Dra. Ana Pérez")
+        );
+        assert_eq!(
+            p.grafo
+                .defensor_sigla_a_juzgado
+                .get("ana perez")
+                .and_then(|m| m.get("j4"))
+                .and_then(|d| d.get("Juzgado 4 Penal Municipal de Valledupar"))
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            p.grafo
+                .defensor_sigla_a_juzgado
+                .get("luis mora")
+                .and_then(|m| m.get("j4"))
+                .and_then(|d| d.get("Juzgado 4 Penal del Circuito de Santa Marta"))
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            p.grafo
+                .prefijo_radicado_a_juzgados
+                .get("20001")
+                .and_then(|m| m.get("Juzgado 4 Penal Municipal de Valledupar"))
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            p.grafo
+                .prefijo_radicado_a_juzgados
+                .get("47001")
+                .and_then(|m| m.get("Juzgado 4 Penal del Circuito de Santa Marta"))
+                .copied(),
+            Some(1)
+        );
+        assert!(p.grafo.total_conexiones() >= 10);
+
+        // Actualización incremental: editar el juzgado de Ana debe decrementar el viejo y agregar el nuevo
+        let mut reg_a_edit = reg_a.clone();
+        reg_a_edit.juzgado = "Juzgado 10 Penal Municipal de Valledupar".into();
+        let p_edit = actualizar_priors_incremental_con_defensor_en(
+            &dir,
+            "Dra. Ana Pérez",
+            Some(&reg_a),
+            Some(&reg_a_edit),
+        )
+        .unwrap();
+        assert!(p_edit
+            .grafo
+            .defensor_sigla_a_juzgado
+            .get("ana perez")
+            .and_then(|m| m.get("j4"))
+            .is_none());
+        assert_eq!(
+            p_edit
+                .grafo
+                .defensor_sigla_a_juzgado
+                .get("ana perez")
+                .and_then(|m| m.get("j10"))
+                .and_then(|d| d.get("Juzgado 10 Penal Municipal de Valledupar"))
+                .copied(),
+            Some(1)
+        );
+
+        // Simular archivo .lokus_priors.json en formato v2 (con prefijos honoríficos) -> debe reconstruir automáticamente a v3
+        let priors_v2 = IndicePriorsExcel {
+            formato: 2,
+            actualizada: "2025-08-01T10:00:00-05:00".into(),
+            total_registros: 1,
+            ..Default::default()
+        };
+        guardar_priors_en(&dir, &priors_v2).unwrap();
+        let p_mig_v3 = cargar_o_inicializar_priors_en(&dir);
+        assert_eq!(p_mig_v3.formato, FORMATO_PRIORS_ACTUAL);
+        assert!(p_mig_v3.grafo.defensor_a_juzgados.contains_key("ana perez"));
+
+        // Cambiar el defensor en la planilla + invalidar priors debe reflejarse al reconstruir
+        actualizar_defensor_en(&ruta_a, "Dra. Sofía Ruiz").unwrap();
+        invalidar_priors_en(&dir);
+        let p_nuevo_def = cargar_o_inicializar_priors_en(&dir);
+        assert!(p_nuevo_def
+            .grafo
+            .defensor_a_juzgados
+            .contains_key("sofia ruiz"));
+        assert!(!p_nuevo_def
+            .grafo
+            .defensor_a_juzgados
+            .contains_key("ana perez"));
+
+        // Calcular estadísticas globales no debe degradar .lokus_priors.json ni borrar el grafo por defensor
+        calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        let p_post_stats = cargar_priors_en(&dir).unwrap();
+        assert_eq!(p_post_stats.formato, FORMATO_PRIORS_ACTUAL);
+        assert!(p_post_stats.grafo.defensor_a_juzgados.contains_key("sofia ruiz"));
 
         let _ = fs::remove_dir_all(&dir);
     }

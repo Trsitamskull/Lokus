@@ -14,16 +14,27 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use chrono::Local;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{cargar_settings, estado_desde_settings, ruta_en_carpeta_config, AppSettings};
-use crate::excel::{carpeta_descargas, obtener_carpeta_archivos, recolectar_radicados_en};
-use crate::models::{normalizar_texto_sin_tildes, AudienciaInput};
+use crate::config::{
+    cargar_settings, es_nombre_defensor_mas_informativo, estado_desde_settings,
+    ruta_en_carpeta_config, AppSettings,
+};
+use crate::excel::{
+    cargar_o_inicializar_priors_en, cargar_priors_actuales, carpeta_descargas,
+    obtener_carpeta_archivos, recolectar_radicados_en,
+};
+use crate::models::{
+    coincide_alcance_defensor, es_alcance_general, es_solo_sigla_corta_juzgado,
+    extraer_siglas_cortas_juzgado, normalizar_clave_catalogo, normalizar_clave_defensor,
+    normalizar_texto_sin_tildes, AudienciaInput, GrafoAsociaciones, IndicePriorsExcel,
+    TIPOS_AUDIENCIA,
+};
 use crate::uso_catalogos::{
     asegurar_uso_inicializado_actual, asegurar_uso_inicializado_en,
     construir_reporte_uso_catalogos, marcar_uso_compartido_en, ruta_uso_catalogos,
@@ -45,6 +56,12 @@ pub const MAX_EJEMPLOS_PROMPT: usize = 3;
 /// Prior bayesiano escéptico Beta(1, 3): 25% de confianza media inicial antes de evidencia.
 pub const PRIOR_BETA_ALPHA: f64 = 1.0;
 pub const PRIOR_BETA_BETA: f64 = 3.0;
+/// Prior calibrado para alias de juzgado/tipo: 1 corrección da q10≈0.25 (solo candidato en prompt),
+/// 2 correcciones consistentes sin contradicción dan q10≈0.38 (>= 0.30, activación en la 2.ª vez).
+pub const PRIOR_ALIAS_ALPHA: f64 = 1.0;
+pub const PRIOR_ALIAS_BETA: f64 = 1.2;
+/// Similitud mínima (texto casi idéntico) para mostrar 1 pista suave desde la 1.ª corrección pendiente del mismo defensor.
+pub const UMBRAL_SIMILITUD_PISTA_PENDIENTE: f64 = 0.72;
 /// Decaimiento por evento aplicable y tope de tamaño efectivo de muestra (ESS).
 pub const DECAY_EVENTO_LAMBDA: f64 = 0.96;
 pub const MAX_ESS_N: f64 = 40.0;
@@ -55,15 +72,18 @@ pub const DIAS_GRACIA_VACANCIA: f64 = 180.0;
 const UMBRAL_SIMILITUD_OBSERVACIONES: f64 = 0.85;
 /// Similitud mínima para considerar que dos reglas aprendidas son la misma y reforzarla.
 const UMBRAL_REGLA_SIMILAR: f64 = 0.78;
-/// Confianza por debajo de la cual, si la IA pide aclaración, se consulta opcionalmente al usuario.
-const UMBRAL_CONFIANZA_ACLARACION: f64 = 0.78;
 /// Tamaño mínimo de un clúster coherente de errores antes de disparar inducción con LLM.
 pub const MIN_TAMANO_CLUSTER_INDUCCION: usize = 2;
 /// Tope de clústeres mantenidos en cola local.
 const MAX_CLUSTERS_COLA: usize = 80;
-/// Interacciones de enfriamiento tras descartar o responder una solicitud de aclaración.
-const COOLDOWN_ACLARACION_INTERACCIONES: u32 = 4;
-const VERSION_FORMATO: u32 = 2;
+/// Tope máximo de consolidaciones almacenadas en historial.
+const MAX_CONSOLIDACIONES_HISTORIAL: usize = 12;
+/// Tope aproximado de caracteres para el lote enviado al Consolidador LLM.
+const MAX_CHARS_LOTE_CONSOLIDACION: usize = 8000;
+const MAX_CHARS_RESUMEN_GENERAL: usize = 320;
+const MAX_CHARS_RESUMEN_DEFENSOR: usize = 380;
+const DEFAULT_SEMILLA_RNG: u64 = 0x5EED_CAFE_BABE_0001;
+pub const VERSION_FORMATO: u32 = 4;
 const PALABRAS_VACIAS_NOMBRE: [&str; 7] = ["de", "del", "la", "las", "los", "y", "san"];
 
 pub const CAMPOS_AUDIENCIA: [&str; 8] = [
@@ -82,7 +102,18 @@ const APRENDIZAJE_BASE_JSON: &str = include_str!("../resources/aprendizaje_base.
 /// Serializa lecturas/escrituras del archivo de memoria entre comandos concurrentes.
 static BLOQUEO_MEMORIA: Mutex<()> = Mutex::new(());
 static CLUSTERS_EN_INDUCCION: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+static CONSOLIDACION_EN_CURSO: AtomicBool = AtomicBool::new(false);
 static CONTADOR_IDS: AtomicU64 = AtomicU64::new(1);
+
+pub fn intentar_reservar_consolidacion() -> bool {
+    CONSOLIDACION_EN_CURSO
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+pub fn liberar_consolidacion() {
+    CONSOLIDACION_EN_CURSO.store(false, Ordering::Release);
+}
 
 pub(crate) fn intentar_reservar_cluster_induccion(cluster_id: &str) -> bool {
     let mut set = CLUSTERS_EN_INDUCCION
@@ -168,6 +199,11 @@ pub struct ReglaAprendida {
     pub origen: String,
     #[serde(default = "alcance_todos")]
     pub modelo_alcance: String,
+    /// `"*"` = Cuaderno General compartido; o clave normalizada del defensor (`normalizar_clave_defensor`).
+    #[serde(default = "alcance_todos")]
+    pub defensor_alcance: String,
+    #[serde(default)]
+    pub defensores_confirmantes: Vec<String>,
     #[serde(default)]
     pub ultima_actualizacion: String,
     #[serde(default)]
@@ -190,6 +226,8 @@ pub struct EjemploPositivo {
     pub salida_anonimizada: AudienciaInput,
     #[serde(default)]
     pub reglas_inyectadas: Vec<String>,
+    #[serde(default)]
+    pub defensor_clave: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -232,6 +270,13 @@ pub struct MetricasModelo {
     pub por_campo: BTreeMap<String, MetricasCampo>,
 }
 
+fn instalada_si_alpha_default() -> f64 {
+    1.0
+}
+fn instalada_si_beta_default() -> f64 {
+    2.5
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PreferenciasEstilo {
@@ -241,6 +286,11 @@ pub struct PreferenciasEstilo {
     pub incluir_reprogramacion_beta: f64,
     pub se_fija_aplazamiento_alpha: f64,
     pub se_fija_aplazamiento_beta: f64,
+    /// Probabilidad de que un defensor marque `SI` cuando la diligencia se instaló pero luego se suspendió/reprogramó.
+    #[serde(default = "instalada_si_alpha_default")]
+    pub instalada_reprogramada_si_alpha: f64,
+    #[serde(default = "instalada_si_beta_default")]
+    pub instalada_reprogramada_si_beta: f64,
 }
 
 impl Default for PreferenciasEstilo {
@@ -252,6 +302,8 @@ impl Default for PreferenciasEstilo {
             incluir_reprogramacion_beta: 1.0,
             se_fija_aplazamiento_alpha: 2.0,
             se_fija_aplazamiento_beta: 2.0,
+            instalada_reprogramada_si_alpha: instalada_si_alpha_default(),
+            instalada_reprogramada_si_beta: instalada_si_beta_default(),
         }
     }
 }
@@ -264,6 +316,10 @@ pub struct AliasEstadistico {
     pub canonico: String,
     pub alpha: f64,
     pub beta: f64,
+    #[serde(default = "alcance_todos")]
+    pub defensor_alcance: String,
+    #[serde(default)]
+    pub defensores_confirmantes: Vec<String>,
     pub ultima_actualizacion: String,
 }
 
@@ -273,8 +329,10 @@ impl Default for AliasEstadistico {
             campo: String::new(),
             entrada_norm: String::new(),
             canonico: String::new(),
-            alpha: PRIOR_BETA_ALPHA,
-            beta: PRIOR_BETA_BETA,
+            alpha: PRIOR_ALIAS_ALPHA,
+            beta: PRIOR_ALIAS_BETA,
+            defensor_alcance: "*".to_string(),
+            defensores_confirmantes: Vec::new(),
             ultima_actualizacion: String::new(),
         }
     }
@@ -347,6 +405,8 @@ pub struct CorreccionIa {
     pub nota_usuario: String,
     #[serde(default)]
     pub exportada: bool,
+    #[serde(default)]
+    pub defensor_clave: String,
 }
 
 fn estado_pendiente() -> String {
@@ -378,6 +438,242 @@ pub struct ClusterCorreccion {
     /// `acumulando` | `listo` | `inducido`
     pub estado: String,
     pub regla_inducida_id: String,
+    #[serde(default)]
+    pub defensor_clave: String,
+    #[serde(default)]
+    pub defensores_presentes: Vec<String>,
+}
+
+fn default_alpha_resp() -> f64 {
+    2.0
+}
+fn default_beta_omit() -> f64 {
+    1.0
+}
+fn default_semilla_rng() -> u64 {
+    DEFAULT_SEMILLA_RNG
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct MetricasDefensor {
+    pub nombre_mostrar: String,
+    pub aciertos: u32,
+    pub correcciones: u32,
+    pub por_campo: BTreeMap<String, MetricasCampo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PerfilSinteticoDefensor {
+    pub ambito: String,
+    pub nombre_mostrar: String,
+    pub resumen: String,
+    pub version: u32,
+    pub ultima_actualizacion: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct AccionReglaConsolidacion {
+    pub tipo_accion: String,
+    pub ids_origen: Vec<String>,
+    pub tipo_error: String,
+    pub campo_objetivo: String,
+    pub regla: String,
+    pub triggers: Vec<String>,
+    pub motivo: String,
+    pub confianza: f64,
+    pub aplicada: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct SugerenciaBuild {
+    pub categoria: String,
+    pub ambito: String,
+    pub detalle: String,
+    pub evidencia: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct TelemetriaDisparoConsolidacion {
+    pub ambito: String,
+    pub presion: f64,
+    pub umbral_adaptativo: f64,
+    pub probabilidad_disparo: f64,
+    pub muestra_rng: f64,
+    pub manual: bool,
+    pub razones: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct RegistroConsolidacionIa {
+    pub id: String,
+    pub fecha: String,
+    pub ambito: String,
+    pub nombre_ambito: String,
+    pub modelo: String,
+    pub acciones_reglas: Vec<AccionReglaConsolidacion>,
+    pub resumen_actualizado: String,
+    pub sugerencias_build: Vec<SugerenciaBuild>,
+    pub telemetria_disparo: TelemetriaDisparoConsolidacion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct EstadoConsolidacion {
+    pub presion: f64,
+    pub correcciones_sin_consolidar: u32,
+    pub notas_sin_consolidar: u32,
+    pub extracciones_desde_ultima: u32,
+    pub ultima_consolidacion: String,
+    pub ids_consolidadas_recientes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct EstadoAclaracionAdaptativa {
+    #[serde(default = "default_alpha_resp")]
+    pub alpha_resp: f64,
+    #[serde(default = "default_beta_omit")]
+    pub beta_omit: f64,
+    pub racha_omisiones: u32,
+    pub turnos_sin_responder: u32,
+    pub firmas_explicadas_recientes: Vec<(String, u64)>,
+}
+
+impl Default for EstadoAclaracionAdaptativa {
+    fn default() -> Self {
+        Self {
+            alpha_resp: default_alpha_resp(),
+            beta_omit: default_beta_omit(),
+            racha_omisiones: 0,
+            turnos_sin_responder: 0,
+            firmas_explicadas_recientes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PatronTransversalExport {
+    pub firma: String,
+    pub campo: String,
+    pub ocurrencias: usize,
+    pub defensores_distintos: usize,
+    pub ejemplo_anonimizado: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ResumenPatronesGenerales {
+    pub total_defensores_activos: usize,
+    pub top_juzgados_globales: Vec<(String, u32)>,
+    pub top_tipos_globales: Vec<(String, u32)>,
+    pub top_horas_globales: Vec<(u32, u32)>,
+    pub reglas_transversales_promovidas: usize,
+    pub errores_recurrentes_transversales: Vec<PatronTransversalExport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ResumenDefensorExport {
+    pub clave: String,
+    pub nombre: String,
+    pub aciertos: u32,
+    pub correcciones: u32,
+    pub tasa_acierto: f64,
+    pub por_campo: Vec<CampoDiagnostico>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PresionDefensorDiagnostico {
+    pub clave: String,
+    pub nombre: String,
+    pub presion: f64,
+    pub correcciones_sin_consolidar: u32,
+    pub notas_sin_consolidar: u32,
+    pub extracciones_desde_ultima: u32,
+    pub ultima_consolidacion: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct AccionConsolidacionInput {
+    pub tipo_accion: String,
+    pub ids_origen: Vec<String>,
+    pub tipo_error: String,
+    pub campo_objetivo: String,
+    pub regla: String,
+    pub triggers: Vec<String>,
+    pub motivo: String,
+    pub confianza: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct SugerenciaBuildInput {
+    pub categoria: String,
+    pub detalle: String,
+    pub evidencia: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ResultadoConsolidacionIa {
+    pub acciones_reglas: Vec<AccionConsolidacionInput>,
+    pub resumen_actualizado: String,
+    pub sugerencias_build: Vec<SugerenciaBuildInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ReglaLoteConsolidacion {
+    pub id: String,
+    pub estado: String,
+    pub origen: String,
+    pub campo_objetivo: String,
+    pub tipo_error: String,
+    pub defensor_alcance: String,
+    pub regla: String,
+    pub triggers: Vec<String>,
+    pub confianza_q10: f64,
+    pub impresiones: u32,
+    pub aciertos_directos: u32,
+    pub fallos_directos: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct CorreccionLoteConsolidacion {
+    pub id: String,
+    pub fecha: String,
+    pub defensor_clave: String,
+    pub campo_principal: String,
+    pub texto_anonimizado: String,
+    pub cambios: Vec<CampoCorregido>,
+    pub nota_usuario: String,
+    pub estado: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct LoteConsolidacion {
+    pub ambito: String,
+    pub nombre_ambito: String,
+    pub resumen_actual: String,
+    pub version_resumen: u32,
+    pub reglas_ambito: Vec<ReglaLoteConsolidacion>,
+    pub correcciones_recientes: Vec<CorreccionLoteConsolidacion>,
+    pub metricas_resumen: Vec<CampoDiagnostico>,
+    pub patrones_transversales: Vec<PatronTransversalExport>,
+    pub watermark_ids: Vec<String>,
+    pub snapshot_extracciones: u32,
+    pub telemetria_disparo: TelemetriaDisparoConsolidacion,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,7 +690,21 @@ pub struct MemoriaAprendizaje {
     #[serde(default)]
     pub metricas_modelos: BTreeMap<String, MetricasModelo>,
     #[serde(default)]
+    pub metricas_por_defensor: BTreeMap<String, MetricasDefensor>,
+    #[serde(default)]
+    pub nombres_defensores: BTreeMap<String, String>,
+    #[serde(default)]
     pub preferencias_estilo: PreferenciasEstilo,
+    #[serde(default)]
+    pub preferencias_por_defensor: BTreeMap<String, PreferenciasEstilo>,
+    #[serde(default)]
+    pub perfiles_sinteticos: BTreeMap<String, PerfilSinteticoDefensor>,
+    #[serde(default)]
+    pub estados_consolidacion: BTreeMap<String, EstadoConsolidacion>,
+    #[serde(default)]
+    pub consolidaciones_ia: Vec<RegistroConsolidacionIa>,
+    #[serde(default)]
+    pub estado_aclaracion: EstadoAclaracionAdaptativa,
     #[serde(default)]
     pub tabla_alias: Vec<AliasEstadistico>,
     #[serde(default)]
@@ -407,6 +717,12 @@ pub struct MemoriaAprendizaje {
     pub enfriamiento_aclaracion: u32,
     #[serde(default)]
     pub llamadas_induccion_llm_total: u32,
+    #[serde(default)]
+    pub llamadas_extraccion_total: u32,
+    #[serde(default)]
+    pub llamadas_consolidacion_total: u32,
+    #[serde(default = "default_semilla_rng")]
+    pub semilla_rng: u64,
 }
 
 impl Default for MemoriaAprendizaje {
@@ -419,13 +735,23 @@ impl Default for MemoriaAprendizaje {
             ejemplos_aciertos: Vec::new(),
             metricas_campos: BTreeMap::new(),
             metricas_modelos: BTreeMap::new(),
+            metricas_por_defensor: BTreeMap::new(),
+            nombres_defensores: BTreeMap::new(),
             preferencias_estilo: PreferenciasEstilo::default(),
+            preferencias_por_defensor: BTreeMap::new(),
+            perfiles_sinteticos: BTreeMap::new(),
+            estados_consolidacion: BTreeMap::new(),
+            consolidaciones_ia: Vec::new(),
+            estado_aclaracion: EstadoAclaracionAdaptativa::default(),
             tabla_alias: Vec::new(),
             cola_induccion: Vec::new(),
             page_hinkley_campos: BTreeMap::new(),
             page_hinkley_modelos: BTreeMap::new(),
             enfriamiento_aclaracion: 0,
             llamadas_induccion_llm_total: 0,
+            llamadas_extraccion_total: 0,
+            llamadas_consolidacion_total: 0,
+            semilla_rng: DEFAULT_SEMILLA_RNG,
         }
     }
 }
@@ -474,6 +800,8 @@ pub struct ReglaDiagnostico {
     pub estado: String,
     pub campo_objetivo: String,
     pub origen: String,
+    #[serde(default = "alcance_todos")]
+    pub defensor_alcance: String,
     pub regla: String,
     pub impresiones: u32,
     pub aciertos_directos: u32,
@@ -486,6 +814,8 @@ pub struct AliasDiagnostico {
     pub campo: String,
     pub entrada_norm: String,
     pub canonico: String,
+    #[serde(default = "alcance_todos")]
+    pub defensor_alcance: String,
     pub confianza_q10: f64,
 }
 
@@ -494,6 +824,8 @@ pub struct PreferenciasEstiloResumen {
     pub incluir_causas_secundarias_prob: f64,
     pub incluir_reprogramacion_prob: f64,
     pub se_fija_aplazamiento_prob: f64,
+    #[serde(default)]
+    pub instalada_reprogramada_si_prob: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -504,6 +836,10 @@ pub struct DiagnosticoAprendizaje {
     pub llamadas_induccion_llm_total: u32,
     pub clusters_pendientes: usize,
     pub clusters_listos: usize,
+    #[serde(default)]
+    pub perfiles_defensores: usize,
+    #[serde(default)]
+    pub conexiones_grafo: usize,
     pub drift_campos_activos: Vec<String>,
     pub enfriamiento_aclaracion: u32,
     pub reglas_por_estado: BTreeMap<String, usize>,
@@ -512,6 +848,20 @@ pub struct DiagnosticoAprendizaje {
     pub preferencias_estilo: PreferenciasEstiloResumen,
     pub alias_validados: Vec<AliasDiagnostico>,
     pub reglas_destacadas: Vec<ReglaDiagnostico>,
+    #[serde(default)]
+    pub consolidaciones_totales: u32,
+    #[serde(default)]
+    pub presion_consolidacion_global: f64,
+    #[serde(default)]
+    pub presiones_por_defensor: Vec<PresionDefensorDiagnostico>,
+    #[serde(default)]
+    pub ultima_consolidacion: Option<RegistroConsolidacionIa>,
+    #[serde(default)]
+    pub perfiles_sinteticos: Vec<PerfilSinteticoDefensor>,
+    #[serde(default)]
+    pub tasa_respuesta_aclaraciones: f64,
+    #[serde(default)]
+    pub defensores_resumen: Vec<ResumenDefensorExport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -524,11 +874,20 @@ struct PaqueteExportacion {
     total_reglas: usize,
     total_correcciones: usize,
     total_ejemplos_aciertos: usize,
+    perfiles_defensores: usize,
     llamadas_induccion_llm_total: u32,
+    llamadas_extraccion_total: u32,
+    llamadas_consolidacion_total: u32,
     correcciones_por_campo: BTreeMap<String, usize>,
     metricas_por_campo: Vec<CampoDiagnostico>,
     metricas_por_modelo: Vec<ModeloDiagnostico>,
     preferencias_estilo: PreferenciasEstiloResumen,
+    preferencias_por_defensor: BTreeMap<String, PreferenciasEstiloResumen>,
+    defensores_directorio: Vec<ResumenDefensorExport>,
+    resumen_patrones_generales: ResumenPatronesGenerales,
+    grafo_asociaciones: GrafoAsociaciones,
+    perfiles_sinteticos: Vec<PerfilSinteticoDefensor>,
+    consolidaciones_ia: Vec<RegistroConsolidacionIa>,
     alias_validados: Vec<AliasDiagnostico>,
     juzgados_agregados_usuario: Vec<String>,
     tipos_audiencia_agregados_usuario: Vec<String>,
@@ -566,6 +925,221 @@ fn inferir_campo_objetivo_desde_tipo(tipo_error: &str) -> String {
     }
 }
 
+fn recortar_sin_elipsis(s: &str, max_chars: usize) -> String {
+    let limpio = colapsar_espacios(s);
+    if max_chars == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = limpio.chars().collect();
+    if chars.len() <= max_chars {
+        limpio
+    } else if max_chars > 3 {
+        let prefijo: String = chars[..(max_chars - 3)].iter().collect();
+        format!("{}...", prefijo.trim_end())
+    } else {
+        chars[..max_chars].iter().collect()
+    }
+}
+
+fn title_case_basico(s: &str) -> String {
+    s.split_whitespace()
+        .map(|w| {
+            let mut cs = w.chars();
+            match cs.next() {
+                None => String::new(),
+                Some(first) => {
+                    let mut out: String = first.to_uppercase().collect();
+                    out.push_str(cs.as_str());
+                    out
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn registrar_nombre_defensor(nombres: &mut BTreeMap<String, String>, raw: &str) {
+    let limpio = colapsar_espacios(raw);
+    if limpio.is_empty() || es_alcance_general(&limpio) {
+        return;
+    }
+    let clave = normalizar_clave_defensor(&limpio);
+    if clave.is_empty() {
+        return;
+    }
+    let candidato = if limpio == normalizar_texto_sin_tildes(&limpio) {
+        title_case_basico(&clave)
+    } else {
+        limpio
+    };
+    match nombres.get_mut(&clave) {
+        Some(actual) => {
+            if es_nombre_defensor_mas_informativo(&candidato, actual) {
+                *actual = candidato;
+            }
+        }
+        None => {
+            nombres.insert(clave, candidato);
+        }
+    }
+}
+
+fn alcance_canonico(alcance: &str) -> String {
+    if es_alcance_general(alcance) {
+        "*".to_string()
+    } else {
+        let norm = normalizar_clave_defensor(alcance);
+        if norm.is_empty() {
+            "*".to_string()
+        } else {
+            norm
+        }
+    }
+}
+
+/// Devuelve las preferencias efectivas para un defensor dado combinando `base` y `local`
+/// (heredando del Cuaderno General cuando el defensor aún no tiene perfil específico).
+pub(crate) fn preferencias_efectivas_con_base_para_defensor(
+    base: &MemoriaAprendizaje,
+    local: &MemoriaAprendizaje,
+    defensor: Option<&str>,
+) -> PreferenciasEstilo {
+    let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
+    let pref_base_gen = &base.preferencias_estilo;
+    let pref_local_gen = &local.preferencias_estilo;
+    let def_estilo = PreferenciasEstilo::default();
+
+    let elegir_par = |la: f64, lb: f64, ba: f64, bb: f64, da: f64, db: f64| -> (f64, f64) {
+        if (la - da).abs() > 1e-6 || (lb - db).abs() > 1e-6 {
+            (la, lb)
+        } else if (ba - da).abs() > 1e-6 || (bb - db).abs() > 1e-6 {
+            (ba, bb)
+        } else {
+            (da, db)
+        }
+    };
+
+    let mut combinada_gen = PreferenciasEstilo::default();
+    (
+        combinada_gen.incluir_causas_secundarias_alpha,
+        combinada_gen.incluir_causas_secundarias_beta,
+    ) = elegir_par(
+        pref_local_gen.incluir_causas_secundarias_alpha,
+        pref_local_gen.incluir_causas_secundarias_beta,
+        pref_base_gen.incluir_causas_secundarias_alpha,
+        pref_base_gen.incluir_causas_secundarias_beta,
+        def_estilo.incluir_causas_secundarias_alpha,
+        def_estilo.incluir_causas_secundarias_beta,
+    );
+    (
+        combinada_gen.incluir_reprogramacion_alpha,
+        combinada_gen.incluir_reprogramacion_beta,
+    ) = elegir_par(
+        pref_local_gen.incluir_reprogramacion_alpha,
+        pref_local_gen.incluir_reprogramacion_beta,
+        pref_base_gen.incluir_reprogramacion_alpha,
+        pref_base_gen.incluir_reprogramacion_beta,
+        def_estilo.incluir_reprogramacion_alpha,
+        def_estilo.incluir_reprogramacion_beta,
+    );
+    (
+        combinada_gen.se_fija_aplazamiento_alpha,
+        combinada_gen.se_fija_aplazamiento_beta,
+    ) = elegir_par(
+        pref_local_gen.se_fija_aplazamiento_alpha,
+        pref_local_gen.se_fija_aplazamiento_beta,
+        pref_base_gen.se_fija_aplazamiento_alpha,
+        pref_base_gen.se_fija_aplazamiento_beta,
+        def_estilo.se_fija_aplazamiento_alpha,
+        def_estilo.se_fija_aplazamiento_beta,
+    );
+    (
+        combinada_gen.instalada_reprogramada_si_alpha,
+        combinada_gen.instalada_reprogramada_si_beta,
+    ) = elegir_par(
+        pref_local_gen.instalada_reprogramada_si_alpha,
+        pref_local_gen.instalada_reprogramada_si_beta,
+        pref_base_gen.instalada_reprogramada_si_alpha,
+        pref_base_gen.instalada_reprogramada_si_beta,
+        def_estilo.instalada_reprogramada_si_alpha,
+        def_estilo.instalada_reprogramada_si_beta,
+    );
+
+    if !def_clave.is_empty() {
+        let local_def = local
+            .preferencias_por_defensor
+            .iter()
+            .find(|(k, _)| coincide_alcance_defensor(k, &def_clave))
+            .map(|(_, v)| v);
+        let base_def = base
+            .preferencias_por_defensor
+            .iter()
+            .find(|(k, _)| coincide_alcance_defensor(k, &def_clave))
+            .map(|(_, v)| v);
+
+        if let Some(p_loc) = local_def {
+            return p_loc.clone();
+        }
+        if let Some(p_bas) = base_def {
+            return p_bas.clone();
+        }
+    }
+    combinada_gen
+}
+
+/// Devuelve las preferencias efectivas para un defensor dado (heredando del Cuaderno General si no tiene perfil propio aún).
+#[allow(dead_code)]
+pub(crate) fn preferencias_efectivas_para_defensor(
+    memoria: &MemoriaAprendizaje,
+    defensor: Option<&str>,
+) -> PreferenciasEstilo {
+    preferencias_efectivas_con_base_para_defensor(
+        &MemoriaAprendizaje::default(),
+        memoria,
+        defensor,
+    )
+}
+
+/// Devuelve `(resumen_general_transversal <= 320 chars, resumen_especifico_defensor <= 380 chars)`
+/// con precedencia de `local` sobre `base`.
+pub(crate) fn obtener_resumenes_consolidados_prompt(
+    base: &MemoriaAprendizaje,
+    local: &MemoriaAprendizaje,
+    defensor: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let buscar_resumen = |mem: &MemoriaAprendizaje, clave: &str| -> Option<String> {
+        mem.perfiles_sinteticos
+            .get(clave)
+            .or_else(|| {
+                if clave == "*" {
+                    None
+                } else {
+                    mem.perfiles_sinteticos
+                        .iter()
+                        .find(|(k, _)| coincide_alcance_defensor(k, clave))
+                        .map(|(_, v)| v)
+                }
+            })
+            .map(|p| colapsar_espacios(&p.resumen))
+            .filter(|s| !s.is_empty())
+    };
+
+    let general = buscar_resumen(local, "*")
+        .or_else(|| buscar_resumen(base, "*"))
+        .map(|s| recortar_sin_elipsis(&s, MAX_CHARS_RESUMEN_GENERAL));
+
+    let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
+    let especifico = if def_clave.is_empty() {
+        None
+    } else {
+        buscar_resumen(local, &def_clave)
+            .or_else(|| buscar_resumen(base, &def_clave))
+            .map(|s| recortar_sin_elipsis(&s, MAX_CHARS_RESUMEN_DEFENSOR))
+    };
+
+    (general, especifico)
+}
+
 pub(crate) fn construir_regla_v2(
     id: String,
     tipo_error: String,
@@ -598,6 +1172,8 @@ pub(crate) fn construir_regla_v2(
         fallos_directos: 0,
         origen: origen.to_string(),
         modelo_alcance,
+        defensor_alcance: "*".to_string(),
+        defensores_confirmantes: Vec::new(),
         ultima_actualizacion: actualizada,
         confianza_llm,
         aciertos_sombra: 0,
@@ -606,10 +1182,379 @@ pub(crate) fn construir_regla_v2(
     }
 }
 
+fn prioridad_estado_regla(s: &str) -> u8 {
+    match s {
+        "activa" => 4,
+        "prueba" => 3,
+        "candidata" => 2,
+        "cuarentena" => 1,
+        _ => 0,
+    }
+}
+
+fn fusionar_regla_en(dest: &mut ReglaAprendida, otra: ReglaAprendida) {
+    dest.refuerzos = dest.refuerzos.saturating_add(otra.refuerzos);
+    dest.alpha = (dest.alpha + (otra.alpha - PRIOR_BETA_ALPHA).max(0.0)).max(0.5);
+    dest.beta = (dest.beta + (otra.beta - PRIOR_BETA_BETA).max(0.0)).max(0.5);
+    normalizar_ess(&mut dest.alpha, &mut dest.beta);
+    dest.impresiones = dest.impresiones.saturating_add(otra.impresiones);
+    dest.aciertos_directos = dest.aciertos_directos.saturating_add(otra.aciertos_directos);
+    dest.fallos_directos = dest.fallos_directos.saturating_add(otra.fallos_directos);
+    dest.aciertos_sombra = dest.aciertos_sombra.saturating_add(otra.aciertos_sombra);
+    dest.confirmaciones_sombra = dest
+        .confirmaciones_sombra
+        .saturating_add(otra.confirmaciones_sombra);
+    if otra.regla.len() > dest.regla.len() && otra.regla.len() <= 240 {
+        dest.regla = otra.regla;
+    }
+    if prioridad_estado_regla(&otra.estado) > prioridad_estado_regla(&dest.estado) {
+        dest.estado = otra.estado;
+    }
+    for t in otra.triggers {
+        if !dest.triggers.contains(&t) && dest.triggers.len() < 12 {
+            dest.triggers.push(t);
+        }
+    }
+    for d in otra.defensores_confirmantes {
+        let dk = normalizar_clave_defensor(&d);
+        if !dk.is_empty() && !dest.defensores_confirmantes.contains(&dk) {
+            dest.defensores_confirmantes.push(dk);
+        }
+    }
+    if otra.ultima_actualizacion > dest.ultima_actualizacion {
+        dest.ultima_actualizacion = otra.ultima_actualizacion;
+    }
+    if otra.actualizada > dest.actualizada {
+        dest.actualizada = otra.actualizada;
+    }
+    if otra.confianza_llm > dest.confianza_llm {
+        dest.confianza_llm = otra.confianza_llm;
+    }
+}
+
+fn fusionar_preferencias_estilo(destino: &mut PreferenciasEstilo, otra: &PreferenciasEstilo) {
+    const MAX_ESS_PREF: f64 = 12.0;
+    let def = PreferenciasEstilo::default();
+    let sum_par = |da: &mut f64, db: &mut f64, oa: f64, ob: f64, pa: f64, pb: f64| {
+        *da = (*da + (oa - pa).max(0.0)).max(0.5);
+        *db = (*db + (ob - pb).max(0.0)).max(0.5);
+        normalizar_ess_par(da, db, MAX_ESS_PREF);
+    };
+    sum_par(
+        &mut destino.incluir_causas_secundarias_alpha,
+        &mut destino.incluir_causas_secundarias_beta,
+        otra.incluir_causas_secundarias_alpha,
+        otra.incluir_causas_secundarias_beta,
+        def.incluir_causas_secundarias_alpha,
+        def.incluir_causas_secundarias_beta,
+    );
+    sum_par(
+        &mut destino.incluir_reprogramacion_alpha,
+        &mut destino.incluir_reprogramacion_beta,
+        otra.incluir_reprogramacion_alpha,
+        otra.incluir_reprogramacion_beta,
+        def.incluir_reprogramacion_alpha,
+        def.incluir_reprogramacion_beta,
+    );
+    sum_par(
+        &mut destino.se_fija_aplazamiento_alpha,
+        &mut destino.se_fija_aplazamiento_beta,
+        otra.se_fija_aplazamiento_alpha,
+        otra.se_fija_aplazamiento_beta,
+        def.se_fija_aplazamiento_alpha,
+        def.se_fija_aplazamiento_beta,
+    );
+    sum_par(
+        &mut destino.instalada_reprogramada_si_alpha,
+        &mut destino.instalada_reprogramada_si_beta,
+        otra.instalada_reprogramada_si_alpha,
+        otra.instalada_reprogramada_si_beta,
+        def.instalada_reprogramada_si_alpha,
+        def.instalada_reprogramada_si_beta,
+    );
+}
+
+fn fusionar_metricas_defensor(destino: &mut MetricasDefensor, otra: MetricasDefensor) {
+    if !otra.nombre_mostrar.trim().is_empty()
+        && (destino.nombre_mostrar.trim().is_empty()
+            || es_nombre_defensor_mas_informativo(&otra.nombre_mostrar, &destino.nombre_mostrar))
+    {
+        destino.nombre_mostrar = otra.nombre_mostrar;
+    }
+    destino.aciertos = destino.aciertos.saturating_add(otra.aciertos);
+    destino.correcciones = destino.correcciones.saturating_add(otra.correcciones);
+    for (campo, mc2) in otra.por_campo {
+        match destino.por_campo.get_mut(&campo) {
+            Some(mc1) => {
+                let eval_tot = mc1.evaluaciones.saturating_add(mc2.evaluaciones);
+                if eval_tot > 0 {
+                    mc1.precision_ewma = (mc1.precision_ewma * mc1.evaluaciones as f64
+                        + mc2.precision_ewma * mc2.evaluaciones as f64)
+                        / eval_tot as f64;
+                }
+                mc1.evaluaciones = eval_tot;
+                mc1.aciertos = mc1.aciertos.saturating_add(mc2.aciertos);
+                mc1.correcciones = mc1.correcciones.saturating_add(mc2.correcciones);
+                mc1.alpha = (mc1.alpha + (mc2.alpha - PRIOR_BETA_ALPHA).max(0.0)).max(0.5);
+                mc1.beta = (mc1.beta + (mc2.beta - PRIOR_BETA_BETA).max(0.0)).max(0.5);
+                normalizar_ess(&mut mc1.alpha, &mut mc1.beta);
+                if mc2.ultima_actualizacion > mc1.ultima_actualizacion {
+                    mc1.ultima_actualizacion = mc2.ultima_actualizacion;
+                }
+            }
+            None => {
+                destino.por_campo.insert(campo, mc2);
+            }
+        }
+    }
+}
+
+fn fusionar_estado_consolidacion(destino: &mut EstadoConsolidacion, otra: EstadoConsolidacion) {
+    destino.presion += otra.presion;
+    destino.correcciones_sin_consolidar = destino
+        .correcciones_sin_consolidar
+        .saturating_add(otra.correcciones_sin_consolidar);
+    destino.notas_sin_consolidar = destino
+        .notas_sin_consolidar
+        .saturating_add(otra.notas_sin_consolidar);
+    destino.extracciones_desde_ultima = destino
+        .extracciones_desde_ultima
+        .saturating_add(otra.extracciones_desde_ultima);
+    if otra.ultima_consolidacion > destino.ultima_consolidacion {
+        destino.ultima_consolidacion = otra.ultima_consolidacion;
+    }
+    for id in otra.ids_consolidadas_recientes {
+        if !destino.ids_consolidadas_recientes.contains(&id) {
+            destino.ids_consolidadas_recientes.push(id);
+        }
+    }
+    if destino.ids_consolidadas_recientes.len() > 200 {
+        let ex = destino.ids_consolidadas_recientes.len() - 200;
+        destino.ids_consolidadas_recientes.drain(0..ex);
+    }
+}
+
+fn normalizar_y_fusionar_defensores(memoria: &mut MemoriaAprendizaje, fusionar_colecciones: bool) {
+    let nombres_prev = std::mem::take(&mut memoria.nombres_defensores);
+    for (k, v) in nombres_prev {
+        registrar_nombre_defensor(&mut memoria.nombres_defensores, &v);
+        registrar_nombre_defensor(&mut memoria.nombres_defensores, &k);
+    }
+
+    for r in &mut memoria.reglas {
+        if !es_alcance_general(&r.defensor_alcance) {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &r.defensor_alcance);
+            r.defensor_alcance = alcance_canonico(&r.defensor_alcance);
+        } else {
+            r.defensor_alcance = "*".to_string();
+        }
+        let mut conf_norm = Vec::new();
+        for d in std::mem::take(&mut r.defensores_confirmantes) {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &d);
+            let dk = normalizar_clave_defensor(&d);
+            if !dk.is_empty() && !conf_norm.contains(&dk) {
+                conf_norm.push(dk);
+            }
+        }
+        r.defensores_confirmantes = conf_norm;
+    }
+
+    for a in &mut memoria.tabla_alias {
+        if !es_alcance_general(&a.defensor_alcance) {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &a.defensor_alcance);
+            a.defensor_alcance = alcance_canonico(&a.defensor_alcance);
+        } else {
+            a.defensor_alcance = "*".to_string();
+        }
+        let mut conf_norm = Vec::new();
+        for d in std::mem::take(&mut a.defensores_confirmantes) {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &d);
+            let dk = normalizar_clave_defensor(&d);
+            if !dk.is_empty() && !conf_norm.contains(&dk) {
+                conf_norm.push(dk);
+            }
+        }
+        a.defensores_confirmantes = conf_norm;
+    }
+
+    for c in &mut memoria.correcciones {
+        if !c.defensor_clave.trim().is_empty() {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &c.defensor_clave);
+            c.defensor_clave = normalizar_clave_defensor(&c.defensor_clave);
+        } else {
+            c.defensor_clave.clear();
+        }
+    }
+    for e in &mut memoria.ejemplos_aciertos {
+        if !e.defensor_clave.trim().is_empty() {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &e.defensor_clave);
+            e.defensor_clave = normalizar_clave_defensor(&e.defensor_clave);
+        } else {
+            e.defensor_clave.clear();
+        }
+    }
+    for clu in &mut memoria.cola_induccion {
+        if !clu.defensor_clave.trim().is_empty() {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &clu.defensor_clave);
+            clu.defensor_clave = normalizar_clave_defensor(&clu.defensor_clave);
+        }
+        let mut pres_norm = Vec::new();
+        for d in std::mem::take(&mut clu.defensores_presentes) {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &d);
+            let dk = normalizar_clave_defensor(&d);
+            if !dk.is_empty() && !pres_norm.contains(&dk) {
+                pres_norm.push(dk);
+            }
+        }
+        clu.defensores_presentes = pres_norm;
+    }
+
+    let prefs_prev = std::mem::take(&mut memoria.preferencias_por_defensor);
+    for (k, v) in prefs_prev {
+        registrar_nombre_defensor(&mut memoria.nombres_defensores, &k);
+        let dk = normalizar_clave_defensor(&k);
+        if dk.is_empty() {
+            continue;
+        }
+        match memoria.preferencias_por_defensor.get_mut(&dk) {
+            Some(dest) => fusionar_preferencias_estilo(dest, &v),
+            None => {
+                memoria.preferencias_por_defensor.insert(dk, v);
+            }
+        }
+    }
+
+    let met_prev = std::mem::take(&mut memoria.metricas_por_defensor);
+    for (k, mut v) in met_prev {
+        registrar_nombre_defensor(&mut memoria.nombres_defensores, &v.nombre_mostrar);
+        registrar_nombre_defensor(&mut memoria.nombres_defensores, &k);
+        let dk = normalizar_clave_defensor(&k);
+        if dk.is_empty() {
+            continue;
+        }
+        if let Some(mejor_nom) = memoria.nombres_defensores.get(&dk) {
+            if v.nombre_mostrar.trim().is_empty()
+                || es_nombre_defensor_mas_informativo(mejor_nom, &v.nombre_mostrar)
+            {
+                v.nombre_mostrar = mejor_nom.clone();
+            }
+        }
+        match memoria.metricas_por_defensor.get_mut(&dk) {
+            Some(dest) => fusionar_metricas_defensor(dest, v),
+            None => {
+                memoria.metricas_por_defensor.insert(dk, v);
+            }
+        }
+    }
+
+    let perf_prev = std::mem::take(&mut memoria.perfiles_sinteticos);
+    for (k, mut v) in perf_prev {
+        let amb = alcance_canonico(&k);
+        if amb != "*" {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &v.nombre_mostrar);
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &k);
+            if let Some(nom) = memoria.nombres_defensores.get(&amb) {
+                v.nombre_mostrar = nom.clone();
+            }
+        }
+        v.ambito = amb.clone();
+        match memoria.perfiles_sinteticos.get(&amb) {
+            Some(actual)
+                if actual.version > v.version
+                    || (actual.version == v.version
+                        && actual.ultima_actualizacion >= v.ultima_actualizacion) => {}
+            _ => {
+                memoria.perfiles_sinteticos.insert(amb, v);
+            }
+        }
+    }
+
+    let est_prev = std::mem::take(&mut memoria.estados_consolidacion);
+    for (k, v) in est_prev {
+        let amb = alcance_canonico(&k);
+        if amb != "*" {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &k);
+        }
+        match memoria.estados_consolidacion.get_mut(&amb) {
+            Some(dest) => fusionar_estado_consolidacion(dest, v),
+            None => {
+                memoria.estados_consolidacion.insert(amb, v);
+            }
+        }
+    }
+
+    if fusionar_colecciones {
+        let mut reglas_fusionadas: Vec<ReglaAprendida> = Vec::with_capacity(memoria.reglas.len());
+        let mut mapeo_ids_reglas: BTreeMap<String, String> = BTreeMap::new();
+        for r in std::mem::take(&mut memoria.reglas) {
+            if !r.id.starts_with("base-") {
+                if let Some(dest) = reglas_fusionadas.iter_mut().find(|x| {
+                    !x.id.starts_with("base-")
+                        && x.defensor_alcance == r.defensor_alcance
+                        && x.campo_objetivo == r.campo_objetivo
+                        && es_misma_regla(&x.regla, &r.regla)
+                }) {
+                    if !r.id.is_empty() && !dest.id.is_empty() && r.id != dest.id {
+                        mapeo_ids_reglas.insert(r.id.clone(), dest.id.clone());
+                    }
+                    fusionar_regla_en(dest, r);
+                    continue;
+                }
+            }
+            reglas_fusionadas.push(r);
+        }
+        memoria.reglas = reglas_fusionadas;
+        if !mapeo_ids_reglas.is_empty() {
+            for c in &mut memoria.correcciones {
+                if let Some(nuevo_id) = mapeo_ids_reglas.get(&c.regla_id_asociada) {
+                    c.regla_id_asociada = nuevo_id.clone();
+                }
+            }
+            for clu in &mut memoria.cola_induccion {
+                if let Some(nuevo_id) = mapeo_ids_reglas.get(&clu.regla_inducida_id) {
+                    clu.regla_inducida_id = nuevo_id.clone();
+                }
+            }
+        }
+
+        let mut alias_fusionados: Vec<AliasEstadistico> =
+            Vec::with_capacity(memoria.tabla_alias.len());
+        for a in std::mem::take(&mut memoria.tabla_alias) {
+            let ent_norm = normalizar_texto_sin_tildes(&a.entrada_norm);
+            let can_norm = normalizar_texto_sin_tildes(&a.canonico);
+            if let Some(dest) = alias_fusionados.iter_mut().find(|x| {
+                x.campo == a.campo
+                    && normalizar_texto_sin_tildes(&x.entrada_norm) == ent_norm
+                    && normalizar_texto_sin_tildes(&x.canonico) == can_norm
+                    && x.defensor_alcance == a.defensor_alcance
+            }) {
+                dest.alpha = (dest.alpha + (a.alpha - PRIOR_ALIAS_ALPHA).max(0.0)).max(0.5);
+                dest.beta = (dest.beta + (a.beta - PRIOR_ALIAS_BETA).max(0.0)).max(0.5);
+                normalizar_ess_par(&mut dest.alpha, &mut dest.beta, MAX_ESS_N);
+                for d in a.defensores_confirmantes {
+                    if !dest.defensores_confirmantes.contains(&d) {
+                        dest.defensores_confirmantes.push(d);
+                    }
+                }
+                if a.ultima_actualizacion > dest.ultima_actualizacion {
+                    dest.ultima_actualizacion = a.ultima_actualizacion;
+                }
+                continue;
+            }
+            alias_fusionados.push(a);
+        }
+        memoria.tabla_alias = alias_fusionados;
+    }
+}
+
 pub fn migrar_memoria_v1_a_v2(memoria: &mut MemoriaAprendizaje) {
     let era_v1 = memoria.version < 2;
+    let era_anterior_v4 = memoria.version < 4;
     if memoria.version < VERSION_FORMATO {
         memoria.version = VERSION_FORMATO;
+    }
+    if memoria.semilla_rng == 0 {
+        memoria.semilla_rng = DEFAULT_SEMILLA_RNG;
     }
 
     for r in &mut memoria.reglas {
@@ -629,24 +1574,51 @@ pub fn migrar_memoria_v1_a_v2(memoria: &mut MemoriaAprendizaje) {
             r.ultima_actualizacion = r.actualizada.clone();
         }
         if r.id.starts_with("base-") {
-            r.origen = "base_invariante".to_string();
-            r.estado = "activa".to_string();
+            // Brecha A: no sobreescribir defensor_alcance ni origen si ya vienen definidos;
+            // normalizar defensor_alcance con normalizar_clave_defensor salvo "*".
+            if es_alcance_general(&r.defensor_alcance) {
+                r.defensor_alcance = "*".to_string();
+            } else {
+                registrar_nombre_defensor(&mut memoria.nombres_defensores, &r.defensor_alcance);
+                r.defensor_alcance = alcance_canonico(&r.defensor_alcance);
+            }
+            if r.origen.trim().is_empty() || r.origen == "mitigacion_modelo" {
+                r.origen = if r.defensor_alcance == "*" {
+                    "base_invariante".to_string()
+                } else {
+                    "base_perfil".to_string()
+                };
+            }
+            if r.estado.trim().is_empty() {
+                r.estado = "activa".to_string();
+            }
             if r.alpha <= PRIOR_BETA_ALPHA && r.beta >= PRIOR_BETA_BETA {
                 r.alpha = 6.0;
                 r.beta = 1.0;
             }
-        } else if era_v1 || r.estado.trim().is_empty() {
-            if r.alpha <= PRIOR_BETA_ALPHA && r.refuerzos > 0 {
-                r.alpha = PRIOR_BETA_ALPHA + (r.refuerzos as f64).min(20.0);
-                r.beta = PRIOR_BETA_BETA;
+        } else {
+            if r.defensor_alcance.trim().is_empty() {
+                r.defensor_alcance = "*".to_string();
             }
-            if r.estado.trim().is_empty() {
-                r.estado = if r.refuerzos >= 2 {
-                    "activa".to_string()
-                } else {
-                    "candidata".to_string()
-                };
+            if era_v1 || r.estado.trim().is_empty() {
+                if r.alpha <= PRIOR_BETA_ALPHA && r.refuerzos > 0 {
+                    r.alpha = PRIOR_BETA_ALPHA + (r.refuerzos as f64).min(20.0);
+                    r.beta = PRIOR_BETA_BETA;
+                }
+                if r.estado.trim().is_empty() {
+                    r.estado = if r.refuerzos >= 2 {
+                        "activa".to_string()
+                    } else {
+                        "candidata".to_string()
+                    };
+                }
             }
+        }
+    }
+
+    for a in &mut memoria.tabla_alias {
+        if a.defensor_alcance.trim().is_empty() {
+            a.defensor_alcance = "*".to_string();
         }
     }
 
@@ -675,6 +1647,203 @@ pub fn migrar_memoria_v1_a_v2(memoria: &mut MemoriaAprendizaje) {
             }
         }
     }
+
+    normalizar_y_fusionar_defensores(memoria, era_anterior_v4);
+}
+
+pub(crate) fn renombrar_defensor_en_memoria_struct(
+    memoria: &mut MemoriaAprendizaje,
+    actual: &str,
+    nuevo: &str,
+) -> bool {
+    let clave_vieja = normalizar_clave_defensor(actual);
+    let clave_nueva = normalizar_clave_defensor(nuevo);
+    let nuevo_display = colapsar_espacios(nuevo);
+    if clave_vieja.is_empty() || clave_nueva.is_empty() || nuevo_display.is_empty() {
+        return false;
+    }
+
+    let mut tocado = false;
+    if clave_vieja == clave_nueva {
+        let existe_en_memoria = memoria.nombres_defensores.contains_key(&clave_nueva)
+            || memoria.metricas_por_defensor.contains_key(&clave_nueva)
+            || memoria.perfiles_sinteticos.contains_key(&clave_nueva)
+            || memoria.preferencias_por_defensor.contains_key(&clave_nueva)
+            || memoria.estados_consolidacion.contains_key(&clave_nueva)
+            || memoria
+                .reglas
+                .iter()
+                .any(|r| coincide_alcance_defensor(&r.defensor_alcance, &clave_nueva))
+            || memoria
+                .tabla_alias
+                .iter()
+                .any(|a| coincide_alcance_defensor(&a.defensor_alcance, &clave_nueva))
+            || memoria
+                .correcciones
+                .iter()
+                .any(|c| coincide_alcance_defensor(&c.defensor_clave, &clave_nueva))
+            || memoria
+                .ejemplos_aciertos
+                .iter()
+                .any(|e| coincide_alcance_defensor(&e.defensor_clave, &clave_nueva))
+            || memoria
+                .consolidaciones_ia
+                .iter()
+                .any(|co| coincide_alcance_defensor(&co.ambito, &clave_nueva));
+        if existe_en_memoria {
+            memoria
+                .nombres_defensores
+                .insert(clave_nueva.clone(), nuevo_display.clone());
+            if let Some(m) = memoria.metricas_por_defensor.get_mut(&clave_nueva) {
+                m.nombre_mostrar = nuevo_display.clone();
+            }
+            if let Some(p) = memoria.perfiles_sinteticos.get_mut(&clave_nueva) {
+                p.nombre_mostrar = nuevo_display.clone();
+            }
+            for co in &mut memoria.consolidaciones_ia {
+                if coincide_alcance_defensor(&co.ambito, &clave_nueva) {
+                    co.nombre_ambito = nuevo_display.clone();
+                }
+            }
+            tocado = true;
+        }
+        return tocado;
+    }
+
+    if memoria.nombres_defensores.remove(&clave_vieja).is_some() {
+        tocado = true;
+    }
+    for r in &mut memoria.reglas {
+        if r.defensor_alcance == clave_vieja {
+            r.defensor_alcance = clave_nueva.clone();
+            tocado = true;
+        }
+        for d in &mut r.defensores_confirmantes {
+            if *d == clave_vieja {
+                *d = clave_nueva.clone();
+                tocado = true;
+            }
+        }
+    }
+    for a in &mut memoria.tabla_alias {
+        if a.defensor_alcance == clave_vieja {
+            a.defensor_alcance = clave_nueva.clone();
+            tocado = true;
+        }
+        for d in &mut a.defensores_confirmantes {
+            if *d == clave_vieja {
+                *d = clave_nueva.clone();
+                tocado = true;
+            }
+        }
+    }
+    for c in &mut memoria.correcciones {
+        if c.defensor_clave == clave_vieja {
+            c.defensor_clave = clave_nueva.clone();
+            tocado = true;
+        }
+    }
+    for e in &mut memoria.ejemplos_aciertos {
+        if e.defensor_clave == clave_vieja {
+            e.defensor_clave = clave_nueva.clone();
+            tocado = true;
+        }
+    }
+    for clu in &mut memoria.cola_induccion {
+        if clu.defensor_clave == clave_vieja {
+            clu.defensor_clave = clave_nueva.clone();
+            tocado = true;
+        }
+        for d in &mut clu.defensores_presentes {
+            if *d == clave_vieja {
+                *d = clave_nueva.clone();
+                tocado = true;
+            }
+        }
+    }
+    if let Some(pref_v) = memoria.preferencias_por_defensor.remove(&clave_vieja) {
+        match memoria.preferencias_por_defensor.get_mut(&clave_nueva) {
+            Some(dest) => fusionar_preferencias_estilo(dest, &pref_v),
+            None => {
+                memoria
+                    .preferencias_por_defensor
+                    .insert(clave_nueva.clone(), pref_v);
+            }
+        }
+        tocado = true;
+    }
+    if let Some(mut met_v) = memoria.metricas_por_defensor.remove(&clave_vieja) {
+        met_v.nombre_mostrar = nuevo_display.clone();
+        match memoria.metricas_por_defensor.get_mut(&clave_nueva) {
+            Some(dest) => fusionar_metricas_defensor(dest, met_v),
+            None => {
+                memoria
+                    .metricas_por_defensor
+                    .insert(clave_nueva.clone(), met_v);
+            }
+        }
+        tocado = true;
+    }
+    if let Some(mut perf_v) = memoria.perfiles_sinteticos.remove(&clave_vieja) {
+        perf_v.ambito = clave_nueva.clone();
+        perf_v.nombre_mostrar = nuevo_display.clone();
+        match memoria.perfiles_sinteticos.get(&clave_nueva) {
+            Some(actual_p) if actual_p.version > perf_v.version => {}
+            _ => {
+                memoria
+                    .perfiles_sinteticos
+                    .insert(clave_nueva.clone(), perf_v);
+            }
+        }
+        tocado = true;
+    }
+    if let Some(est_v) = memoria.estados_consolidacion.remove(&clave_vieja) {
+        match memoria.estados_consolidacion.get_mut(&clave_nueva) {
+            Some(dest) => fusionar_estado_consolidacion(dest, est_v),
+            None => {
+                memoria
+                    .estados_consolidacion
+                    .insert(clave_nueva.clone(), est_v);
+            }
+        }
+        tocado = true;
+    }
+    for co in &mut memoria.consolidaciones_ia {
+        if coincide_alcance_defensor(&co.ambito, &clave_vieja) {
+            co.ambito = clave_nueva.clone();
+            co.nombre_ambito = nuevo_display.clone();
+            co.telemetria_disparo.ambito = clave_nueva.clone();
+            for s in &mut co.sugerencias_build {
+                if coincide_alcance_defensor(&s.ambito, &clave_vieja) {
+                    s.ambito = clave_nueva.clone();
+                }
+            }
+            tocado = true;
+        }
+    }
+
+    if tocado {
+        memoria
+            .nombres_defensores
+            .insert(clave_nueva, nuevo_display);
+        normalizar_y_fusionar_defensores(memoria, true);
+    }
+    tocado
+}
+
+pub fn migrar_defensor_en_memoria_en(ruta: &Path, actual: &str, nuevo: &str) -> Result<(), String> {
+    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+    let existe = ruta.exists();
+    let mut memoria = cargar_memoria_en(ruta);
+    let tocado = renombrar_defensor_en_memoria_struct(&mut memoria, actual, nuevo);
+    if tocado && (existe || !memoria.correcciones.is_empty() || !memoria.reglas.is_empty()) {
+        guardar_memoria_en(ruta, &memoria)?;
+    }
+    Ok(())
+}
+
+pub fn migrar_defensor_en_memoria(actual: &str, nuevo: &str) -> Result<(), String> {
+    migrar_defensor_en_memoria_en(&ruta_memoria(), actual, nuevo)
 }
 
 pub(crate) fn normalizar_ess_par(alpha: &mut f64, beta: &mut f64, max_n: f64) {
@@ -876,9 +2045,11 @@ pub fn aplicar_decaimiento_beta(alpha: &mut f64, beta: &mut f64, ultima_actualiz
     aplicar_decaimiento_beta_en(alpha, beta, ultima_actualizacion, None);
 }
 
-pub fn aplicar_decaimiento_beta_en(
+pub fn aplicar_decaimiento_beta_con_prior_en(
     alpha: &mut f64,
     beta: &mut f64,
+    prior_alpha: f64,
+    prior_beta: f64,
     ultima_actualizacion: &str,
     referencia_ahora: Option<&str>,
 ) {
@@ -892,15 +2063,31 @@ pub fn aplicar_decaimiento_beta_en(
             let dias = (ref_dt.signed_duration_since(prev.with_timezone(&Local))).num_days() as f64;
             if dias > DIAS_GRACIA_VACANCIA {
                 let factor_cal = (-((dias - DIAS_GRACIA_VACANCIA) / 365.0)).exp().clamp(0.5, 1.0);
-                *alpha = PRIOR_BETA_ALPHA + (*alpha - PRIOR_BETA_ALPHA).max(0.0) * factor_cal;
-                *beta = PRIOR_BETA_BETA + (*beta - PRIOR_BETA_BETA).max(0.0) * factor_cal;
+                *alpha = prior_alpha + (*alpha - prior_alpha).max(0.0) * factor_cal;
+                *beta = prior_beta + (*beta - prior_beta).max(0.0) * factor_cal;
             }
         }
     }
 
-    *alpha = PRIOR_BETA_ALPHA + DECAY_EVENTO_LAMBDA * (*alpha - PRIOR_BETA_ALPHA).max(0.0);
-    *beta = PRIOR_BETA_BETA + DECAY_EVENTO_LAMBDA * (*beta - PRIOR_BETA_BETA).max(0.0);
+    *alpha = prior_alpha + DECAY_EVENTO_LAMBDA * (*alpha - prior_alpha).max(0.0);
+    *beta = prior_beta + DECAY_EVENTO_LAMBDA * (*beta - prior_beta).max(0.0);
     normalizar_ess(alpha, beta);
+}
+
+pub fn aplicar_decaimiento_beta_en(
+    alpha: &mut f64,
+    beta: &mut f64,
+    ultima_actualizacion: &str,
+    referencia_ahora: Option<&str>,
+) {
+    aplicar_decaimiento_beta_con_prior_en(
+        alpha,
+        beta,
+        PRIOR_BETA_ALPHA,
+        PRIOR_BETA_BETA,
+        ultima_actualizacion,
+        referencia_ahora,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,6 +2477,37 @@ pub(crate) fn agregar_regla_interna(
     confianza_llm: f64,
     origen_correccion_id: &str,
 ) -> Option<String> {
+    agregar_regla_interna_con_defensor(
+        memoria,
+        tipo_error,
+        regla_raw,
+        estado_inicial,
+        campo_objetivo_opt,
+        triggers_extra,
+        origen,
+        modelo_alcance,
+        "*",
+        &[],
+        confianza_llm,
+        origen_correccion_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn agregar_regla_interna_con_defensor(
+    memoria: &mut MemoriaAprendizaje,
+    tipo_error: &str,
+    regla_raw: &str,
+    estado_inicial: &str,
+    campo_objetivo_opt: Option<&str>,
+    triggers_extra: &[String],
+    origen: &str,
+    modelo_alcance: &str,
+    defensor_alcance: &str,
+    defensores_extra: &[String],
+    confianza_llm: f64,
+    origen_correccion_id: &str,
+) -> Option<String> {
     let regla = colapsar_espacios(regla_raw);
     if regla.len() < 6 {
         return None;
@@ -1303,6 +2521,17 @@ pub(crate) fn agregar_regla_interna(
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| inferir_campo_objetivo_desde_tipo(&tipo));
+
+    let def_norm = if defensor_alcance.trim().is_empty() || defensor_alcance.trim() == "*" {
+        "*".to_string()
+    } else {
+        normalizar_clave_defensor(defensor_alcance)
+    };
+    let def_alcance_efectivo = if def_norm.is_empty() {
+        "*".to_string()
+    } else {
+        def_norm
+    };
 
     let mut triggers = extraer_triggers_texto(&regla, 8);
     for t in triggers_extra {
@@ -1346,9 +2575,13 @@ pub(crate) fn agregar_regla_interna(
                 confianza_llm
             };
         }
-        if existente.estado == "retirada"
-            || (existente.estado == "cuarentena" && estado_inicial != "cuarentena")
-        {
+
+        // Promoción automática al Cuaderno General cuando 2+ defensores distintos confirman la misma regla.
+        // Si la regla estaba retirada/en cuarentena para otro defensor, se reactiva solo para el defensor actual
+        // sin contar al defensor previo como confirmante activo.
+        let reactivada = existente.estado == "retirada"
+            || (existente.estado == "cuarentena" && estado_inicial != "cuarentena");
+        if reactivada {
             existente.estado = estado_inicial.to_string();
             existente.alpha = PRIOR_BETA_ALPHA + 1.0;
             existente.beta = PRIOR_BETA_BETA;
@@ -1357,7 +2590,41 @@ pub(crate) fn agregar_regla_interna(
             existente.fallos_directos = 0;
             existente.aciertos_sombra = 0;
             existente.confirmaciones_sombra = 0;
-        } else if existente.estado == "candidata" && existente.refuerzos >= 2 {
+            if existente.defensor_alcance != "*" && existente.defensor_alcance != def_alcance_efectivo
+            {
+                existente.defensores_confirmantes.clear();
+                existente.defensor_alcance = def_alcance_efectivo.clone();
+            }
+        }
+
+        if def_alcance_efectivo == "*" {
+            existente.defensor_alcance = "*".to_string();
+        } else {
+            if !existente.defensor_alcance.is_empty()
+                && existente.defensor_alcance != "*"
+                && !existente.defensores_confirmantes.contains(&existente.defensor_alcance)
+            {
+                existente
+                    .defensores_confirmantes
+                    .push(existente.defensor_alcance.clone());
+            }
+            if !existente.defensores_confirmantes.contains(&def_alcance_efectivo) {
+                existente
+                    .defensores_confirmantes
+                    .push(def_alcance_efectivo.clone());
+            }
+            for d in defensores_extra {
+                let dk = normalizar_clave_defensor(d);
+                if !dk.is_empty() && !existente.defensores_confirmantes.contains(&dk) {
+                    existente.defensores_confirmantes.push(dk);
+                }
+            }
+            if existente.defensores_confirmantes.len() >= 2 {
+                existente.defensor_alcance = "*".to_string();
+            }
+        }
+
+        if !reactivada && existente.estado == "candidata" && existente.refuerzos >= 2 {
             let lb = limite_inferior_bayesiano(existente.alpha, existente.beta);
             existente.estado = if lb >= 0.42 {
                 "activa".to_string()
@@ -1389,7 +2656,23 @@ pub(crate) fn agregar_regla_interna(
     } else {
         modelo_alcance.trim().to_string()
     };
-    memoria.reglas.push(construir_regla_v2(
+    let mut confirmantes: Vec<String> = Vec::new();
+    if def_alcance_efectivo != "*" {
+        confirmantes.push(def_alcance_efectivo.clone());
+    }
+    for d in defensores_extra {
+        let dk = normalizar_clave_defensor(d);
+        if !dk.is_empty() && !confirmantes.contains(&dk) {
+            confirmantes.push(dk);
+        }
+    }
+    let alcance_final_def = if confirmantes.len() >= 2 {
+        "*".to_string()
+    } else {
+        def_alcance_efectivo
+    };
+
+    let mut nueva = construir_regla_v2(
         id.clone(),
         tipo,
         regla,
@@ -1402,7 +2685,10 @@ pub(crate) fn agregar_regla_interna(
         alcance,
         confianza_llm,
         origen_correccion_id.to_string(),
-    ));
+    );
+    nueva.defensor_alcance = alcance_final_def;
+    nueva.defensores_confirmantes = confirmantes;
+    memoria.reglas.push(nueva);
     Some(id)
 }
 
@@ -1438,6 +2724,7 @@ pub struct ContextoPromptDetalle<'a> {
     pub reglas: Vec<&'a ReglaAprendida>,
     pub ejemplos_correcciones: Vec<&'a CorreccionIa>,
     pub ejemplos_aciertos: Vec<&'a EjemploPositivo>,
+    pub pista_pendiente: Option<&'a CorreccionIa>,
     pub reglas_inyectadas_ids: Vec<String>,
     pub ejemplos_inyectados_ids: Vec<String>,
 }
@@ -1464,15 +2751,30 @@ fn coincidencia_triggers(query_tokens: &[String], query_ngrams: &BTreeSet<String
     (hits / (regla.triggers.len().min(4) as f64)).clamp(0.0, 1.0)
 }
 
-pub fn seleccionar_contexto_detallado_para_modelo<'a>(
+pub fn seleccionar_contexto_detallado_para_defensor<'a>(
     texto_nuevo: &str,
     base: &'a MemoriaAprendizaje,
     local: &'a MemoriaAprendizaje,
     modelo_actual: Option<&str>,
+    defensor_actual: Option<&str>,
 ) -> ContextoPromptDetalle<'a> {
     let query_tokens = tokenizar_judicial(texto_nuevo);
     let query_ngrams: BTreeSet<String> = ngramas_caracteres(texto_nuevo, 3).into_iter().collect();
+    let def_clave = defensor_actual
+        .map(normalizar_clave_defensor)
+        .unwrap_or_default();
 
+    let regla_aplica_a_defensor = |r: &ReglaAprendida| -> bool {
+        es_alcance_general(&r.defensor_alcance)
+            || coincide_alcance_defensor(&r.defensor_alcance, &def_clave)
+    };
+    let factor_defensor_regla = |r: &ReglaAprendida| -> f64 {
+        if coincide_alcance_defensor(&r.defensor_alcance, &def_clave) {
+            1.35
+        } else {
+            1.0
+        }
+    };
     let factor_modelo = |r: &ReglaAprendida| -> f64 {
         let Some(actual) = modelo_actual else {
             return 1.0;
@@ -1487,11 +2789,26 @@ pub fn seleccionar_contexto_detallado_para_modelo<'a>(
         }
     };
 
-    let todas_reglas: Vec<&'a ReglaAprendida> = base
+    // Brecha D: deduplicar base.reglas + local.reglas por es_misma_regla y alcance, priorizando local.
+    let reglas_local_ap: Vec<&'a ReglaAprendida> = local
         .reglas
         .iter()
-        .chain(local.reglas.iter())
+        .filter(|r| regla_aplica_a_defensor(r))
         .collect();
+    let mut todas_reglas: Vec<&'a ReglaAprendida> =
+        Vec::with_capacity(base.reglas.len() + reglas_local_ap.len());
+    todas_reglas.extend(reglas_local_ap.iter().copied());
+    for r_base in base.reglas.iter().filter(|r| regla_aplica_a_defensor(r)) {
+        let alc_base = alcance_canonico(&r_base.defensor_alcance);
+        let duplicada_en_local = reglas_local_ap.iter().any(|r_loc| {
+            r_loc.id == r_base.id
+                || (es_misma_regla(&r_loc.regla, &r_base.regla)
+                    && alcance_canonico(&r_loc.defensor_alcance) == alc_base)
+        });
+        if !duplicada_en_local {
+            todas_reglas.push(r_base);
+        }
+    }
 
     // 1) Exploración controlada (máx. 1 ranura) entre reglas en estado "prueba" aplicables vía Thompson Sampling
     let mut regla_exploracion: Option<(usize, &'a ReglaAprendida)> = None;
@@ -1522,7 +2839,12 @@ pub fn seleccionar_contexto_detallado_para_modelo<'a>(
                 continue;
             }
             let thompson = muestrear_beta(r.alpha, r.beta, seed_base ^ (orig_idx as u64).wrapping_mul(0x9e37));
-            let score = thompson * (0.5 + bm25_prueba[pos] + trig) * factor_modelo(r);
+            let boost_def = if coincide_alcance_defensor(&r.defensor_alcance, &def_clave) {
+                1.5
+            } else {
+                1.0
+            };
+            let score = thompson * (0.5 + bm25_prueba[pos] + trig) * factor_modelo(r) * boost_def;
             if score > mejor_score {
                 mejor_score = score;
                 regla_exploracion = Some((orig_idx, r));
@@ -1569,8 +2891,9 @@ pub fn seleccionar_contexto_detallado_para_modelo<'a>(
                 };
                 let trig = coincidencia_triggers(&query_tokens, &query_ngrams, r);
                 let fiabilidad = limite_inferior_bayesiano(r.alpha, r.beta);
-                let relevancia =
-                    (bm25_norm * 0.60 + trig * 0.25 + fiabilidad * 0.15) * factor_modelo(r);
+                let relevancia = (bm25_norm * 0.60 + trig * 0.25 + fiabilidad * 0.15)
+                    * factor_modelo(r)
+                    * factor_defensor_regla(r);
                 (pos, relevancia)
             })
             .collect();
@@ -1594,11 +2917,22 @@ pub fn seleccionar_contexto_detallado_para_modelo<'a>(
     }
 
     // 3) Ejemplos balanceados vía BM25 + MMR (hasta 2 correcciones verificadas + 1 acierto ancla; tope 3)
-    let corrs: Vec<&'a CorreccionIa> = base
+    //    Se priorizan ejemplos del defensor activo y se hereda del Cuaderno General (defensor_clave == "").
+    let local_corr_ids: BTreeSet<&str> = local.correcciones.iter().map(|c| c.id.as_str()).collect();
+    let corrs: Vec<&'a CorreccionIa> = local
         .correcciones
         .iter()
-        .chain(local.correcciones.iter())
-        .filter(|c| c.estado == "analizada" && !c.campos.is_empty())
+        .chain(
+            base.correcciones
+                .iter()
+                .filter(|c| !local_corr_ids.contains(c.id.as_str())),
+        )
+        .filter(|c| {
+            c.estado == "analizada"
+                && !c.campos.is_empty()
+                && (es_alcance_general(&c.defensor_clave)
+                    || coincide_alcance_defensor(&c.defensor_clave, &def_clave))
+        })
         .collect();
     let corr_docs: Vec<Vec<String>> = corrs
         .iter()
@@ -1617,7 +2951,12 @@ pub fn seleccionar_contexto_detallado_para_modelo<'a>(
             } else {
                 0.0
             };
-            let rel = 0.7 * rel_bm25 + 0.3 * sim_dice;
+            let boost_def = if coincide_alcance_defensor(&c.defensor_clave, &def_clave) {
+                1.35
+            } else {
+                1.0
+            };
+            let rel = (0.7 * rel_bm25 + 0.3 * sim_dice) * boost_def;
             if sim_dice > 0.02 || corr_bm25[pos] > 0.05 {
                 Some((pos, rel))
             } else {
@@ -1631,10 +2970,62 @@ pub fn seleccionar_contexto_detallado_para_modelo<'a>(
             .then_with(|| b.0.cmp(&a.0))
     });
 
-    let aciertos_pool: Vec<&'a EjemploPositivo> = base
+    // 3b) Pista suave desde la 1.ª corrección pendiente del mismo defensor SOLO si el texto es casi idéntico (>= 0.72)
+    let mut pista_pendiente: Option<&'a CorreccionIa> = None;
+    let ya_hay_verificada_identica = corrs
+        .iter()
+        .any(|c| similitud_consulta(texto_nuevo, &c.texto_original) >= UMBRAL_SIMILITUD_PISTA_PENDIENTE);
+    if !ya_hay_verificada_identica {
+        let mut mejor_pista: Option<(f64, &'a CorreccionIa)> = None;
+        for c in local.correcciones.iter().rev() {
+            if !matches!(c.estado.as_str(), "pendiente" | "esperando_aclaracion")
+                || c.campos.is_empty()
+            {
+                continue;
+            }
+            let mismo_ambito = if !def_clave.is_empty() {
+                coincide_alcance_defensor(&c.defensor_clave, &def_clave)
+            } else {
+                c.defensor_clave.trim().is_empty()
+            };
+            if !mismo_ambito {
+                continue;
+            }
+            let sim_cons = similitud_consulta(texto_nuevo, &c.texto_original);
+            let sim_bm25 = similitud_bm25_normalizada(texto_nuevo, &c.texto_original);
+            let sim = if sim_cons >= UMBRAL_SIMILITUD_PISTA_PENDIENTE {
+                sim_cons.max(sim_bm25)
+            } else if sim_bm25 >= UMBRAL_SIMILITUD_PISTA_PENDIENTE && sim_cons >= 0.55 {
+                sim_bm25
+            } else {
+                0.0
+            };
+            if sim >= UMBRAL_SIMILITUD_PISTA_PENDIENTE
+                && mejor_pista.is_none_or(|(best_sim, _)| sim > best_sim)
+            {
+                mejor_pista = Some((sim, c));
+            }
+        }
+        pista_pendiente = mejor_pista.map(|(_, c)| c);
+    }
+
+    let local_ac_ids: BTreeSet<&str> = local
         .ejemplos_aciertos
         .iter()
-        .chain(local.ejemplos_aciertos.iter())
+        .map(|e| e.id.as_str())
+        .collect();
+    let aciertos_pool: Vec<&'a EjemploPositivo> = local
+        .ejemplos_aciertos
+        .iter()
+        .chain(
+            base.ejemplos_aciertos
+                .iter()
+                .filter(|e| !local_ac_ids.contains(e.id.as_str())),
+        )
+        .filter(|e| {
+            es_alcance_general(&e.defensor_clave)
+                || coincide_alcance_defensor(&e.defensor_clave, &def_clave)
+        })
         .collect();
     let aciertos_docs: Vec<Vec<String>> = aciertos_pool
         .iter()
@@ -1653,7 +3044,12 @@ pub fn seleccionar_contexto_detallado_para_modelo<'a>(
             } else {
                 0.0
             };
-            let rel = 0.7 * rel_bm25 + 0.3 * sim_dice;
+            let boost_def = if !def_clave.is_empty() && e.defensor_clave == def_clave {
+                1.25
+            } else {
+                1.0
+            };
+            let rel = (0.7 * rel_bm25 + 0.3 * sim_dice) * boost_def;
             if sim_dice > 0.02 || aciertos_bm25[pos] > 0.05 {
                 Some((pos, rel))
             } else {
@@ -1667,14 +3063,19 @@ pub fn seleccionar_contexto_detallado_para_modelo<'a>(
             .then_with(|| b.0.cmp(&a.0))
     });
 
-    let cupo_aciertos = if cand_aciertos.is_empty() {
-        0
-    } else if cand_corr.len() >= 2 {
-        1
+    let cupo_disponible = if pista_pendiente.is_some() {
+        MAX_EJEMPLOS_PROMPT.saturating_sub(1)
     } else {
-        (MAX_EJEMPLOS_PROMPT - cand_corr.len()).min(cand_aciertos.len())
+        MAX_EJEMPLOS_PROMPT
     };
-    let cupo_corr = (MAX_EJEMPLOS_PROMPT - cupo_aciertos).min(cand_corr.len());
+    let cupo_aciertos = if cand_aciertos.is_empty() || cupo_disponible == 0 {
+        0
+    } else if cand_corr.len() >= cupo_disponible {
+        if cupo_disponible >= 2 { 1 } else { 0 }
+    } else {
+        (cupo_disponible - cand_corr.len()).min(cand_aciertos.len())
+    };
+    let cupo_corr = (cupo_disponible - cupo_aciertos).min(cand_corr.len());
 
     let corr_sel_pos = seleccionar_mmr(&cand_corr, &corr_docs, cupo_corr, 0.7);
     let aciertos_sel_pos = seleccionar_mmr(&cand_aciertos, &aciertos_docs, cupo_aciertos, 0.7);
@@ -1689,15 +3090,28 @@ pub fn seleccionar_contexto_detallado_para_modelo<'a>(
     let reglas_inyectadas_ids = reglas_elegidas.iter().map(|r| r.id.clone()).collect();
     let mut ejemplos_inyectados_ids: Vec<String> =
         ejemplos_correcciones.iter().map(|c| c.id.clone()).collect();
+    if let Some(pista) = pista_pendiente {
+        ejemplos_inyectados_ids.push(pista.id.clone());
+    }
     ejemplos_inyectados_ids.extend(ejemplos_aciertos.iter().map(|e| e.id.clone()));
 
     ContextoPromptDetalle {
         reglas: reglas_elegidas,
         ejemplos_correcciones,
         ejemplos_aciertos,
+        pista_pendiente,
         reglas_inyectadas_ids,
         ejemplos_inyectados_ids,
     }
+}
+
+pub fn seleccionar_contexto_detallado_para_modelo<'a>(
+    texto_nuevo: &str,
+    base: &'a MemoriaAprendizaje,
+    local: &'a MemoriaAprendizaje,
+    modelo_actual: Option<&str>,
+) -> ContextoPromptDetalle<'a> {
+    seleccionar_contexto_detallado_para_defensor(texto_nuevo, base, local, modelo_actual, None)
 }
 
 pub fn seleccionar_contexto_detallado<'a>(
@@ -1730,16 +3144,24 @@ fn recortar_texto(s: &str, max_chars: usize) -> String {
     }
 }
 
-pub fn formatear_contexto_prompt_con_detalle_para_modelo<'a>(
+pub fn formatear_contexto_prompt_con_detalle_para_defensor<'a>(
     texto_nuevo: &str,
     base: &'a MemoriaAprendizaje,
     local: &'a MemoriaAprendizaje,
     modelo_actual: Option<&str>,
+    defensor_actual: Option<&str>,
 ) -> (String, Vec<String>, Vec<String>) {
-    let det = seleccionar_contexto_detallado_para_modelo(texto_nuevo, base, local, modelo_actual);
+    let det = seleccionar_contexto_detallado_para_defensor(
+        texto_nuevo,
+        base,
+        local,
+        modelo_actual,
+        defensor_actual,
+    );
     if det.reglas.is_empty()
         && det.ejemplos_correcciones.is_empty()
         && det.ejemplos_aciertos.is_empty()
+        && det.pista_pendiente.is_none()
     {
         return (String::new(), Vec::new(), Vec::new());
     }
@@ -1753,11 +3175,19 @@ pub fn formatear_contexto_prompt_con_detalle_para_modelo<'a>(
     if !det.reglas.is_empty() {
         lineas.push("Reglas aprendidas del usuario:".to_string());
         for r in &det.reglas {
-            lineas.push(format!("- [{}] {}", r.tipo_error, r.regla));
+            let etiqueta_alcance = if !r.defensor_alcance.is_empty() && r.defensor_alcance != "*" {
+                "perfil defensor"
+            } else {
+                r.tipo_error.as_str()
+            };
+            lineas.push(format!("- [{}] {}", etiqueta_alcance, r.regla));
         }
     }
 
-    if !det.ejemplos_correcciones.is_empty() || !det.ejemplos_aciertos.is_empty() {
+    if !det.ejemplos_correcciones.is_empty()
+        || !det.ejemplos_aciertos.is_empty()
+        || det.pista_pendiente.is_some()
+    {
         lineas.push("Ejemplos corregidos en textos similares:".to_string());
         for ej in &det.ejemplos_correcciones {
             let extracto = recortar_texto(&ej.texto_original, 150);
@@ -1790,6 +3220,26 @@ pub fn formatear_contexto_prompt_con_detalle_para_modelo<'a>(
                 nota
             ));
         }
+        if let Some(pista) = det.pista_pendiente {
+            let extracto = recortar_texto(&pista.texto_original, 150);
+            let cambios: Vec<String> = pista
+                .campos
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{}: '{}' -> '{}'",
+                        c.campo,
+                        recortar_texto(&c.valor_ia, 50),
+                        recortar_texto(&c.valor_usuario, 50)
+                    )
+                })
+                .collect();
+            lineas.push(format!(
+                "- Pista reciente del defensor en texto casi idéntico (1.ª corrección): \"{}\" => El defensor ajustó [{}] (aplícala si coincide el mismo patrón)",
+                extracto,
+                cambios.join("; ")
+            ));
+        }
         for ac in &det.ejemplos_aciertos {
             let extracto = recortar_texto(&ac.texto_anonimizado, 150);
             lineas.push(format!(
@@ -1807,6 +3257,21 @@ pub fn formatear_contexto_prompt_con_detalle_para_modelo<'a>(
         lineas.join("\n"),
         det.reglas_inyectadas_ids,
         det.ejemplos_inyectados_ids,
+    )
+}
+
+pub fn formatear_contexto_prompt_con_detalle_para_modelo<'a>(
+    texto_nuevo: &str,
+    base: &'a MemoriaAprendizaje,
+    local: &'a MemoriaAprendizaje,
+    modelo_actual: Option<&str>,
+) -> (String, Vec<String>, Vec<String>) {
+    formatear_contexto_prompt_con_detalle_para_defensor(
+        texto_nuevo,
+        base,
+        local,
+        modelo_actual,
+        None,
     )
 }
 
@@ -1863,20 +3328,49 @@ fn re_separador_radicado() -> Option<&'static Regex> {
     RE.get_or_init(|| Regex::new(r"\s+[-–—]\s+").ok()).as_ref()
 }
 
-/// Reemplaza secuencias numéricas de 6 o más dígitos (radicados, cédulas, teléfonos) por
-/// `[NUMERO]`, conservando fechas y horas, que son útiles para aprender formatos.
+fn re_telefono_espaciado() -> Option<&'static Regex> {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b(?:3\d{2}|60\d)\s+\d{3}\s+\d{4}\b").ok())
+        .as_ref()
+}
+
+fn re_radicado_espaciado() -> Option<&'static Regex> {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"\b\d{5}\s+(?:60|61)\s+\d{5}(?:\s+\d{4}\s+\d{5}|\s+\d{6,16})\b").ok()
+    })
+    .as_ref()
+}
+
+/// Reemplaza secuencias numéricas de 6 o más dígitos (radicados, teléfonos y cédulas) por
+/// `[RADICADO]`, `[TELEFONO]` o `[NUMERO]`, conservando fechas y horas.
 fn enmascarar_numeros_largos(texto: &str) -> String {
+    let mut paso = texto.to_string();
+    if let Some(re_rad) = re_radicado_espaciado() {
+        paso = re_rad.replace_all(&paso, "[RADICADO]").into_owned();
+    }
+    if let Some(re_tel) = re_telefono_espaciado() {
+        paso = re_tel.replace_all(&paso, "[TELEFONO]").into_owned();
+    }
     let Some(re) = re_numeros_largos() else {
-        return texto.to_string();
+        return paso;
     };
-    re.replace_all(texto, |caps: &regex::Captures| {
+    re.replace_all(&paso, |caps: &regex::Captures| {
         let m = &caps[0];
-        let digitos = m.chars().filter(|c| c.is_ascii_digit()).count();
+        let solo_digitos: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
+        let digitos = solo_digitos.len();
         let es_fecha = re_fecha_con_guiones().is_some_and(|rf| rf.is_match(m));
-        if digitos >= 6 && !es_fecha {
-            "[NUMERO]".to_string()
-        } else {
+        if es_fecha || digitos < 6 {
             m.to_string()
+        } else if (digitos == 10
+            && (solo_digitos.starts_with('3') || solo_digitos.starts_with("60")))
+            || (digitos == 12 && solo_digitos.starts_with("573"))
+        {
+            "[TELEFONO]".to_string()
+        } else if digitos >= 15 {
+            "[RADICADO]".to_string()
+        } else {
+            "[NUMERO]".to_string()
         }
     })
     .into_owned()
@@ -1950,6 +3444,12 @@ fn es_termino_estructural_judicial(token: &str) -> bool {
             | "sentencia"
             | "victima"
             | "usuario"
+            | "usuaria"
+            | "procesado"
+            | "procesada"
+            | "radicado"
+            | "numero"
+            | "telefono"
             | "inpec"
             | "icbf"
     )
@@ -1962,9 +3462,11 @@ fn es_token_anonimizacion_valido(token: &str) -> bool {
         && !es_termino_estructural_judicial(token)
 }
 
-/// Reemplaza el nombre del procesado y el número de radicado (conocidos por el campo Radicado,
-/// con formato habitual `NOMBRE - NÚMERO`) por marcadores genéricos.
+/// Reemplaza únicamente el nombre del procesado, números de radicado, cédulas y teléfonos
+/// por marcadores (`[PROCESADO]`, `[RADICADO]`, `[TELEFONO]`, `[NUMERO]`), preservando los
+/// nombres reales de defensores públicos incluso si comparten un apellido con algún procesado.
 pub(crate) struct Anonimizador {
+    escudos_defensores: Vec<Regex>,
     completos: Vec<(Regex, &'static str)>,
     palabras: Vec<(Regex, &'static str)>,
 }
@@ -2075,30 +3577,121 @@ impl Anonimizador {
         }
 
         Self {
+            escudos_defensores: Vec::new(),
             completos,
             palabras,
         }
     }
 
-    fn aplicar(&self, texto: &str) -> String {
+    fn con_escudos_defensores(mut self, claves_y_nombres: &[String]) -> Self {
+        const PREFIJO_HON: &str = r"(?:(?:defensor(?:a)?\s+p[uú]blic[oa]|dr|dra|doctor|doctora|abg|abogado|abogada|defensor|defensora|lic)\.?\s+)";
+        let mut patrones_vistos: BTreeSet<String> = BTreeSet::new();
+        for raw in claves_y_nombres {
+            let dk = normalizar_clave_defensor(raw);
+            if dk.is_empty() {
+                continue;
+            }
+            let tokens: Vec<&str> = dk.split_whitespace().collect();
+            if tokens.is_empty() {
+                continue;
+            }
+            if tokens.len() >= 2 && tokens.iter().any(|t| es_token_anonimizacion_valido(t)) {
+                let pat_nombre = tokens
+                    .iter()
+                    .map(|t| patron_sin_tildes(t))
+                    .collect::<Vec<_>>()
+                    .join(r"\s+");
+                let pat = format!(r"(?i)\b(?:{})?{}\b", PREFIJO_HON, pat_nombre);
+                if patrones_vistos.insert(pat.clone()) {
+                    if let Ok(re) = Regex::new(&pat) {
+                        self.escudos_defensores.push(re);
+                    }
+                }
+                if tokens.len() >= 3 {
+                    for win_len in (2..tokens.len()).rev() {
+                        for win in tokens.windows(win_len) {
+                            if !win.iter().any(|t| es_token_anonimizacion_valido(t)) {
+                                continue;
+                            }
+                            let pat_sub = win
+                                .iter()
+                                .map(|t| patron_sin_tildes(t))
+                                .collect::<Vec<_>>()
+                                .join(r"\s+");
+                            let pat_h = format!(r"(?i)\b{}{}\b", PREFIJO_HON, pat_sub);
+                            if patrones_vistos.insert(pat_h.clone()) {
+                                if let Ok(re) = Regex::new(&pat_h) {
+                                    self.escudos_defensores.push(re);
+                                }
+                            }
+                        }
+                    }
+                }
+                for tok in &tokens {
+                    if tok.chars().count() >= 3 && es_token_anonimizacion_valido(tok) {
+                        let pat_h = format!(r"(?i)\b{}{}\b", PREFIJO_HON, patron_sin_tildes(tok));
+                        if patrones_vistos.insert(pat_h.clone()) {
+                            if let Ok(re) = Regex::new(&pat_h) {
+                                self.escudos_defensores.push(re);
+                            }
+                        }
+                    }
+                }
+            } else if tokens[0].chars().count() >= 3 && es_token_anonimizacion_valido(tokens[0]) {
+                let pat = format!(r"(?i)\b{}{}\b", PREFIJO_HON, patron_sin_tildes(tokens[0]));
+                if patrones_vistos.insert(pat.clone()) {
+                    if let Ok(re) = Regex::new(&pat) {
+                        self.escudos_defensores.push(re);
+                    }
+                }
+            }
+        }
+        self
+    }
+
+    fn aplicar_con_escudos(&self, texto: &str, escudos: &[Regex]) -> String {
         let mut out = texto.to_string();
-        for (re, marca) in self.completos.iter().chain(self.palabras.iter()) {
+        for (re, marca) in &self.completos {
             out = re.replace_all(&out, *marca).into_owned();
+        }
+        let mut restaurar: Vec<(String, String)> = Vec::new();
+        for re in escudos {
+            out = re
+                .replace_all(&out, |caps: &regex::Captures| {
+                    let marker = format!("\u{E000}DEF_{}\u{E001}", restaurar.len());
+                    restaurar.push((marker.clone(), caps[0].to_string()));
+                    marker
+                })
+                .into_owned();
+        }
+        for (re, marca) in &self.palabras {
+            out = re.replace_all(&out, *marca).into_owned();
+        }
+        for (marker, orig) in restaurar {
+            out = out.replace(&marker, &orig);
         }
         enmascarar_numeros_largos(&out)
     }
 
-    fn aplicar_audiencia(&self, a: &AudienciaInput) -> AudienciaInput {
+    fn aplicar(&self, texto: &str) -> String {
+        self.aplicar_con_escudos(texto, &self.escudos_defensores)
+    }
+
+    fn aplicar_audiencia_con_escudos(&self, a: &AudienciaInput, escudos: &[Regex]) -> AudienciaInput {
         AudienciaInput {
-            radicado: self.aplicar(&a.radicado),
-            tipo: self.aplicar(&a.tipo),
+            radicado: self.aplicar_con_escudos(&a.radicado, escudos),
+            tipo: self.aplicar_con_escudos(&a.tipo, escudos),
             fecha: a.fecha.clone(),
             hora: a.hora.clone(),
-            juzgado: self.aplicar(&a.juzgado),
+            juzgado: self.aplicar_con_escudos(&a.juzgado, escudos),
             realizada: a.realizada.clone(),
             motivo: a.motivo.clone(),
-            observaciones: self.aplicar(&a.observaciones),
+            observaciones: self.aplicar_con_escudos(&a.observaciones, escudos),
         }
+    }
+
+    fn aplicar_audiencia(&self, a: &AudienciaInput) -> AudienciaInput {
+        self.aplicar_audiencia_con_escudos(a, &self.escudos_defensores)
     }
 }
 
@@ -2109,15 +3702,18 @@ pub(crate) fn anonimizar_correccion_con_global(
 ) -> CorreccionIa {
     let anon_local =
         Anonimizador::desde_radicados(&[&c.prediccion.radicado, &c.final_usuario.radicado]);
+    let escudos: &[Regex] = anon_global
+        .map(|g| g.escudos_defensores.as_slice())
+        .unwrap_or(&[]);
     let aplicar_ambos = |s: &str| -> String {
-        let paso1 = anon_local.aplicar(s);
+        let paso1 = anon_local.aplicar_con_escudos(s, escudos);
         match anon_global {
             Some(g) => g.aplicar(&paso1),
             None => paso1,
         }
     };
     let aplicar_aud = |a: &AudienciaInput| -> AudienciaInput {
-        let paso1 = anon_local.aplicar_audiencia(a);
+        let paso1 = anon_local.aplicar_audiencia_con_escudos(a, escudos);
         match anon_global {
             Some(g) => g.aplicar_audiencia(&paso1),
             None => paso1,
@@ -2285,6 +3881,28 @@ fn actualizar_estado_page_hinkley(
     }
 }
 
+fn actualizar_mc_campo(mc: &mut MetricasCampo, campo: &str, hubo_fallo: bool, ahora: &str) {
+    mc.campo = campo.to_string();
+    aplicar_decaimiento_beta_en(
+        &mut mc.alpha,
+        &mut mc.beta,
+        &mc.ultima_actualizacion,
+        Some(ahora),
+    );
+    mc.evaluaciones = mc.evaluaciones.saturating_add(1);
+    if hubo_fallo {
+        mc.correcciones = mc.correcciones.saturating_add(1);
+        mc.beta += 1.0;
+        mc.precision_ewma = 0.85 * mc.precision_ewma;
+    } else {
+        mc.aciertos = mc.aciertos.saturating_add(1);
+        mc.alpha += 1.0;
+        mc.precision_ewma = 0.85 * mc.precision_ewma + 0.15;
+    }
+    normalizar_ess(&mut mc.alpha, &mut mc.beta);
+    mc.ultima_actualizacion = ahora.to_string();
+}
+
 fn actualizar_metricas_y_credito(
     memoria: &mut MemoriaAprendizaje,
     texto: &str,
@@ -2293,13 +3911,14 @@ fn actualizar_metricas_y_credito(
     proveedor: &str,
     modelo: &str,
     ahora: &str,
-) {
+    def_clave: &str,
+) -> BTreeSet<String> {
     let mut campos_err: BTreeSet<&str> = BTreeSet::new();
     for c in campos_corregidos {
         campos_err.insert(c.campo.as_str());
     }
 
-    // 1. Métricas por campo, por (proveedor, modelo) y detector Page-Hinkley de drift
+    // 1. Métricas por campo, por (proveedor, modelo), por defensor y detector Page-Hinkley de drift
     let clave_modelo = format!("{}:{}", proveedor.trim(), modelo.trim());
     let mut campos_con_drift: BTreeSet<String> = BTreeSet::new();
     {
@@ -2326,27 +3945,6 @@ fn actualizar_metricas_y_credito(
 
         for campo in CAMPOS_AUDIENCIA {
             let hubo_fallo = campos_err.contains(campo);
-            let actualizar_mc = |mc: &mut MetricasCampo| {
-                mc.campo = campo.to_string();
-                aplicar_decaimiento_beta_en(
-                    &mut mc.alpha,
-                    &mut mc.beta,
-                    &mc.ultima_actualizacion,
-                    Some(ahora),
-                );
-                mc.evaluaciones = mc.evaluaciones.saturating_add(1);
-                if hubo_fallo {
-                    mc.correcciones = mc.correcciones.saturating_add(1);
-                    mc.beta += 1.0;
-                    mc.precision_ewma = 0.85 * mc.precision_ewma;
-                } else {
-                    mc.aciertos = mc.aciertos.saturating_add(1);
-                    mc.alpha += 1.0;
-                    mc.precision_ewma = 0.85 * mc.precision_ewma + 0.15;
-                }
-                normalizar_ess(&mut mc.alpha, &mut mc.beta);
-                mc.ultima_actualizacion = ahora.to_string();
-            };
 
             let mc_global = memoria
                 .metricas_campos
@@ -2355,7 +3953,7 @@ fn actualizar_metricas_y_credito(
                     campo: campo.to_string(),
                     ..Default::default()
                 });
-            actualizar_mc(mc_global);
+            actualizar_mc_campo(mc_global, campo, hubo_fallo, ahora);
 
             let mc_mod = mod_entry
                 .por_campo
@@ -2364,7 +3962,7 @@ fn actualizar_metricas_y_credito(
                     campo: campo.to_string(),
                     ..Default::default()
                 });
-            actualizar_mc(mc_mod);
+            actualizar_mc_campo(mc_mod, campo, hubo_fallo, ahora);
 
             let ph_global = memoria
                 .page_hinkley_campos
@@ -2386,6 +3984,42 @@ fn actualizar_metricas_y_credito(
             if actualizar_estado_page_hinkley(ph_mod, campo, hubo_fallo, ahora) {
                 campos_con_drift.insert(campo.to_string());
             }
+        }
+    }
+
+    if !def_clave.is_empty() {
+        let nom_mostrar = memoria
+            .nombres_defensores
+            .get(def_clave)
+            .cloned()
+            .unwrap_or_else(|| title_case_basico(def_clave));
+        let md = memoria
+            .metricas_por_defensor
+            .entry(def_clave.to_string())
+            .or_insert_with(|| MetricasDefensor {
+                nombre_mostrar: nom_mostrar.clone(),
+                ..Default::default()
+            });
+        if md.nombre_mostrar.trim().is_empty()
+            || es_nombre_defensor_mas_informativo(&nom_mostrar, &md.nombre_mostrar)
+        {
+            md.nombre_mostrar = nom_mostrar;
+        }
+        if campos_err.is_empty() {
+            md.aciertos = md.aciertos.saturating_add(1);
+        } else {
+            md.correcciones = md.correcciones.saturating_add(1);
+        }
+        for campo in CAMPOS_AUDIENCIA {
+            let hubo_fallo = campos_err.contains(campo);
+            let mc_def = md
+                .por_campo
+                .entry(campo.to_string())
+                .or_insert_with(|| MetricasCampo {
+                    campo: campo.to_string(),
+                    ..Default::default()
+                });
+            actualizar_mc_campo(mc_def, campo, hubo_fallo, ahora);
         }
     }
 
@@ -2461,7 +4095,13 @@ fn actualizar_metricas_y_credito(
         }
 
         // 3. Evaluación en sombra (shadow evaluation) de reglas en estado "candidata" o "cuarentena"
+        //    aislada por alcance de defensor para que un defensor no retire ni promueva reglas privadas de otro.
         if regla.estado == "candidata" || regla.estado == "cuarentena" {
+            let aplica_sombra_def = es_alcance_general(&regla.defensor_alcance)
+                || coincide_alcance_defensor(&regla.defensor_alcance, def_clave);
+            if !aplica_sombra_def {
+                continue;
+            }
             let trig = coincidencia_triggers(&query_tokens, &query_ngrams, regla);
             let sim_tokens = {
                 let rt: BTreeSet<String> = tokenizar_judicial(&regla.regla).into_iter().collect();
@@ -2530,10 +4170,30 @@ fn actualizar_metricas_y_credito(
             }
         }
     }
+
+    campos_con_drift
+}
+
+fn prioridad_campo_cluster(campo: &str) -> u8 {
+    match campo {
+        "realizada" => 0,
+        "motivo" => 1,
+        "tipo" => 2,
+        "juzgado" => 3,
+        "hora" => 4,
+        "fecha" => 5,
+        "radicado" => 6,
+        "observaciones" => 7,
+        _ => 8,
+    }
 }
 
 fn calcular_firma_error(corr: &CorreccionIa) -> (String, String) {
-    let Some(primero) = corr.campos.first() else {
+    let Some(primero) = corr
+        .campos
+        .iter()
+        .min_by_key(|c| prioridad_campo_cluster(&c.campo))
+    else {
         return ("general".to_string(), "general:general".to_string());
     };
     let campo = primero.campo.clone();
@@ -2583,6 +4243,18 @@ fn similitud_bm25_normalizada(a: &str, b: &str) -> f64 {
     0.5 * (s_ab.clamp(0.0, 1.0) + s_ba.clamp(0.0, 1.0))
 }
 
+fn es_firma_especifica_compartible(firma: &str) -> bool {
+    !matches!(
+        firma,
+        "juzgado:normalizacion"
+            | "observaciones:estilo"
+            | "hora:ajuste_ampm_o_min"
+            | "fecha:normalizacion"
+            | "radicado:extraccion"
+            | "general:general"
+    )
+}
+
 fn encolar_correccion_en_cluster(
     memoria: &mut MemoriaAprendizaje,
     corr: &CorreccionIa,
@@ -2590,6 +4262,7 @@ fn encolar_correccion_en_cluster(
 ) {
     let (campo_principal, firma) = calcular_firma_error(corr);
     let clave_modelo = format!("{}:{}", corr.proveedor.trim(), corr.modelo.trim());
+    let def_clave = corr.defensor_clave.trim();
     let en_drift = memoria
         .page_hinkley_campos
         .get(&campo_principal)
@@ -2600,17 +4273,39 @@ fn encolar_correccion_en_cluster(
             .and_then(|m| m.get(&campo_principal))
             .is_some_and(|p| p.drift_detectado);
 
-    // Si ya existe un clúster inducido reciente para esta firma con regla vigente ("prueba"/"activa")
+    let compartible = es_firma_especifica_compartible(&firma);
+
+    // Si ya existe un clúster inducido reciente para este patrón con regla vigente aplicable a este defensor
     // y no hay drift activo, evita re-llamar al LLM por el mismo patrón repetitivo.
+    // Para firmas genéricas (juzgado:normalizacion, observaciones:estilo, etc.) exige similitud textual BM25
+    // para no bloquear patrones distintos del mismo campo.
     if !en_drift {
         let ya_cubierto = memoria.cola_induccion.iter().any(|c| {
+            let texto_similar = c.correccion_ids.iter().rev().take(3).any(|cid| {
+                memoria
+                    .correcciones
+                    .iter()
+                    .find(|x| x.id == *cid)
+                    .is_some_and(|x| {
+                        similitud_bm25_normalizada(&x.texto_original, &corr.texto_original) >= 0.55
+                    })
+            });
+            let misma_firma_o_texto = if compartible {
+                c.firma_error == firma || texto_similar
+            } else {
+                texto_similar
+            };
             c.estado == "inducido"
                 && c.campo_principal == campo_principal
-                && c.firma_error == firma
+                && misma_firma_o_texto
                 && !c.regla_inducida_id.is_empty()
                 && memoria.reglas.iter().any(|r| {
+                    let aplica_def = r.defensor_alcance.trim().is_empty()
+                        || r.defensor_alcance == "*"
+                        || (!def_clave.is_empty() && r.defensor_alcance == def_clave);
                     r.id == c.regla_inducida_id
                         && matches!(r.estado.as_str(), "prueba" | "activa")
+                        && aplica_def
                 })
         });
         if ya_cubierto {
@@ -2624,35 +4319,89 @@ fn encolar_correccion_en_cluster(
         if cluster.estado == "inducido" || cluster.campo_principal != campo_principal {
             continue;
         }
+        let mismo_defensor = cluster.defensor_clave == def_clave;
+        let sim_cluster = |umbral: f64| -> bool {
+            cluster.correccion_ids.iter().rev().take(2).any(|cid| {
+                memoria
+                    .correcciones
+                    .iter()
+                    .find(|c| &c.id == cid)
+                    .is_some_and(|anchor| {
+                        similitud_bm25_normalizada(&corr.texto_original, &anchor.texto_original)
+                            >= umbral
+                    })
+            })
+        };
         if cluster.firma_error == firma {
-            indice_objetivo = Some(idx);
-            break;
+            if mismo_defensor {
+                indice_objetivo = Some(idx);
+                break;
+            }
+            // Entre defensores distintos solo fusiona firmas específicas; para transiciones amplias
+            // de `realizada` exige además similitud textual (>= 0.35) para no mezclar criterios distintos.
+            let puede_compartir = compartible
+                && (campo_principal != "realizada" || sim_cluster(0.35));
+            if puede_compartir {
+                indice_objetivo = Some(idx);
+                break;
+            }
         }
-        let bm25_match = cluster.correccion_ids.iter().rev().take(2).any(|cid| {
-            memoria
-                .correcciones
-                .iter()
-                .find(|c| &c.id == cid)
-                .is_some_and(|anchor| {
-                    similitud_bm25_normalizada(&corr.texto_original, &anchor.texto_original) >= 0.55
-                })
-        });
-        if bm25_match {
+        if !mismo_defensor {
+            continue;
+        }
+        if sim_cluster(0.55) {
             indice_objetivo = Some(idx);
             break;
         }
     }
 
     if let Some(idx) = indice_objetivo {
+        let resuelto_por_alias_local = !en_drift
+            && corr.campos.len() == 1
+            && matches!(corr.campos[0].campo.as_str(), "juzgado" | "tipo")
+            && !corr.campos[0].valor_ia.trim().is_empty()
+            && !corr.campos[0].valor_usuario.trim().is_empty()
+            && crate::estadistica_ia::resolver_alias_exacto_validado_para_defensor(
+                memoria,
+                &corr.campos[0].campo,
+                &corr.campos[0].valor_ia,
+                0.30,
+                if def_clave.is_empty() {
+                    None
+                } else {
+                    Some(def_clave)
+                },
+            )
+            .is_some_and(|res| {
+                normalizar_texto_sin_tildes(&res)
+                    == normalizar_texto_sin_tildes(&corr.campos[0].valor_usuario)
+            });
+        // Si un alias exacto de juzgado/tipo acaba de validarse localmente en la 2.ª corrección,
+        // solo escala a inducción LLM si el fallo persiste una 3.ª vez pese al alias local.
+        let umbral_listo = if resuelto_por_alias_local {
+            MIN_TAMANO_CLUSTER_INDUCCION + 1
+        } else {
+            MIN_TAMANO_CLUSTER_INDUCCION
+        };
         let cluster = &mut memoria.cola_induccion[idx];
         if !cluster.correccion_ids.contains(&corr.id) {
             cluster.correccion_ids.push(corr.id.clone());
         }
+        if !def_clave.is_empty() && !cluster.defensores_presentes.iter().any(|d| d == def_clave) {
+            cluster.defensores_presentes.push(def_clave.to_string());
+        }
+        if cluster.defensores_presentes.len() >= 2 {
+            cluster.defensor_clave.clear();
+        }
         cluster.ultima_vez = ahora.to_string();
-        if cluster.correccion_ids.len() >= MIN_TAMANO_CLUSTER_INDUCCION {
+        if cluster.correccion_ids.len() >= umbral_listo {
             cluster.estado = "listo".to_string();
         }
     } else {
+        let mut defensores_presentes = Vec::new();
+        if !def_clave.is_empty() {
+            defensores_presentes.push(def_clave.to_string());
+        }
         memoria.cola_induccion.push(ClusterCorreccion {
             id: generar_id_unico("clu"),
             campo_principal,
@@ -2662,6 +4411,8 @@ fn encolar_correccion_en_cluster(
             ultima_vez: ahora.to_string(),
             estado: "acumulando".to_string(),
             regla_inducida_id: String::new(),
+            defensor_clave: def_clave.to_string(),
+            defensores_presentes,
         });
     }
 
@@ -2678,49 +4429,922 @@ fn encolar_correccion_en_cluster(
     }
 }
 
-fn es_cambio_ambiguo_o_contradictorio(corr: &CorreccionIa) -> bool {
-    if corr.campos.len() >= 2 {
-        return true;
-    }
-    let Some(c) = corr.campos.first() else {
-        return false;
-    };
-    if matches!(c.campo.as_str(), "realizada" | "motivo" | "tipo" | "juzgado") {
-        return true;
-    }
-    let tiene_sigla = c
-        .valor_usuario
-        .split_whitespace()
-        .any(|w| w.len() >= 2 && w.chars().filter(|ch| ch.is_alphabetic()).count() >= 2 && w.chars().all(|ch| !ch.is_lowercase()));
-    tiene_sigla
+fn calcular_madurez_sistema(memoria: &MemoriaAprendizaje) -> f64 {
+    let total_obs = (memoria.llamadas_extraccion_total as usize)
+        .max(memoria.aciertos as usize + memoria.correcciones.len()) as f64;
+    (total_obs / 80.0).clamp(0.0, 1.0)
 }
 
-fn puede_solicitar_aclaracion(
+fn clave_firma_aclaracion(corr: &CorreccionIa) -> (String, String) {
+    let (campo, firma) = calcular_firma_error(corr);
+    let combinado = format!("{}|{}", campo, firma);
+    (campo, combinado)
+}
+
+fn registrar_firma_explicada(memoria: &mut MemoriaAprendizaje, clave_firma: String) {
+    let turno = memoria.llamadas_extraccion_total as u64;
+    memoria
+        .estado_aclaracion
+        .firmas_explicadas_recientes
+        .retain(|(f, t)| f != &clave_firma && turno.saturating_sub(*t) <= 30);
+    memoria
+        .estado_aclaracion
+        .firmas_explicadas_recientes
+        .push((clave_firma, turno));
+    if memoria.estado_aclaracion.firmas_explicadas_recientes.len() > 40 {
+        let ex = memoria.estado_aclaracion.firmas_explicadas_recientes.len() - 40;
+        memoria
+            .estado_aclaracion
+            .firmas_explicadas_recientes
+            .drain(0..ex);
+    }
+}
+
+fn construir_pregunta_aclaracion_local(corr: &CorreccionIa, campo_principal: &str) -> String {
+    let valor_usr = corr
+        .campos
+        .iter()
+        .find(|c| c.campo == campo_principal)
+        .map(|c| c.valor_usuario.trim())
+        .unwrap_or("");
+    let valor_ia = corr
+        .campos
+        .iter()
+        .find(|c| c.campo == campo_principal)
+        .map(|c| c.valor_ia.trim())
+        .unwrap_or("");
+
+    let tiene_realizada = corr.campos.iter().any(|c| c.campo == "realizada");
+    let tiene_motivo = corr.campos.iter().any(|c| c.campo == "motivo");
+
+    if tiene_realizada && tiene_motivo {
+        let mot = corr
+            .campos
+            .iter()
+            .find(|c| c.campo == "motivo")
+            .map(|c| c.valor_usuario.trim())
+            .unwrap_or("");
+        if mot.is_empty() {
+            format!(
+                "¿Por qué marcaste la audiencia como '{}'?",
+                corr.final_usuario.realizada.trim()
+            )
+        } else {
+            format!(
+                "¿Por qué se marcó '{}' en realización con motivo '{}'?",
+                corr.final_usuario.realizada.trim(),
+                mot
+            )
+        }
+    } else if campo_principal == "juzgado" && !valor_usr.is_empty() {
+        if valor_ia.is_empty() {
+            format!("¿Por qué correspondió al juzgado '{}'?", valor_usr)
+        } else {
+            format!(
+                "¿Por qué se ajustó el juzgado '{}' a '{}'?",
+                recortar_sin_elipsis(valor_ia, 40),
+                recortar_sin_elipsis(valor_usr, 45)
+            )
+        }
+    } else if campo_principal == "motivo" && !valor_usr.is_empty() {
+        format!("¿Por qué correspondió el motivo '{}'?", valor_usr)
+    } else if campo_principal == "realizada" {
+        format!(
+            "¿Por qué se marcó '{}' en realización?",
+            corr.final_usuario.realizada.trim()
+        )
+    } else if campo_principal == "tipo" && !valor_usr.is_empty() {
+        format!("¿Por qué correspondió al tipo '{}'?", valor_usr)
+    } else {
+        format!("¿Por qué corregiste el campo '{}'?", campo_principal)
+    }
+}
+
+/// Evalúa localmente (en <1 ms y a 0 tokens LLM) si conviene mostrar el cuadro ocasional
+/// "¿Por qué la corrección?" para esta corrección.
+pub(crate) fn decidir_aclaracion_local(
     memoria: &MemoriaAprendizaje,
     corr: &CorreccionIa,
-    analisis: &AnalisisCorreccionIa,
-) -> bool {
-    if !analisis.necesita_aclaracion
-        || analisis.confianza >= UMBRAL_CONFIANZA_ACLARACION
-        || analisis.pregunta.trim().is_empty()
+    prediccion_local: Option<&PrediccionLocalResumen>,
+    def_clave: &str,
+) -> Option<String> {
+    if memoria.enfriamiento_aclaracion > 0
         || !corr.nota_usuario.trim().is_empty()
+        || corr.campos.is_empty()
     {
-        return false;
+        return None;
     }
-    if memoria.enfriamiento_aclaracion > 0 {
-        return false;
-    }
-    let ya_esperando = memoria
+    if memoria
         .correcciones
         .iter()
-        .any(|c| c.id != corr.id && c.estado == "esperando_aclaracion");
-    if ya_esperando {
-        return false;
+        .any(|c| c.id != corr.id && c.estado == "esperando_aclaracion")
+    {
+        return None;
     }
-    es_cambio_ambiguo_o_contradictorio(corr)
+
+    // Excluir fecha, hora, radicado y ajustes menores de observaciones
+    let tiene_campo_semantico = corr
+        .campos
+        .iter()
+        .any(|c| matches!(c.campo.as_str(), "realizada" | "motivo" | "tipo" | "juzgado"));
+    if !tiene_campo_semantico {
+        let solo_obs = corr.campos.len() == 1 && corr.campos[0].campo == "observaciones";
+        if !solo_obs {
+            return None;
+        }
+        let obs = &corr.campos[0];
+        let sim_obs = similitud_textos(&obs.valor_ia, &obs.valor_usuario);
+        let retiro_sufijo = (obs.valor_ia.contains("Causas secundarias:")
+            && !obs.valor_usuario.contains("Causas secundarias:"))
+            || (obs.valor_ia.contains("Reprogramada para:")
+                && !obs.valor_usuario.contains("Reprogramada para:"));
+        if obs.valor_usuario.trim().is_empty() || sim_obs >= 0.55 || retiro_sufijo {
+            return None;
+        }
+    }
+
+    let (campo_principal, clave_firma) = clave_firma_aclaracion(corr);
+    let turno_actual = memoria.llamadas_extraccion_total as u64;
+    if memoria
+        .estado_aclaracion
+        .firmas_explicadas_recientes
+        .iter()
+        .any(|(f, t)| f == &clave_firma && turno_actual.saturating_sub(*t) <= 30)
+    {
+        return None;
+    }
+
+    // Precisión EWMA por defensor si existe; respaldo en métrica global del campo
+    let precision_ewma = if !def_clave.is_empty() {
+        memoria
+            .metricas_por_defensor
+            .get(def_clave)
+            .and_then(|md| md.por_campo.get(&campo_principal))
+            .filter(|m| m.evaluaciones > 0)
+            .map(|m| m.precision_ewma)
+    } else {
+        None
+    }
+    .or_else(|| {
+        memoria
+            .metricas_campos
+            .get(&campo_principal)
+            .filter(|m| m.evaluaciones > 0)
+            .map(|m| m.precision_ewma)
+    })
+    .unwrap_or(0.5);
+
+    let incert = (1.0 - precision_ewma).clamp(0.10, 0.90);
+    let impacto_campo: f64 = if corr.campos.len() >= 2 {
+        0.35
+    } else if matches!(
+        campo_principal.as_str(),
+        "realizada" | "motivo" | "juzgado" | "tipo"
+    ) {
+        0.25
+    } else {
+        0.12
+    };
+
+    let campo_obj = corr
+        .campos
+        .iter()
+        .find(|c| c.campo == campo_principal)
+        .unwrap_or(&corr.campos[0]);
+    let usr_up = campo_obj.valor_usuario.to_uppercase();
+    let tiene_sigla_juz = campo_principal == "juzgado"
+        && (usr_up.contains("CTO")
+            || usr_up.contains("MPAL")
+            || usr_up.contains("PCTO")
+            || es_solo_sigla_corta_juzgado(&campo_obj.valor_ia).is_some()
+            || !extraer_siglas_cortas_juzgado(&corr.texto_original).is_empty());
+
+    if tokenizar_judicial(&corr.texto_original).len() < 3 && !tiene_sigla_juz {
+        return None;
+    }
+
+    let bonus_ambiguedad = if tiene_sigla_juz {
+        0.25
+    } else if campo_principal == "realizada"
+        || (campo_principal == "motivo"
+            && !campo_obj.valor_ia.trim().is_empty()
+            && !campo_obj.valor_usuario.trim().is_empty())
+    {
+        0.25
+    } else if !campo_obj.valor_usuario.trim().is_empty() {
+        0.15
+    } else {
+        0.0
+    };
+
+    let n_prev_firma = memoria
+        .correcciones
+        .iter()
+        .filter(|c| c.id != corr.id && c.estado != "descartada" && clave_firma_aclaracion(c).1 == clave_firma)
+        .count();
+    let bonus_novedad = match n_prev_firma {
+        0 => 0.20,
+        1 => 0.10,
+        _ => 0.0,
+    };
+
+    let bonus_desacuerdo_local = if let Some(pl) = prediccion_local {
+        let desac_real = campo_principal == "realizada"
+            && pl.realizada_confianza >= 0.70
+            && pl
+                .realizada
+                .as_deref()
+                .is_some_and(|r| !r.eq_ignore_ascii_case(&corr.final_usuario.realizada));
+        let desac_mot = campo_principal == "motivo"
+            && pl.motivo_confianza >= 0.65
+            && pl.motivo.as_deref().is_some_and(|m| {
+                normalizar_texto_sin_tildes(m)
+                    != normalizar_texto_sin_tildes(&corr.final_usuario.motivo)
+            });
+        if pl.drift_realizada || pl.drift_motivo {
+            0.15
+        } else if desac_real || desac_mot {
+            0.10
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    let voi_bruto: f64 =
+        (impacto_campo + bonus_ambiguedad + bonus_novedad + bonus_desacuerdo_local).clamp(0.0_f64, 1.2_f64);
+    let voi = voi_bruto * (0.50 + 0.65 * incert);
+
+    let madurez = calcular_madurez_sistema(memoria);
+    let denom_resp = (memoria.estado_aclaracion.alpha_resp + memoria.estado_aclaracion.beta_omit)
+        .max(1e-6);
+    let r_resp = (memoria.estado_aclaracion.alpha_resp / denom_resp).clamp(0.0, 1.0);
+    let umbral = 0.45 + 0.35 * madurez + 0.15 * (1.0 - r_resp);
+
+    if voi >= umbral {
+        Some(construir_pregunta_aclaracion_local(corr, &campo_principal))
+    } else {
+        None
+    }
 }
 
-pub fn registrar_resultado_con_traza_en(
+fn obtener_precision_ewma_antes(memoria: &MemoriaAprendizaje, def_clave: &str, campo: &str) -> f64 {
+    if !def_clave.is_empty() {
+        if let Some(p) = memoria
+            .metricas_por_defensor
+            .get(def_clave)
+            .and_then(|md| md.por_campo.get(campo))
+            .filter(|m| m.evaluaciones > 0)
+            .map(|m| m.precision_ewma)
+        {
+            return p;
+        }
+    }
+    memoria
+        .metricas_campos
+        .get(campo)
+        .filter(|m| m.evaluaciones > 0)
+        .map(|m| m.precision_ewma)
+        .unwrap_or(0.5)
+}
+
+fn retiro_o_eliminacion_regla_asociada(memoria: &mut MemoriaAprendizaje, regla_id: &str, corr_id: &str) {
+    if regla_id.trim().is_empty() {
+        return;
+    }
+    let usada_por_otra = memoria.correcciones.iter().any(|c| {
+        c.id != corr_id && c.estado != "descartada" && c.regla_id_asociada == regla_id
+    });
+    if usada_por_otra {
+        return;
+    }
+    if let Some(pos) = memoria.reglas.iter().position(|r| r.id == regla_id) {
+        let es_unica_de_esta_corr =
+            memoria.reglas[pos].refuerzos <= 1 && memoria.reglas[pos].origen_correccion_id == corr_id;
+        if es_unica_de_esta_corr && !memoria.reglas[pos].id.starts_with("base-") {
+            memoria.reglas.remove(pos);
+        } else if !memoria.reglas[pos].id.starts_with("base-") {
+            memoria.reglas[pos].estado = "retirada".to_string();
+        }
+    }
+}
+
+fn regenerar_triggers_correccion(
+    texto_original: &str,
+    regla: &str,
+    nota_usuario: &str,
+) -> Vec<String> {
+    let mut triggers = extraer_triggers_texto(regla, 8);
+    for t in extraer_triggers_texto(texto_original, 6)
+        .into_iter()
+        .chain(extraer_triggers_texto(nota_usuario, 4))
+    {
+        if !triggers.contains(&t) && triggers.len() < 12 {
+            triggers.push(t);
+        }
+    }
+    triggers
+}
+
+/// Evalúa si el sistema debe disparar una consolidación periódica con el LLM en el ámbito
+/// del defensor activo o en el ámbito transversal `"*"`.
+pub fn evaluar_candidato_consolidacion(
+    memoria: &mut MemoriaAprendizaje,
+    defensor: Option<&str>,
+    rng_override: Option<f64>,
+) -> Option<TelemetriaDisparoConsolidacion> {
+    if memoria.llamadas_extraccion_total < 8 {
+        return None;
+    }
+    let tasa =
+        memoria.llamadas_consolidacion_total as f64 / memoria.llamadas_extraccion_total.max(1) as f64;
+    if tasa > 0.06 {
+        return None;
+    }
+
+    let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
+    let mut ambitos: Vec<String> = Vec::new();
+    if !def_clave.is_empty() {
+        ambitos.push(def_clave);
+    }
+    ambitos.push("*".to_string());
+
+    let madurez = calcular_madurez_sistema(memoria);
+    let tiene_drift = memoria
+        .page_hinkley_campos
+        .values()
+        .any(|p| p.drift_detectado);
+    let drift_bonus = if tiene_drift { 1.2 } else { 0.0 };
+
+    let mut mejor_candidato: Option<(f64, TelemetriaDisparoConsolidacion)> = None;
+
+    for ambito in ambitos {
+        let Some(est) = memoria.estados_consolidacion.get(&ambito) else {
+            continue;
+        };
+        if est.extracciones_desde_ultima < 6 {
+            continue;
+        }
+        let tiene_nota = est.notas_sin_consolidar > 0;
+        let cumple_min_corr = est.correcciones_sin_consolidar >= 3
+            || (est.correcciones_sin_consolidar >= 2 && (tiene_drift || tiene_nota));
+        if !cumple_min_corr {
+            continue;
+        }
+
+        let tau = (4.2 + 1.2 * madurez - drift_bonus).max(1.5);
+        let prob = 1.0 / (1.0 + (-0.85 * (est.presion - tau)).exp());
+        let margen = est.presion - tau;
+
+        let mut razones = Vec::new();
+        razones.push(format!(
+            "presion={:.2}, umbral={:.2}, p={:.2}",
+            est.presion, tau, prob
+        ));
+        razones.push(format!(
+            "{}_correcciones_sin_consolidar",
+            est.correcciones_sin_consolidar
+        ));
+        if tiene_nota {
+            razones.push(format!("{}_notas_usuario", est.notas_sin_consolidar));
+        }
+        if tiene_drift {
+            razones.push("drift_activo".to_string());
+        }
+        razones.push(if ambito == "*" {
+            "ambito_general_transversal".to_string()
+        } else {
+            "ambito_perfil_defensor".to_string()
+        });
+
+        let tel = TelemetriaDisparoConsolidacion {
+            ambito,
+            presion: est.presion,
+            umbral_adaptativo: tau,
+            probabilidad_disparo: prob,
+            muestra_rng: 0.0,
+            manual: false,
+            razones,
+        };
+        if mejor_candidato
+            .as_ref()
+            .is_none_or(|(best_m, _)| margen > *best_m)
+        {
+            mejor_candidato = Some((margen, tel));
+        }
+    }
+
+    let (_, mut tel) = mejor_candidato?;
+    let u = rng_override.unwrap_or_else(|| next_u01(&mut memoria.semilla_rng));
+    tel.muestra_rng = u;
+    if u < tel.probabilidad_disparo {
+        Some(tel)
+    } else {
+        None
+    }
+}
+
+pub fn preparar_lote_desde_memoria(
+    memoria: &MemoriaAprendizaje,
+    ambito: &str,
+    telemetria: TelemetriaDisparoConsolidacion,
+    forzar_manual: bool,
+    radicados_extra: &[String],
+) -> Option<LoteConsolidacion> {
+    let amb_norm = alcance_canonico(ambito);
+    let nombre_ambito = if amb_norm == "*" {
+        "General (transversal)".to_string()
+    } else {
+        memoria
+            .nombres_defensores
+            .get(&amb_norm)
+            .cloned()
+            .unwrap_or_else(|| title_case_basico(&amb_norm))
+    };
+
+    let (todos_radicados_str, escudos) =
+        recoger_radicados_y_escudos(memoria, radicados_extra, &[]);
+    let todos_radicados: Vec<&str> = todos_radicados_str.iter().map(String::as_str).collect();
+    let anon = Anonimizador::desde_radicados(&todos_radicados).con_escudos_defensores(&escudos);
+
+    let (resumen_actual, version_resumen) = memoria
+        .perfiles_sinteticos
+        .get(&amb_norm)
+        .map(|p| (anon.aplicar(&p.resumen), p.version))
+        .unwrap_or_else(|| (String::new(), 0));
+
+    let max_chars_resumen = if amb_norm == "*" {
+        MAX_CHARS_RESUMEN_GENERAL
+    } else {
+        MAX_CHARS_RESUMEN_DEFENSOR
+    };
+    let resumen_actual = recortar_sin_elipsis(&resumen_actual, max_chars_resumen);
+
+    let mut chars_usados = resumen_actual.chars().count();
+
+    let mut reglas_ambito: Vec<ReglaLoteConsolidacion> = Vec::new();
+    for r in memoria
+        .reglas
+        .iter()
+        .filter(|r| r.estado != "retirada")
+        .filter(|r| {
+            if amb_norm == "*" {
+                es_alcance_general(&r.defensor_alcance) || r.defensores_confirmantes.len() >= 2
+            } else {
+                coincide_alcance_defensor(&r.defensor_alcance, &amb_norm)
+                    || es_alcance_general(&r.defensor_alcance)
+            }
+        })
+    {
+        let regla_anon = anon.aplicar(&r.regla);
+        let triggers_anon: Vec<String> = r
+            .triggers
+            .iter()
+            .map(|t| anon.aplicar(t))
+            .filter(|t| {
+                let l = t.trim();
+                !l.is_empty() && l != "[PROCESADO]" && l != "[RADICADO]" && l != "[TELEFONO]" && l != "[NUMERO]"
+            })
+            .collect();
+        let costo = regla_anon.chars().count() + triggers_anon.iter().map(|t| t.len() + 2).sum::<usize>() + 48;
+        if chars_usados + costo > MAX_CHARS_LOTE_CONSOLIDACION / 2 && !reglas_ambito.is_empty() {
+            continue;
+        }
+        chars_usados += costo;
+        reglas_ambito.push(ReglaLoteConsolidacion {
+            id: r.id.clone(),
+            estado: r.estado.clone(),
+            origen: r.origen.clone(),
+            campo_objetivo: r.campo_objetivo.clone(),
+            tipo_error: r.tipo_error.clone(),
+            defensor_alcance: alcance_canonico(&r.defensor_alcance),
+            regla: regla_anon,
+            triggers: triggers_anon,
+            confianza_q10: limite_inferior_bayesiano(r.alpha, r.beta),
+            impresiones: r.impresiones,
+            aciertos_directos: r.aciertos_directos,
+            fallos_directos: r.fallos_directos,
+        });
+    }
+
+    let ids_ya_cons: BTreeSet<&str> = memoria
+        .estados_consolidacion
+        .get(&amb_norm)
+        .map(|e| e.ids_consolidadas_recientes.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+
+    let mut correcciones_recientes: Vec<CorreccionLoteConsolidacion> = Vec::new();
+    let mut watermark_ids: Vec<String> = Vec::new();
+
+    for c in memoria.correcciones.iter().rev() {
+        if c.estado == "descartada" {
+            continue;
+        }
+        if amb_norm != "*" && !coincide_alcance_defensor(&c.defensor_clave, &amb_norm) {
+            continue;
+        }
+        if !forzar_manual && ids_ya_cons.contains(c.id.as_str()) {
+            continue;
+        }
+        let ca = anonimizar_correccion_con_global(c, Some(&anon));
+        let (campo_p, _) = calcular_firma_error(&ca);
+        let texto_rec = recortar_sin_elipsis(&ca.texto_original, 220);
+        let nota_rec = recortar_sin_elipsis(&ca.nota_usuario, 160);
+        let costo = texto_rec.chars().count()
+            + nota_rec.chars().count()
+            + ca.campos
+                .iter()
+                .map(|fc| fc.campo.len() + fc.valor_ia.chars().count() + fc.valor_usuario.chars().count() + 10)
+                .sum::<usize>()
+            + 40;
+        if chars_usados + costo > MAX_CHARS_LOTE_CONSOLIDACION && !correcciones_recientes.is_empty()
+        {
+            break;
+        }
+        chars_usados += costo;
+        watermark_ids.push(c.id.clone());
+        correcciones_recientes.push(CorreccionLoteConsolidacion {
+            id: c.id.clone(),
+            fecha: c.registrada.clone(),
+            defensor_clave: if c.defensor_clave.trim().is_empty() {
+                String::new()
+            } else {
+                normalizar_clave_defensor(&c.defensor_clave)
+            },
+            campo_principal: campo_p,
+            texto_anonimizado: texto_rec,
+            cambios: ca.campos,
+            nota_usuario: nota_rec,
+            estado: c.estado.clone(),
+        });
+    }
+
+    if reglas_ambito.is_empty() && correcciones_recientes.is_empty() {
+        return None;
+    }
+
+    let metricas_resumen: Vec<CampoDiagnostico> = CAMPOS_AUDIENCIA
+        .iter()
+        .filter_map(|&campo| {
+            let mc = if amb_norm != "*" {
+                memoria
+                    .metricas_por_defensor
+                    .get(&amb_norm)
+                    .and_then(|md| md.por_campo.get(campo))
+                    .or_else(|| memoria.metricas_campos.get(campo))
+            } else {
+                memoria.metricas_campos.get(campo)
+            }?;
+            if mc.evaluaciones == 0 {
+                return None;
+            }
+            Some(CampoDiagnostico {
+                campo: campo.to_string(),
+                evaluaciones: mc.evaluaciones,
+                aciertos: mc.aciertos,
+                correcciones: mc.correcciones,
+                precision_ewma: mc.precision_ewma,
+                confianza_q10: limite_inferior_bayesiano(mc.alpha, mc.beta),
+                drift_activo: memoria
+                    .page_hinkley_campos
+                    .get(campo)
+                    .is_some_and(|p| p.drift_detectado),
+            })
+        })
+        .collect();
+
+    let patrones_transversales = calcular_patrones_transversales(memoria, &anon);
+    let snapshot_extracciones = memoria
+        .estados_consolidacion
+        .get(&amb_norm)
+        .map(|e| e.extracciones_desde_ultima)
+        .unwrap_or(0);
+
+    Some(LoteConsolidacion {
+        ambito: amb_norm,
+        nombre_ambito,
+        resumen_actual,
+        version_resumen,
+        reglas_ambito,
+        correcciones_recientes,
+        metricas_resumen,
+        patrones_transversales,
+        watermark_ids,
+        snapshot_extracciones,
+        telemetria_disparo: telemetria,
+    })
+}
+
+pub fn preparar_lote_consolidacion_en(
+    ruta: &Path,
+    ambito: &str,
+    telemetria: TelemetriaDisparoConsolidacion,
+    forzar_manual: bool,
+) -> Option<LoteConsolidacion> {
+    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+    let memoria = cargar_memoria_en(ruta);
+    preparar_lote_desde_memoria(&memoria, ambito, telemetria, forzar_manual, &[])
+}
+
+pub fn evaluar_y_preparar_consolidacion_en(
+    ruta: &Path,
+    defensor: Option<&str>,
+) -> Option<LoteConsolidacion> {
+    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+    let mut memoria = cargar_memoria_en(ruta);
+    let semilla_antes = memoria.semilla_rng;
+    let res = evaluar_candidato_consolidacion(&mut memoria, defensor, None);
+    if memoria.semilla_rng != semilla_antes {
+        let _ = guardar_memoria_en(ruta, &memoria);
+    }
+    let telemetria = res?;
+    preparar_lote_desde_memoria(&memoria, &telemetria.ambito.clone(), telemetria, false, &[])
+}
+
+pub fn evaluar_y_preparar_consolidacion_ia(defensor: Option<&str>) -> Option<LoteConsolidacion> {
+    evaluar_y_preparar_consolidacion_en(&ruta_memoria(), defensor)
+}
+
+pub fn aplicar_consolidacion_ia_en(
+    ruta: &Path,
+    lote: &LoteConsolidacion,
+    resultado: &ResultadoConsolidacionIa,
+    modelo: &str,
+) -> Result<DiagnosticoAprendizaje, String> {
+    {
+        let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+        let mut memoria = cargar_memoria_en(ruta);
+        let ahora = Local::now().to_rfc3339();
+        let amb_norm = alcance_canonico(&lote.ambito);
+        let mut acciones_reg = Vec::new();
+        let mut sintesis_creadas = 0usize;
+
+        for acc in &resultado.acciones_reglas {
+            let tipo_acc = acc.tipo_accion.trim().to_lowercase();
+            let mut aplicada = false;
+
+            match tipo_acc.as_str() {
+                "fusionar" => {
+                    let regla_limpia = recortar_sin_elipsis(&acc.regla, 240);
+                    let mut indices_validos: Vec<usize> = memoria
+                        .reglas
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| {
+                            acc.ids_origen.contains(&r.id)
+                                && r.origen != "base_invariante"
+                                && !r.id.starts_with("base-")
+                                && r.estado != "retirada"
+                                && (amb_norm == "*"
+                                    || coincide_alcance_defensor(&r.defensor_alcance, &amb_norm))
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+
+                    if !indices_validos.is_empty() && regla_limpia.len() >= 6 {
+                        indices_validos.sort_by(|&a, &b| {
+                            prioridad_estado_regla(&memoria.reglas[b].estado)
+                                .cmp(&prioridad_estado_regla(&memoria.reglas[a].estado))
+                        });
+                        let idx_principal = indices_validos[0];
+                        let id_principal = memoria.reglas[idx_principal].id.clone();
+
+                        for &idx_sec in indices_validos.iter().skip(1) {
+                            let sec = memoria.reglas[idx_sec].clone();
+                            memoria.reglas[idx_sec].estado = "retirada".to_string();
+                            fusionar_regla_en(&mut memoria.reglas[idx_principal], sec);
+                            let sec_id = memoria.reglas[idx_sec].id.clone();
+                            for c in &mut memoria.correcciones {
+                                if c.regla_id_asociada == sec_id {
+                                    c.regla_id_asociada = id_principal.clone();
+                                }
+                            }
+                        }
+
+                        let dest = &mut memoria.reglas[idx_principal];
+                        dest.regla = regla_limpia.clone();
+                        if !acc.tipo_error.trim().is_empty() {
+                            dest.tipo_error = acc.tipo_error.trim().to_lowercase();
+                        }
+                        if !acc.campo_objetivo.trim().is_empty() {
+                            dest.campo_objetivo = acc.campo_objetivo.trim().to_lowercase();
+                        }
+                        for t in &acc.triggers {
+                            let tn = quitar_tildes(&t.trim().to_lowercase());
+                            if !tn.is_empty()
+                                && tn != "_rad_"
+                                && !dest.triggers.contains(&tn)
+                                && dest.triggers.len() < 12
+                            {
+                                dest.triggers.push(tn);
+                            }
+                        }
+                        dest.actualizada = ahora.clone();
+                        dest.ultima_actualizacion = ahora.clone();
+                        aplicada = true;
+                    }
+                }
+                "conflicto" => {
+                    if acc.confianza >= 0.75 {
+                        let mut toco_algo = false;
+                        for r in &mut memoria.reglas {
+                            if !acc.ids_origen.contains(&r.id) {
+                                continue;
+                            }
+                            if r.origen == "base_invariante" || r.id.starts_with("base-") {
+                                continue;
+                            }
+                            if amb_norm != "*" && !coincide_alcance_defensor(&r.defensor_alcance, &amb_norm) {
+                                continue;
+                            }
+                            r.estado = if matches!(r.estado.as_str(), "candidata" | "cuarentena") {
+                                "retirada".to_string()
+                            } else {
+                                "cuarentena".to_string()
+                            };
+                            r.aciertos_sombra = 0;
+                            r.confirmaciones_sombra = 0;
+                            r.ultima_actualizacion = ahora.clone();
+                            toco_algo = true;
+                        }
+                        aplicada = toco_algo;
+                    }
+                }
+                "sintetizar" => {
+                    let regla_limpia = recortar_sin_elipsis(&acc.regla, 240);
+                    if sintesis_creadas < 2 && regla_limpia.len() >= 6 {
+                        let ya_en_base = memoria_base_embebida().reglas.iter().any(|rb| {
+                            es_misma_regla(&rb.regla, &regla_limpia)
+                                && (es_alcance_general(&rb.defensor_alcance)
+                                    || amb_norm == "*"
+                                    || coincide_alcance_defensor(&rb.defensor_alcance, &amb_norm))
+                        });
+                        let ya_en_local = memoria.reglas.iter().any(|rl| {
+                            rl.estado != "retirada"
+                                && es_misma_regla(&rl.regla, &regla_limpia)
+                                && (alcance_canonico(&rl.defensor_alcance) == amb_norm
+                                    || (amb_norm != "*" && es_alcance_general(&rl.defensor_alcance)))
+                        });
+
+                        if !ya_en_base && !ya_en_local {
+                            let campo_obj = if acc.campo_objetivo.trim().is_empty() {
+                                None
+                            } else {
+                                Some(acc.campo_objetivo.as_str())
+                            };
+                            let tipo_err = if acc.tipo_error.trim().is_empty() {
+                                "general"
+                            } else {
+                                acc.tipo_error.as_str()
+                            };
+                            if agregar_regla_interna_con_defensor(
+                                &mut memoria,
+                                tipo_err,
+                                &regla_limpia,
+                                "prueba",
+                                campo_obj,
+                                &acc.triggers,
+                                "consolidacion_ia",
+                                "*",
+                                &amb_norm,
+                                &[],
+                                acc.confianza.clamp(0.4, 0.98),
+                                acc.ids_origen.first().map(String::as_str).unwrap_or(""),
+                            )
+                            .is_some()
+                            {
+                                sintesis_creadas += 1;
+                                aplicada = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            acciones_reg.push(AccionReglaConsolidacion {
+                tipo_accion: tipo_acc,
+                ids_origen: acc.ids_origen.clone(),
+                tipo_error: acc.tipo_error.clone(),
+                campo_objetivo: acc.campo_objetivo.clone(),
+                regla: colapsar_espacios(&acc.regla),
+                triggers: acc.triggers.clone(),
+                motivo: colapsar_espacios(&acc.motivo),
+                confianza: acc.confianza,
+                aplicada,
+            });
+        }
+
+        let max_res = if amb_norm == "*" {
+            MAX_CHARS_RESUMEN_GENERAL
+        } else {
+            MAX_CHARS_RESUMEN_DEFENSOR
+        };
+        let resumen_recortado = recortar_sin_elipsis(&resultado.resumen_actualizado, max_res);
+        if !resumen_recortado.is_empty() {
+            let nombre_mostrar = if amb_norm == "*" {
+                "General (transversal)".to_string()
+            } else {
+                memoria
+                    .nombres_defensores
+                    .get(&amb_norm)
+                    .cloned()
+                    .unwrap_or_else(|| lote.nombre_ambito.clone())
+            };
+            let entry = memoria
+                .perfiles_sinteticos
+                .entry(amb_norm.clone())
+                .or_insert_with(|| PerfilSinteticoDefensor {
+                    ambito: amb_norm.clone(),
+                    nombre_mostrar: nombre_mostrar.clone(),
+                    resumen: String::new(),
+                    version: 0,
+                    ultima_actualizacion: String::new(),
+                });
+            entry.nombre_mostrar = nombre_mostrar;
+            entry.resumen = resumen_recortado.clone();
+            entry.version = entry.version.saturating_add(1);
+            entry.ultima_actualizacion = ahora.clone();
+        }
+
+        let sugerencias: Vec<SugerenciaBuild> = resultado
+            .sugerencias_build
+            .iter()
+            .filter(|s| !s.detalle.trim().is_empty())
+            .map(|s| SugerenciaBuild {
+                categoria: colapsar_espacios(&s.categoria),
+                ambito: amb_norm.clone(),
+                detalle: colapsar_espacios(&s.detalle),
+                evidencia: colapsar_espacios(&s.evidencia),
+            })
+            .collect();
+
+        memoria.consolidaciones_ia.push(RegistroConsolidacionIa {
+            id: generar_id_unico("cons"),
+            fecha: ahora.clone(),
+            ambito: amb_norm.clone(),
+            nombre_ambito: lote.nombre_ambito.clone(),
+            modelo: modelo.to_string(),
+            acciones_reglas: acciones_reg,
+            resumen_actualizado: resumen_recortado,
+            sugerencias_build: sugerencias,
+            telemetria_disparo: lote.telemetria_disparo.clone(),
+        });
+        if memoria.consolidaciones_ia.len() > MAX_CONSOLIDACIONES_HISTORIAL {
+            let ex = memoria.consolidaciones_ia.len() - MAX_CONSOLIDACIONES_HISTORIAL;
+            memoria.consolidaciones_ia.drain(0..ex);
+        }
+
+        memoria.llamadas_consolidacion_total =
+            memoria.llamadas_consolidacion_total.saturating_add(1);
+
+        // Descuento atómico únicamente de watermark_ids y reducción de presión (presion *= 0.2)
+        let notas_por_id: BTreeMap<String, bool> = memoria
+            .correcciones
+            .iter()
+            .map(|c| (c.id.clone(), !c.nota_usuario.trim().is_empty()))
+            .collect();
+        let est = memoria
+            .estados_consolidacion
+            .entry(amb_norm)
+            .or_default();
+        est.presion *= 0.2;
+        est.ultima_consolidacion = ahora;
+        est.extracciones_desde_ultima = est
+            .extracciones_desde_ultima
+            .saturating_sub(lote.snapshot_extracciones);
+        for wid in &lote.watermark_ids {
+            if !est.ids_consolidadas_recientes.contains(wid) {
+                est.ids_consolidadas_recientes.push(wid.clone());
+                est.correcciones_sin_consolidar =
+                    est.correcciones_sin_consolidar.saturating_sub(1);
+                if notas_por_id.get(wid).copied().unwrap_or(false) {
+                    est.notas_sin_consolidar = est.notas_sin_consolidar.saturating_sub(1);
+                }
+            }
+        }
+        if est.ids_consolidadas_recientes.len() > 200 {
+            let ex = est.ids_consolidadas_recientes.len() - 200;
+            est.ids_consolidadas_recientes.drain(0..ex);
+        }
+
+        guardar_memoria_en(ruta, &memoria)?;
+    }
+
+    Ok(obtener_diagnostico_aprendizaje_en(ruta))
+}
+
+pub fn aplicar_consolidacion_ia(
+    lote: &LoteConsolidacion,
+    resultado: &ResultadoConsolidacionIa,
+    modelo: &str,
+) -> Result<DiagnosticoAprendizaje, String> {
+    aplicar_consolidacion_ia_en(&ruta_memoria(), lote, resultado, modelo)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn registrar_resultado_completo_en(
     ruta: &Path,
     texto: &str,
     prediccion: &AudienciaInput,
@@ -2728,6 +5352,8 @@ pub fn registrar_resultado_con_traza_en(
     proveedor: &str,
     modelo: &str,
     reglas_inyectadas: &[String],
+    defensor: Option<&str>,
+    prediccion_local: Option<&PrediccionLocalResumen>,
 ) -> Result<(ResumenAprendizaje, Option<CorreccionIa>), String> {
     if texto.trim().is_empty() {
         return Err("No hay texto de IA asociado a este registro.".to_string());
@@ -2738,11 +5364,82 @@ pub fn registrar_resultado_con_traza_en(
     let hubo_correccion = !campos.is_empty();
     let mut memoria = cargar_memoria_en(ruta);
     let ahora = Local::now().to_rfc3339();
-    let mut nueva_correccion = None;
+    let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
+    if let Some(def_raw) = defensor {
+        registrar_nombre_defensor(&mut memoria.nombres_defensores, def_raw);
+    }
 
     memoria.enfriamiento_aclaracion = memoria.enfriamiento_aclaracion.saturating_sub(1);
+    memoria.llamadas_extraccion_total = memoria.llamadas_extraccion_total.saturating_add(1);
 
-    actualizar_metricas_y_credito(
+    // Auto-descartar aclaración previa pendiente si cambió el defensor o pasaron >= 2 turnos sin respuesta
+    let mut auto_descartar_por_omision = false;
+    if let Some(idx_esp) = memoria
+        .correcciones
+        .iter()
+        .rposition(|c| c.estado == "esperando_aclaracion")
+    {
+        let prev_def = normalizar_clave_defensor(&memoria.correcciones[idx_esp].defensor_clave);
+        let cambio_def = prev_def != def_clave;
+        if cambio_def {
+            for c_prev in memoria
+                .correcciones
+                .iter_mut()
+                .filter(|c| c.estado == "esperando_aclaracion")
+            {
+                c_prev.pregunta_ia.clear();
+                c_prev.estado = if c_prev.regla_generada.trim().is_empty() {
+                    "pendiente"
+                } else {
+                    "analizada"
+                }
+                .to_string();
+            }
+            memoria.estado_aclaracion.turnos_sin_responder = 0;
+        } else {
+            memoria.estado_aclaracion.turnos_sin_responder =
+                memoria.estado_aclaracion.turnos_sin_responder.saturating_add(1);
+            if memoria.estado_aclaracion.turnos_sin_responder >= 2 {
+                for c_prev in memoria
+                    .correcciones
+                    .iter_mut()
+                    .filter(|c| c.estado == "esperando_aclaracion")
+                {
+                    c_prev.pregunta_ia.clear();
+                    c_prev.estado = if c_prev.regla_generada.trim().is_empty() {
+                        "pendiente"
+                    } else {
+                        "analizada"
+                    }
+                    .to_string();
+                }
+                auto_descartar_por_omision = true;
+            }
+        }
+    }
+    if auto_descartar_por_omision {
+        memoria.estado_aclaracion.turnos_sin_responder = 0;
+        memoria.estado_aclaracion.beta_omit += 1.0;
+        memoria.estado_aclaracion.racha_omisiones =
+            memoria.estado_aclaracion.racha_omisiones.saturating_add(1);
+        let madurez = calcular_madurez_sistema(&memoria);
+        let base_cd = (3.0 + 11.0 * madurez).round() as u32;
+        let mult = 1u32 << memoria.estado_aclaracion.racha_omisiones.min(3);
+        memoria.enfriamiento_aclaracion = memoria
+            .enfriamiento_aclaracion
+            .max(base_cd.saturating_mul(mult));
+    }
+
+    // Leer precision_ewma previa para calcular sorpresa de Shannon antes de actualizar este turno
+    let sorpresa_campos: f64 = campos
+        .iter()
+        .map(|fc| {
+            let p_hat = obtener_precision_ewma_antes(&memoria, &def_clave, &fc.campo);
+            -(1.0 - p_hat).max(0.05).ln()
+        })
+        .sum();
+
+    let campos_con_drift = actualizar_metricas_y_credito(
         &mut memoria,
         texto,
         &campos,
@@ -2750,18 +5447,25 @@ pub fn registrar_resultado_con_traza_en(
         proveedor,
         modelo,
         &ahora,
+        &def_clave,
     );
-    crate::estadistica_ia::actualizar_alias_y_preferencias_en_memoria(
+    crate::estadistica_ia::actualizar_alias_y_preferencias_en_memoria_para_defensor(
         &mut memoria,
         texto,
         prediccion,
         final_usuario,
         &campos,
         &ahora,
+        if def_clave.is_empty() {
+            None
+        } else {
+            Some(def_clave.as_str())
+        },
     );
 
+    let mut nueva_correccion = None;
     if hubo_correccion {
-        let corr = CorreccionIa {
+        let mut corr = CorreccionIa {
             id: generar_id_unico("corr"),
             registrada: ahora.clone(),
             proveedor: proveedor.to_string(),
@@ -2776,13 +5480,82 @@ pub fn registrar_resultado_con_traza_en(
             pregunta_ia: String::new(),
             nota_usuario: String::new(),
             exportada: false,
+            defensor_clave: def_clave.clone(),
         };
         encolar_correccion_en_cluster(&mut memoria, &corr, &ahora);
+
+        // Decidir aclaración localmente (<1 ms, 0 tokens LLM)
+        if let Some(pregunta) = decidir_aclaracion_local(&memoria, &corr, prediccion_local, &def_clave) {
+            corr.estado = "esperando_aclaracion".to_string();
+            corr.pregunta_ia = pregunta;
+            memoria.estado_aclaracion.turnos_sin_responder = 0;
+        }
+
+        // Impulsos de presión de consolidación (defensor + general "*")
+        let hay_drift_corr = !campos_con_drift.is_empty()
+            || corr.campos.iter().any(|fc| {
+                memoria
+                    .page_hinkley_campos
+                    .get(&fc.campo)
+                    .is_some_and(|p| p.drift_detectado)
+            });
+        let impulso_drift = if hay_drift_corr { 1.5 } else { 0.0 };
+        let es_huerfana_n1 = memoria.cola_induccion.iter().any(|clu| {
+            clu.estado == "acumulando"
+                && clu.correccion_ids.len() == 1
+                && clu.correccion_ids.contains(&corr.id)
+        });
+        let impulso_huerfana = if es_huerfana_n1 { 0.55 } else { 0.0 };
+        let reglas_activas_total = memoria
+            .reglas
+            .iter()
+            .filter(|r| r.estado != "retirada")
+            .count();
+        let hay_cuarentena = memoria.reglas.iter().any(|r| r.estado == "cuarentena");
+        let impulso_reglas = if reglas_activas_total > 42 || hay_cuarentena {
+            0.6
+        } else {
+            0.0
+        };
+        let sorpresa_total = sorpresa_campos + impulso_drift + impulso_huerfana + impulso_reglas;
+
+        let (_, firma_corr) = calcular_firma_error(&corr);
         nueva_correccion = Some(corr.clone());
         memoria.correcciones.push(corr);
         if memoria.correcciones.len() > MAX_CORRECCIONES {
             let exceso = memoria.correcciones.len() - MAX_CORRECCIONES;
             memoria.correcciones.drain(0..exceso);
+        }
+
+        if !def_clave.is_empty() {
+            let est_def = memoria
+                .estados_consolidacion
+                .entry(def_clave)
+                .or_default();
+            est_def.extracciones_desde_ultima = est_def.extracciones_desde_ultima.saturating_add(1);
+            est_def.correcciones_sin_consolidar =
+                est_def.correcciones_sin_consolidar.saturating_add(1);
+            est_def.presion += sorpresa_total;
+        }
+
+        let defensores_firma: BTreeSet<String> = memoria
+            .correcciones
+            .iter()
+            .filter(|c| c.estado != "descartada" && calcular_firma_error(c).1 == firma_corr)
+            .map(|c| normalizar_clave_defensor(&c.defensor_clave))
+            .filter(|k| !k.is_empty())
+            .collect();
+        let est_gen = memoria
+            .estados_consolidacion
+            .entry("*".to_string())
+            .or_default();
+        est_gen.extracciones_desde_ultima = est_gen.extracciones_desde_ultima.saturating_add(1);
+        est_gen.correcciones_sin_consolidar =
+            est_gen.correcciones_sin_consolidar.saturating_add(1);
+        if defensores_firma.len() >= 2 {
+            est_gen.presion += 1.0 * sorpresa_total + 1.0;
+        } else {
+            est_gen.presion += 0.45 * sorpresa_total;
         }
     } else {
         memoria.aciertos = memoria.aciertos.saturating_add(1);
@@ -2795,16 +5568,77 @@ pub fn registrar_resultado_con_traza_en(
             texto_anonimizado: anon.aplicar(texto.trim()),
             salida_anonimizada: anon.aplicar_audiencia(final_usuario),
             reglas_inyectadas: reglas_inyectadas.to_vec(),
+            defensor_clave: def_clave.clone(),
         };
         memoria.ejemplos_aciertos.push(ejemplo);
         if memoria.ejemplos_aciertos.len() > MAX_ACIERTOS_EJEMPLOS {
             let exceso = memoria.ejemplos_aciertos.len() - MAX_ACIERTOS_EJEMPLOS;
             memoria.ejemplos_aciertos.drain(0..exceso);
         }
+
+        if !def_clave.is_empty() {
+            let est_def = memoria
+                .estados_consolidacion
+                .entry(def_clave)
+                .or_default();
+            est_def.presion *= 0.93;
+            est_def.extracciones_desde_ultima = est_def.extracciones_desde_ultima.saturating_add(1);
+        }
+        let est_gen = memoria
+            .estados_consolidacion
+            .entry("*".to_string())
+            .or_default();
+        est_gen.presion *= 0.93;
+        est_gen.extracciones_desde_ultima = est_gen.extracciones_desde_ultima.saturating_add(1);
     }
 
     guardar_memoria_en(ruta, &memoria)?;
     Ok((resumen_de(&memoria, hubo_correccion), nueva_correccion))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn registrar_resultado_con_traza_y_defensor_en(
+    ruta: &Path,
+    texto: &str,
+    prediccion: &AudienciaInput,
+    final_usuario: &AudienciaInput,
+    proveedor: &str,
+    modelo: &str,
+    reglas_inyectadas: &[String],
+    defensor: Option<&str>,
+) -> Result<(ResumenAprendizaje, Option<CorreccionIa>), String> {
+    registrar_resultado_completo_en(
+        ruta,
+        texto,
+        prediccion,
+        final_usuario,
+        proveedor,
+        modelo,
+        reglas_inyectadas,
+        defensor,
+        None,
+    )
+}
+
+pub fn registrar_resultado_con_traza_en(
+    ruta: &Path,
+    texto: &str,
+    prediccion: &AudienciaInput,
+    final_usuario: &AudienciaInput,
+    proveedor: &str,
+    modelo: &str,
+    reglas_inyectadas: &[String],
+) -> Result<(ResumenAprendizaje, Option<CorreccionIa>), String> {
+    registrar_resultado_con_traza_y_defensor_en(
+        ruta,
+        texto,
+        prediccion,
+        final_usuario,
+        proveedor,
+        modelo,
+        reglas_inyectadas,
+        None,
+    )
 }
 
 pub fn registrar_resultado_en(
@@ -2837,25 +5671,27 @@ pub fn aplicar_analisis_en(
     memoria.llamadas_induccion_llm_total =
         memoria.llamadas_induccion_llm_total.saturating_add(1);
 
-    let mut regla_a_registrar: Option<(String, String, String, String, Vec<String>, f64)> = None;
+    let mut regla_a_registrar: Option<(String, String, String, String, Vec<String>, f64, bool)> =
+        None;
+    let mut regla_id_a_retirar: Option<String> = None;
     let mut modelo_alcance = "*".to_string();
+    let mut defensor_alcance = "*".to_string();
     if let Some(pos) = memoria.correcciones.iter().position(|c| c.id == correccion_id) {
-        let permitir_aclaracion =
-            puede_solicitar_aclaracion(&memoria, &memoria.correcciones[pos], analisis);
         let corr = &mut memoria.correcciones[pos];
         modelo_alcance = format!("{}:{}", corr.proveedor, corr.modelo);
+        if !corr.defensor_clave.trim().is_empty() {
+            defensor_alcance = corr.defensor_clave.clone();
+        }
         if !analisis.es_error_de_ia {
             corr.estado = "descartada".to_string();
             corr.pregunta_ia.clear();
-        } else if permitir_aclaracion {
-            corr.estado = "esperando_aclaracion".to_string();
-            corr.pregunta_ia = colapsar_espacios(&analisis.pregunta);
-            if !analisis.regla.trim().is_empty() {
-                corr.regla_generada = colapsar_espacios(&analisis.regla);
+            if !corr.regla_id_asociada.is_empty() {
+                regla_id_a_retirar = Some(std::mem::take(&mut corr.regla_id_asociada));
             }
         } else {
             corr.estado = "analizada".to_string();
             corr.pregunta_ia.clear();
+            let tiene_nota = !corr.nota_usuario.trim().is_empty();
             if !analisis.regla.trim().is_empty() {
                 let limpia = colapsar_espacios(&analisis.regla);
                 corr.regla_generada = limpia.clone();
@@ -2864,7 +5700,8 @@ pub fn aplicar_analisis_en(
                     .first()
                     .map(|c| c.campo.clone())
                     .unwrap_or_else(|| inferir_campo_objetivo_desde_tipo(&analisis.tipo_error));
-                let triggers = extraer_triggers_texto(&corr.texto_original, 8);
+                let triggers =
+                    regenerar_triggers_correccion(&corr.texto_original, &limpia, &corr.nota_usuario);
                 regla_a_registrar = Some((
                     analisis.tipo_error.clone(),
                     limpia,
@@ -2872,12 +5709,20 @@ pub fn aplicar_analisis_en(
                     campo_obj,
                     triggers,
                     analisis.confianza,
+                    tiene_nota,
                 ));
             }
         }
     }
 
-    if let Some((tipo, regla, id_asociado, campo_obj, triggers, confianza)) = regla_a_registrar {
+    if let Some(rid_ret) = regla_id_a_retirar {
+        retiro_o_eliminacion_regla_asociada(&mut memoria, &rid_ret, correccion_id);
+    }
+
+    if let Some((tipo, regla, id_asociado, campo_obj, triggers, confianza, tiene_nota)) =
+        regla_a_registrar
+    {
+        let estado_obj = if tiene_nota { "prueba" } else { "candidata" };
         let mut actualizada_en_sitio = false;
         if !id_asociado.is_empty() {
             if let Some(existente) = memoria.reglas.iter_mut().find(|r| r.id == id_asociado) {
@@ -2887,6 +5732,17 @@ pub fn aplicar_analisis_en(
                 if regla.len() >= 6 && regla.len() <= 240 {
                     existente.regla = regla.clone();
                 }
+                if !triggers.is_empty() {
+                    existente.triggers = triggers.clone();
+                }
+                if tiene_nota
+                    && matches!(
+                        existente.estado.as_str(),
+                        "candidata" | "cuarentena" | "retirada"
+                    )
+                {
+                    existente.estado = "prueba".to_string();
+                }
                 existente.actualizada = Local::now().to_rfc3339();
                 existente.ultima_actualizacion = existente.actualizada.clone();
                 existente.confianza_llm = confianza;
@@ -2894,15 +5750,17 @@ pub fn aplicar_analisis_en(
             }
         }
         if !actualizada_en_sitio {
-            if let Some(nuevo_id) = agregar_regla_interna(
+            if let Some(nuevo_id) = agregar_regla_interna_con_defensor(
                 &mut memoria,
                 &tipo,
                 &regla,
-                "candidata",
+                estado_obj,
                 Some(&campo_obj),
                 &triggers,
                 "mitigacion_modelo",
                 &modelo_alcance,
+                &defensor_alcance,
+                &[],
                 confianza,
                 correccion_id,
             ) {
@@ -2922,9 +5780,8 @@ pub fn aplicar_analisis_en(
 }
 
 /// Registra la nota explicativa del usuario para una corrección que pedía aclaración.
-/// Devuelve la corrección actualizada para que pueda re-analizarse con la IA si hay conexión,
-/// y además registra de inmediato la nota como regla provisional vinculada (evitando duplicados
-/// si la IA la refina posteriormente).
+/// No inserta una regla cruda con triggers vacíos: guarda `nota_usuario`, deja `estado = "pendiente"`
+/// para refinamiento/análisis o consolidación, actualiza `alpha_resp` y suma presión de consolidación.
 pub fn guardar_nota_aclaracion_en(
     ruta: &Path,
     correccion_id: &str,
@@ -2937,33 +5794,10 @@ pub fn guardar_nota_aclaracion_en(
 
     let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
     let mut memoria = cargar_memoria_en(ruta);
-    let mut campo_principal = "general".to_string();
-    let mut regla_id_previa = String::new();
-
-    if let Some(corr) = memoria
-        .correcciones
-        .iter()
-        .find(|c| c.id == correccion_id)
-    {
-        if let Some(primero) = corr.campos.first() {
-            campo_principal = primero.campo.clone();
-        }
-        regla_id_previa = corr.regla_id_asociada.clone();
-    }
-
-    let id_regla = if !regla_id_previa.is_empty()
-        && memoria.reglas.iter().any(|r| r.id == regla_id_previa)
-    {
-        if let Some(r) = memoria.reglas.iter_mut().find(|r| r.id == regla_id_previa) {
-            r.regla = nota_limpia.clone();
-            r.actualizada = Local::now().to_rfc3339();
-        }
-        Some(regla_id_previa)
-    } else {
-        agregar_o_reforzar_regla_con_id(&mut memoria, &campo_principal, &nota_limpia)
-    };
-
+    let mut defensor_corr = String::new();
+    let mut clave_firma = None;
     let mut corr_actualizada = None;
+
     if let Some(corr) = memoria
         .correcciones
         .iter_mut()
@@ -2971,29 +5805,61 @@ pub fn guardar_nota_aclaracion_en(
     {
         corr.nota_usuario = nota_limpia.clone();
         corr.pregunta_ia.clear();
-        corr.estado = "analizada".to_string();
-        if corr.regla_generada.trim().is_empty() {
-            corr.regla_generada = nota_limpia.clone();
+        corr.estado = "pendiente".to_string();
+        if !corr.defensor_clave.trim().is_empty() {
+            defensor_corr = normalizar_clave_defensor(&corr.defensor_clave);
         }
-        if let Some(ref rid) = id_regla {
-            corr.regla_id_asociada = rid.clone();
-        }
+        clave_firma = Some(clave_firma_aclaracion(corr).1);
         corr_actualizada = Some(corr.clone());
     }
 
-    memoria.enfriamiento_aclaracion = COOLDOWN_ACLARACION_INTERACCIONES;
+    if corr_actualizada.is_none() {
+        return Ok((resumen_de(&memoria, false), None));
+    }
+
+    memoria.estado_aclaracion.alpha_resp += 1.0;
+    memoria.estado_aclaracion.racha_omisiones = 0;
+    memoria.estado_aclaracion.turnos_sin_responder = 0;
+    if let Some(kf) = clave_firma {
+        registrar_firma_explicada(&mut memoria, kf);
+    }
+
+    let madurez = calcular_madurez_sistema(&memoria);
+    memoria.enfriamiento_aclaracion = (3.0 + 11.0 * madurez).round() as u32;
+
+    let mut reabrir_en_ambito = |ambito_est: &str, impulso_presion: f64| {
+        let est = memoria
+            .estados_consolidacion
+            .entry(ambito_est.to_string())
+            .or_default();
+        est.presion += impulso_presion;
+        est.notas_sin_consolidar = est.notas_sin_consolidar.saturating_add(1);
+        let antes = est.ids_consolidadas_recientes.len();
+        est.ids_consolidadas_recientes
+            .retain(|id| id != correccion_id);
+        if est.ids_consolidadas_recientes.len() < antes {
+            est.correcciones_sin_consolidar = est.correcciones_sin_consolidar.saturating_add(1);
+        }
+    };
+    if !defensor_corr.is_empty() {
+        reabrir_en_ambito(&defensor_corr, 1.4);
+    }
+    reabrir_en_ambito("*", 0.6);
+
     guardar_memoria_en(ruta, &memoria)?;
     Ok((resumen_de(&memoria, false), corr_actualizada))
 }
 
-/// Permite omitir una solicitud de aclaración sin borrar la corrección subyacente.
-pub fn descartar_aclaracion_en(
+/// Marca la corrección como "Dato externo (no estaba en el texto)" a 0 tokens LLM,
+/// descarta la corrección y limpia cualquier regla asociada sin dejar huérfanas.
+pub fn marcar_dato_externo_en(
     ruta: &Path,
     correccion_id: &str,
 ) -> Result<ResumenAprendizaje, String> {
     let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
     let mut memoria = cargar_memoria_en(ruta);
-    let mut regla_previa: Option<String> = None;
+    let mut regla_id_prev = String::new();
+    let mut clave_firma = None;
 
     if let Some(corr) = memoria
         .correcciones
@@ -3001,28 +5867,91 @@ pub fn descartar_aclaracion_en(
         .find(|c| c.id == correccion_id)
     {
         corr.pregunta_ia.clear();
-        corr.estado = "analizada".to_string();
-        if !corr.regla_generada.trim().is_empty() {
-            regla_previa = Some(corr.regla_generada.clone());
+        corr.estado = "descartada".to_string();
+        corr.nota_usuario = "Dato externo (no estaba en el texto)".to_string();
+        regla_id_prev = std::mem::take(&mut corr.regla_id_asociada);
+        clave_firma = Some(clave_firma_aclaracion(corr).1);
+    }
+
+    if !regla_id_prev.is_empty() {
+        retiro_o_eliminacion_regla_asociada(&mut memoria, &regla_id_prev, correccion_id);
+    }
+
+    memoria.estado_aclaracion.alpha_resp += 1.0;
+    memoria.estado_aclaracion.racha_omisiones = 0;
+    memoria.estado_aclaracion.turnos_sin_responder = 0;
+    if let Some(kf) = clave_firma {
+        registrar_firma_explicada(&mut memoria, kf);
+    }
+    let madurez = calcular_madurez_sistema(&memoria);
+    memoria.enfriamiento_aclaracion = (3.0 + 11.0 * madurez).round() as u32;
+
+    guardar_memoria_en(ruta, &memoria)?;
+    Ok(resumen_de(&memoria, false))
+}
+
+/// Permite omitir una solicitud de aclaración sin borrar la corrección subyacente,
+/// incrementando `beta_omit` y aplicando enfriamiento exponencial.
+pub fn descartar_aclaracion_en(
+    ruta: &Path,
+    correccion_id: &str,
+) -> Result<ResumenAprendizaje, String> {
+    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+    let mut memoria = cargar_memoria_en(ruta);
+    let mut regla_previa: Option<(String, String, String)> = None;
+    let mut defensor_corr = "*".to_string();
+
+    if let Some(corr) = memoria
+        .correcciones
+        .iter_mut()
+        .find(|c| c.id == correccion_id)
+    {
+        corr.pregunta_ia.clear();
+        corr.estado = if corr.regla_generada.trim().is_empty() {
+            "pendiente".to_string()
+        } else {
+            "analizada".to_string()
+        };
+        if !corr.defensor_clave.trim().is_empty() {
+            defensor_corr = normalizar_clave_defensor(&corr.defensor_clave);
+        }
+        if !corr.regla_generada.trim().is_empty() && corr.regla_id_asociada.trim().is_empty() {
+            regla_previa = Some((
+                corr.regla_generada.clone(),
+                corr.texto_original.clone(),
+                corr.nota_usuario.clone(),
+            ));
         }
     }
 
-    if let Some(regla) = regla_previa {
-        let _ = agregar_regla_interna(
+    if let Some((regla, texto_orig, nota_usr)) = regla_previa {
+        let tr = regenerar_triggers_correccion(&texto_orig, &regla, &nota_usr);
+        let _ = agregar_regla_interna_con_defensor(
             &mut memoria,
             "general",
             &regla,
             "candidata",
             None,
-            &[],
+            &tr,
             "mitigacion_modelo",
             "*",
+            &defensor_corr,
+            &[],
             0.5,
             correccion_id,
         );
     }
 
-    memoria.enfriamiento_aclaracion = COOLDOWN_ACLARACION_INTERACCIONES;
+    memoria.estado_aclaracion.beta_omit += 1.0;
+    memoria.estado_aclaracion.racha_omisiones =
+        memoria.estado_aclaracion.racha_omisiones.saturating_add(1);
+    memoria.estado_aclaracion.turnos_sin_responder = 0;
+
+    let madurez = calcular_madurez_sistema(&memoria);
+    let base_cd = (3.0 + 11.0 * madurez).round() as u32;
+    let mult = 1u32 << memoria.estado_aclaracion.racha_omisiones.min(3);
+    memoria.enfriamiento_aclaracion = base_cd.saturating_mul(mult);
+
     guardar_memoria_en(ruta, &memoria)?;
     Ok(resumen_de(&memoria, false))
 }
@@ -3047,7 +5976,10 @@ pub fn obtener_cluster_listo_para_inducir_en(ruta: &Path) -> Option<(String, Vec
                 memoria
                     .correcciones
                     .iter()
-                    .find(|c| &c.id == cid && c.estado == "pendiente")
+                    .find(|c| {
+                        &c.id == cid
+                            && matches!(c.estado.as_str(), "pendiente" | "esperando_aclaracion")
+                    })
                     .cloned()
             })
             .take(4)
@@ -3087,46 +6019,28 @@ pub fn aplicar_analisis_cluster_en(
             ids_set.insert(cid.clone());
         }
     }
-    let ultima_corr = memoria
-        .correcciones
-        .iter()
-        .rev()
-        .find(|c| ids_set.contains(&c.id))
-        .cloned();
-
-    let permitir_aclaracion = ultima_corr
-        .as_ref()
-        .is_some_and(|c| puede_solicitar_aclaracion(&memoria, c, analisis));
 
     let mut regla_inducida_id = String::new();
     if !analisis.es_error_de_ia {
+        let mut a_retirar = Vec::new();
         for c in &mut memoria.correcciones {
             if ids_set.contains(&c.id) {
                 c.estado = "descartada".to_string();
                 c.pregunta_ia.clear();
+                if !c.regla_id_asociada.is_empty() {
+                    a_retirar.push((std::mem::take(&mut c.regla_id_asociada), c.id.clone()));
+                }
             }
         }
-    } else if permitir_aclaracion {
-        let rep_id = ultima_corr.as_ref().map(|c| c.id.clone()).unwrap_or_default();
-        for c in &mut memoria.correcciones {
-            if ids_set.contains(&c.id) {
-                if c.id == rep_id {
-                    c.estado = "esperando_aclaracion".to_string();
-                    c.pregunta_ia = colapsar_espacios(&analisis.pregunta);
-                } else {
-                    c.estado = "analizada".to_string();
-                    c.pregunta_ia.clear();
-                }
-                if !analisis.regla.trim().is_empty() {
-                    c.regla_generada = colapsar_espacios(&analisis.regla);
-                }
-            }
+        for (rid, cid) in a_retirar {
+            retiro_o_eliminacion_regla_asociada(&mut memoria, &rid, &cid);
         }
     } else {
         let mut triggers_unificados: Vec<String> = Vec::new();
         let mut campo_obj = String::new();
         let mut modelo_alcance = "*".to_string();
         let mut rep_id = String::new();
+        let mut defensores_cluster: Vec<String> = Vec::new();
 
         for c in &memoria.correcciones {
             if !ids_set.contains(&c.id) {
@@ -3143,6 +6057,10 @@ pub fn aplicar_analisis_cluster_en(
                     .unwrap_or_else(|| inferir_campo_objetivo_desde_tipo(&analisis.tipo_error));
             }
             modelo_alcance = format!("{}:{}", c.proveedor, c.modelo);
+            let dk = normalizar_clave_defensor(&c.defensor_clave);
+            if !dk.is_empty() && !defensores_cluster.contains(&dk) {
+                defensores_cluster.push(dk);
+            }
             for t in extraer_triggers_texto(&c.texto_original, 6) {
                 if !triggers_unificados.contains(&t) && triggers_unificados.len() < 10 {
                     triggers_unificados.push(t);
@@ -3150,9 +6068,16 @@ pub fn aplicar_analisis_cluster_en(
             }
         }
 
+        let defensor_alcance_regla = if defensores_cluster.len() == 1 {
+            defensores_cluster[0].clone()
+        } else {
+            "*".to_string()
+        };
+
         let regla_limpia = colapsar_espacios(&analisis.regla);
+        // En clúster coherente (N >= 2), entrar directamente a "prueba" desde confianza >= 0.55 para aprender en 2 veces
         let estado_inicial = if ids_set.len() >= MIN_TAMANO_CLUSTER_INDUCCION
-            && analisis.confianza >= 0.70
+            && analisis.confianza >= 0.55
         {
             "prueba"
         } else {
@@ -3160,7 +6085,7 @@ pub fn aplicar_analisis_cluster_en(
         };
 
         let nuevo_id = if !regla_limpia.is_empty() {
-            agregar_regla_interna(
+            agregar_regla_interna_con_defensor(
                 &mut memoria,
                 &analisis.tipo_error,
                 &regla_limpia,
@@ -3169,6 +6094,8 @@ pub fn aplicar_analisis_cluster_en(
                 &triggers_unificados,
                 "mitigacion_modelo",
                 &modelo_alcance,
+                &defensor_alcance_regla,
+                &defensores_cluster,
                 analisis.confianza,
                 &rep_id,
             )
@@ -3198,6 +6125,13 @@ pub fn aplicar_analisis_cluster_en(
         if !regla_inducida_id.is_empty() {
             clu.regla_inducida_id = regla_inducida_id;
         }
+    }
+    if !memoria
+        .correcciones
+        .iter()
+        .any(|c| c.estado == "esperando_aclaracion")
+    {
+        memoria.estado_aclaracion.turnos_sin_responder = 0;
     }
 
     guardar_memoria_en(ruta, &memoria)?;
@@ -3235,6 +6169,425 @@ fn construir_preferencias_resumen(pref: &PreferenciasEstilo) -> PreferenciasEsti
             pref.se_fija_aplazamiento_alpha,
             pref.se_fija_aplazamiento_beta,
         ),
+        instalada_reprogramada_si_prob: ratio(
+            pref.instalada_reprogramada_si_alpha,
+            pref.instalada_reprogramada_si_beta,
+        ),
+    }
+}
+
+fn es_juzgado_o_tipo_oficial(valor: &str) -> bool {
+    let norm = normalizar_clave_catalogo(valor);
+    if norm.is_empty() {
+        return false;
+    }
+    if TIPOS_AUDIENCIA
+        .iter()
+        .any(|t| normalizar_clave_catalogo(t) == norm)
+    {
+        return true;
+    }
+    crate::estadistica_ia::juzgados_base()
+        .iter()
+        .any(|j| normalizar_clave_catalogo(j) == norm)
+}
+
+fn anonimizar_valor_catalogo(valor: &str, anon: &Anonimizador) -> String {
+    if es_juzgado_o_tipo_oficial(valor) {
+        valor.to_string()
+    } else {
+        anon.aplicar(valor)
+    }
+}
+
+fn recoger_radicados_y_escudos(
+    memoria: &MemoriaAprendizaje,
+    radicados_excel: &[String],
+    nombres_defensores_extra: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let mut radicados: Vec<String> = Vec::new();
+    for c in &memoria.correcciones {
+        if !c.prediccion.radicado.trim().is_empty() {
+            radicados.push(c.prediccion.radicado.clone());
+        }
+        if !c.final_usuario.radicado.trim().is_empty() {
+            radicados.push(c.final_usuario.radicado.clone());
+        }
+    }
+    for e in &memoria.ejemplos_aciertos {
+        if !e.salida_anonimizada.radicado.trim().is_empty() {
+            radicados.push(e.salida_anonimizada.radicado.clone());
+        }
+    }
+    for rad in radicados_excel {
+        if !rad.trim().is_empty() {
+            radicados.push(rad.clone());
+        }
+    }
+
+    let mut escudos: Vec<String> = Vec::new();
+    let mut push_escudo = |s: &str| {
+        let limpio = colapsar_espacios(s);
+        if !limpio.is_empty() && !es_alcance_general(&limpio) && !escudos.contains(&limpio) {
+            escudos.push(limpio);
+        }
+    };
+    for (k, v) in &memoria.nombres_defensores {
+        push_escudo(k);
+        push_escudo(v);
+    }
+    for (k, m) in &memoria.metricas_por_defensor {
+        push_escudo(k);
+        push_escudo(&m.nombre_mostrar);
+    }
+    for (k, p) in &memoria.perfiles_sinteticos {
+        if !es_alcance_general(k) {
+            push_escudo(k);
+            push_escudo(&p.nombre_mostrar);
+        }
+    }
+    for r in &memoria.reglas {
+        push_escudo(&r.defensor_alcance);
+        for d in &r.defensores_confirmantes {
+            push_escudo(d);
+        }
+    }
+    for c in &memoria.correcciones {
+        push_escudo(&c.defensor_clave);
+    }
+    for e in &memoria.ejemplos_aciertos {
+        push_escudo(&e.defensor_clave);
+    }
+    for n in nombres_defensores_extra {
+        push_escudo(n);
+    }
+    (radicados, escudos)
+}
+
+fn calcular_patrones_transversales(
+    memoria: &MemoriaAprendizaje,
+    anon: &Anonimizador,
+) -> Vec<PatronTransversalExport> {
+    #[derive(Default)]
+    struct Acum {
+        campo: String,
+        ocurrencias: usize,
+        defensores: BTreeSet<String>,
+        ejemplo: String,
+    }
+    let mut mapa: BTreeMap<String, Acum> = BTreeMap::new();
+    for c in &memoria.correcciones {
+        if c.estado == "descartada" {
+            continue;
+        }
+        let (campo, firma) = calcular_firma_error(c);
+        if firma.is_empty() {
+            continue;
+        }
+        let entry = mapa.entry(firma).or_default();
+        if entry.campo.is_empty() {
+            entry.campo = campo;
+        }
+        entry.ocurrencias += 1;
+        let dk = normalizar_clave_defensor(&c.defensor_clave);
+        if !dk.is_empty() {
+            entry.defensores.insert(dk);
+        }
+        let ej_txt = recortar_sin_elipsis(&anon.aplicar(&c.texto_original), 140);
+        if !ej_txt.is_empty() {
+            entry.ejemplo = ej_txt;
+        }
+    }
+
+    let mut out: Vec<PatronTransversalExport> = mapa
+        .into_iter()
+        .filter(|(_, ac)| ac.defensores.len() >= 2 || ac.ocurrencias >= 2)
+        .map(|(firma, ac)| PatronTransversalExport {
+            firma,
+            campo: ac.campo,
+            ocurrencias: ac.ocurrencias,
+            defensores_distintos: ac.defensores.len(),
+            ejemplo_anonimizado: ac.ejemplo,
+        })
+        .collect();
+
+    out.sort_by(|a, b| {
+        b.defensores_distintos
+            .cmp(&a.defensores_distintos)
+            .then_with(|| b.ocurrencias.cmp(&a.ocurrencias))
+            .then_with(|| a.firma.cmp(&b.firma))
+    });
+    out.truncate(12);
+    out
+}
+
+fn construir_directorio_defensores(
+    memoria: &MemoriaAprendizaje,
+    priors: Option<&IndicePriorsExcel>,
+    nombres_settings: &[String],
+) -> Vec<ResumenDefensorExport> {
+    let mut nombres: BTreeMap<String, String> = memoria.nombres_defensores.clone();
+    for raw in nombres_settings {
+        registrar_nombre_defensor(&mut nombres, raw);
+    }
+
+    let mut claves: BTreeSet<String> = BTreeSet::new();
+    let mut insertar = |raw: &str| {
+        if !es_alcance_general(raw) {
+            let dk = normalizar_clave_defensor(raw);
+            if !dk.is_empty() {
+                claves.insert(dk);
+            }
+        }
+    };
+
+    for (k, m) in &memoria.metricas_por_defensor {
+        insertar(k);
+        registrar_nombre_defensor(&mut nombres, k);
+        registrar_nombre_defensor(&mut nombres, &m.nombre_mostrar);
+    }
+    for k in memoria.nombres_defensores.keys() {
+        insertar(k);
+    }
+    for k in memoria.preferencias_por_defensor.keys() {
+        insertar(k);
+        registrar_nombre_defensor(&mut nombres, k);
+    }
+    for (k, p) in &memoria.perfiles_sinteticos {
+        if !es_alcance_general(k) {
+            insertar(k);
+            registrar_nombre_defensor(&mut nombres, k);
+            registrar_nombre_defensor(&mut nombres, &p.nombre_mostrar);
+        }
+    }
+    for k in memoria.estados_consolidacion.keys() {
+        insertar(k);
+    }
+    for r in &memoria.reglas {
+        insertar(&r.defensor_alcance);
+        for d in &r.defensores_confirmantes {
+            insertar(d);
+            registrar_nombre_defensor(&mut nombres, d);
+        }
+    }
+    for a in &memoria.tabla_alias {
+        insertar(&a.defensor_alcance);
+        for d in &a.defensores_confirmantes {
+            insertar(d);
+            registrar_nombre_defensor(&mut nombres, d);
+        }
+    }
+    for c in &memoria.correcciones {
+        insertar(&c.defensor_clave);
+    }
+    for e in &memoria.ejemplos_aciertos {
+        insertar(&e.defensor_clave);
+    }
+    for clu in &memoria.cola_induccion {
+        insertar(&clu.defensor_clave);
+        for d in &clu.defensores_presentes {
+            insertar(d);
+        }
+    }
+    if let Some(pr) = priors {
+        for dk in pr
+            .grafo
+            .defensor_a_juzgados
+            .keys()
+            .chain(pr.grafo.defensor_a_tipos.keys())
+            .chain(pr.grafo.defensor_sigla_a_juzgado.keys())
+        {
+            insertar(dk);
+            registrar_nombre_defensor(&mut nombres, dk);
+        }
+    }
+
+    claves
+        .into_iter()
+        .map(|clave| {
+            let md = memoria.metricas_por_defensor.get(&clave);
+            let aciertos = md.map(|m| m.aciertos).unwrap_or(0);
+            let correcciones = md.map(|m| m.correcciones).unwrap_or(0);
+            let total = aciertos.saturating_add(correcciones);
+            let tasa_acierto = if total > 0 {
+                aciertos as f64 / total as f64
+            } else {
+                0.0
+            };
+            let nombre = nombres
+                .get(&clave)
+                .filter(|s| !s.trim().is_empty())
+                .cloned()
+                .or_else(|| {
+                    md.map(|m| m.nombre_mostrar.clone())
+                        .filter(|s| !s.trim().is_empty())
+                })
+                .unwrap_or_else(|| title_case_basico(&clave));
+
+            let por_campo: Vec<CampoDiagnostico> = md
+                .map(|m| {
+                    CAMPOS_AUDIENCIA
+                        .iter()
+                        .filter_map(|&campo| {
+                            m.por_campo.get(campo).map(|mc| CampoDiagnostico {
+                                campo: campo.to_string(),
+                                evaluaciones: mc.evaluaciones,
+                                aciertos: mc.aciertos,
+                                correcciones: mc.correcciones,
+                                precision_ewma: mc.precision_ewma,
+                                confianza_q10: limite_inferior_bayesiano(mc.alpha, mc.beta),
+                                drift_activo: memoria
+                                    .page_hinkley_campos
+                                    .get(campo)
+                                    .is_some_and(|ph| ph.drift_detectado),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            ResumenDefensorExport {
+                clave,
+                nombre,
+                aciertos,
+                correcciones,
+                tasa_acierto,
+                por_campo,
+            }
+        })
+        .collect()
+}
+
+fn construir_resumen_defensores(
+    memoria: &MemoriaAprendizaje,
+    priors: Option<&IndicePriorsExcel>,
+    nombres_settings: &[String],
+) -> Vec<ResumenDefensorExport> {
+    construir_directorio_defensores(memoria, priors, nombres_settings)
+}
+
+fn construir_resumen_patrones_generales(
+    memoria: &MemoriaAprendizaje,
+    priors: Option<&IndicePriorsExcel>,
+    directorio: &[ResumenDefensorExport],
+    anon: &Anonimizador,
+) -> ResumenPatronesGenerales {
+    let mut top_juzgados: Vec<(String, u32)> = priors
+        .map(|p| {
+            p.juzgados_freq
+                .iter()
+                .map(|(nombre, &conteo)| (anonimizar_valor_catalogo(nombre, anon), conteo))
+                .collect()
+        })
+        .unwrap_or_default();
+    top_juzgados.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    top_juzgados.truncate(10);
+
+    let mut top_tipos: Vec<(String, u32)> = priors
+        .map(|p| {
+            p.tipos_freq
+                .iter()
+                .map(|(nombre, &conteo)| (anonimizar_valor_catalogo(nombre, anon), conteo))
+                .collect()
+        })
+        .unwrap_or_default();
+    top_tipos.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    top_tipos.truncate(10);
+
+    let mut top_horas: Vec<(u32, u32)> = priors
+        .map(|p| p.horas_freq.iter().map(|(&h, &c)| (h, c)).collect())
+        .unwrap_or_default();
+    top_horas.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    top_horas.truncate(10);
+
+    let reglas_transversales_promovidas = memoria
+        .reglas
+        .iter()
+        .filter(|r| {
+            r.estado != "retirada"
+                && !r.id.starts_with("base-")
+                && es_alcance_general(&r.defensor_alcance)
+                && r.defensores_confirmantes.len() >= 2
+        })
+        .count();
+
+    let errores_recurrentes_transversales = calcular_patrones_transversales(memoria, anon);
+
+    ResumenPatronesGenerales {
+        total_defensores_activos: directorio.len(),
+        top_juzgados_globales: top_juzgados,
+        top_tipos_globales: top_tipos,
+        top_horas_globales: top_horas,
+        reglas_transversales_promovidas,
+        errores_recurrentes_transversales,
+    }
+}
+
+fn anonimizar_registro_consolidacion(
+    reg: &RegistroConsolidacionIa,
+    anon: &Anonimizador,
+) -> RegistroConsolidacionIa {
+    let ambito = alcance_canonico(&reg.ambito);
+    let limpiar_trig = |t: &str| {
+        let a = anon.aplicar(t);
+        let l = a.trim();
+        if l.is_empty()
+            || l == "[PROCESADO]"
+            || l == "[RADICADO]"
+            || l == "[TELEFONO]"
+            || l == "[NUMERO]"
+        {
+            None
+        } else {
+            Some(a)
+        }
+    };
+    RegistroConsolidacionIa {
+        id: reg.id.clone(),
+        fecha: reg.fecha.clone(),
+        ambito: ambito.clone(),
+        nombre_ambito: reg.nombre_ambito.clone(),
+        modelo: reg.modelo.clone(),
+        acciones_reglas: reg
+            .acciones_reglas
+            .iter()
+            .map(|a| AccionReglaConsolidacion {
+                tipo_accion: a.tipo_accion.clone(),
+                ids_origen: a.ids_origen.clone(),
+                tipo_error: a.tipo_error.clone(),
+                campo_objetivo: a.campo_objetivo.clone(),
+                regla: anon.aplicar(&a.regla),
+                triggers: a.triggers.iter().filter_map(|t| limpiar_trig(t)).collect(),
+                motivo: anon.aplicar(&a.motivo),
+                confianza: a.confianza,
+                aplicada: a.aplicada,
+            })
+            .collect(),
+        resumen_actualizado: anon.aplicar(&reg.resumen_actualizado),
+        sugerencias_build: reg
+            .sugerencias_build
+            .iter()
+            .map(|s| SugerenciaBuild {
+                categoria: s.categoria.clone(),
+                ambito: alcance_canonico(&s.ambito),
+                detalle: anon.aplicar(&s.detalle),
+                evidencia: anon.aplicar(&s.evidencia),
+            })
+            .collect(),
+        telemetria_disparo: TelemetriaDisparoConsolidacion {
+            ambito,
+            presion: reg.telemetria_disparo.presion,
+            umbral_adaptativo: reg.telemetria_disparo.umbral_adaptativo,
+            probabilidad_disparo: reg.telemetria_disparo.probabilidad_disparo,
+            muestra_rng: reg.telemetria_disparo.muestra_rng,
+            manual: reg.telemetria_disparo.manual,
+            razones: reg
+                .telemetria_disparo
+                .razones
+                .iter()
+                .map(|r| anon.aplicar(r))
+                .collect(),
+        },
     }
 }
 
@@ -3308,10 +6661,19 @@ fn construir_metricas_diagnostico(
             if q10 < 0.30 {
                 return None;
             }
+            let (entrada_norm, canonico) = if a.campo == "juzgado" || a.campo == "tipo" {
+                (
+                    anonimizar_valor_catalogo(&a.entrada_norm, anon),
+                    anonimizar_valor_catalogo(&a.canonico, anon),
+                )
+            } else {
+                (anon.aplicar(&a.entrada_norm), anon.aplicar(&a.canonico))
+            };
             Some(AliasDiagnostico {
                 campo: a.campo.clone(),
-                entrada_norm: anon.aplicar(&a.entrada_norm),
-                canonico: anon.aplicar(&a.canonico),
+                entrada_norm,
+                canonico,
+                defensor_alcance: alcance_canonico(&a.defensor_alcance),
                 confianza_q10: q10,
             })
         })
@@ -3325,22 +6687,17 @@ fn construir_metricas_diagnostico(
     (campos_diag, modelos_diag, alias_diag, drift_campos_activos)
 }
 
-pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje {
-    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
-    let memoria = cargar_memoria_en(ruta);
-    let mut todos_radicados: Vec<&str> = Vec::new();
-    for c in &memoria.correcciones {
-        if !c.prediccion.radicado.trim().is_empty() {
-            todos_radicados.push(&c.prediccion.radicado);
-        }
-        if !c.final_usuario.radicado.trim().is_empty() {
-            todos_radicados.push(&c.final_usuario.radicado);
-        }
-    }
-    let anon = Anonimizador::desde_radicados(&todos_radicados);
+fn construir_diagnostico_desde_memoria(
+    memoria: &MemoriaAprendizaje,
+    priors: Option<&IndicePriorsExcel>,
+    nombres_settings: &[String],
+) -> DiagnosticoAprendizaje {
+    let (radicados_str, escudos) = recoger_radicados_y_escudos(memoria, &[], nombres_settings);
+    let radicados_ref: Vec<&str> = radicados_str.iter().map(String::as_str).collect();
+    let anon = Anonimizador::desde_radicados(&radicados_ref).con_escudos_defensores(&escudos);
 
     let (metricas_por_campo, metricas_por_modelo, alias_validados, drift_campos_activos) =
-        construir_metricas_diagnostico(&memoria, &anon);
+        construir_metricas_diagnostico(memoria, &anon);
 
     let mut reglas_por_estado: BTreeMap<String, usize> = BTreeMap::new();
     for r in &memoria.reglas {
@@ -3358,14 +6715,6 @@ pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje
         .filter(|c| c.estado == "listo")
         .count();
 
-    let prioridad_estado = |s: &str| match s {
-        "activa" => 4u8,
-        "prueba" => 3u8,
-        "candidata" => 2u8,
-        "cuarentena" => 1u8,
-        _ => 0u8,
-    };
-
     let mut reglas_destacadas: Vec<ReglaDiagnostico> = memoria
         .reglas
         .iter()
@@ -3375,6 +6724,7 @@ pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje
             estado: r.estado.clone(),
             campo_objetivo: r.campo_objetivo.clone(),
             origen: r.origen.clone(),
+            defensor_alcance: alcance_canonico(&r.defensor_alcance),
             regla: anon.aplicar(&r.regla),
             impresiones: r.impresiones,
             aciertos_directos: r.aciertos_directos,
@@ -3383,8 +6733,8 @@ pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje
         })
         .collect();
     reglas_destacadas.sort_by(|a, b| {
-        prioridad_estado(&b.estado)
-            .cmp(&prioridad_estado(&a.estado))
+        prioridad_estado_regla(&b.estado)
+            .cmp(&prioridad_estado_regla(&a.estado))
             .then_with(|| {
                 b.confianza_q10
                     .partial_cmp(&a.confianza_q10)
@@ -3393,6 +6743,105 @@ pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje
     });
     reglas_destacadas.truncate(15);
 
+    let defensores_resumen = construir_resumen_defensores(memoria, priors, nombres_settings);
+    let mapa_nombres: BTreeMap<String, String> = defensores_resumen
+        .iter()
+        .map(|d| (d.clave.clone(), d.nombre.clone()))
+        .collect();
+
+    let presion_consolidacion_global = memoria
+        .estados_consolidacion
+        .get("*")
+        .map(|e| e.presion)
+        .unwrap_or(0.0);
+
+    let mut presiones_por_defensor: Vec<PresionDefensorDiagnostico> = Vec::new();
+    let mut claves_presion: BTreeSet<String> = memoria.estados_consolidacion.keys().cloned().collect();
+    for d in &defensores_resumen {
+        claves_presion.insert(d.clave.clone());
+    }
+    for k in claves_presion {
+        let amb = alcance_canonico(&k);
+        let est = memoria
+            .estados_consolidacion
+            .get(&amb)
+            .cloned()
+            .unwrap_or_default();
+        let nombre = if amb == "*" {
+            "General (transversal)".to_string()
+        } else {
+            mapa_nombres
+                .get(&amb)
+                .cloned()
+                .unwrap_or_else(|| title_case_basico(&amb))
+        };
+        presiones_por_defensor.push(PresionDefensorDiagnostico {
+            clave: amb,
+            nombre,
+            presion: est.presion,
+            correcciones_sin_consolidar: est.correcciones_sin_consolidar,
+            notas_sin_consolidar: est.notas_sin_consolidar,
+            extracciones_desde_ultima: est.extracciones_desde_ultima,
+            ultima_consolidacion: est.ultima_consolidacion,
+        });
+    }
+    presiones_por_defensor.sort_by(|a, b| {
+        (a.clave != "*")
+            .cmp(&(b.clave != "*"))
+            .then_with(|| {
+                b.presion
+                    .partial_cmp(&a.presion)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.clave.cmp(&b.clave))
+    });
+
+    let mut perfiles_sinteticos: Vec<PerfilSinteticoDefensor> = memoria
+        .perfiles_sinteticos
+        .values()
+        .filter(|p| !p.resumen.trim().is_empty())
+        .map(|p| {
+            let amb = alcance_canonico(&p.ambito);
+            let nombre_mostrar = if amb == "*" {
+                "General (transversal)".to_string()
+            } else {
+                mapa_nombres
+                    .get(&amb)
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| {
+                        if !p.nombre_mostrar.trim().is_empty() {
+                            Some(p.nombre_mostrar.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| title_case_basico(&amb))
+            };
+            PerfilSinteticoDefensor {
+                ambito: amb,
+                nombre_mostrar,
+                resumen: anon.aplicar(&p.resumen),
+                version: p.version,
+                ultima_actualizacion: p.ultima_actualizacion.clone(),
+            }
+        })
+        .collect();
+    perfiles_sinteticos.sort_by(|a, b| {
+        (a.ambito != "*")
+            .cmp(&(b.ambito != "*"))
+            .then_with(|| a.ambito.cmp(&b.ambito))
+    });
+
+    let ultima_consolidacion = memoria
+        .consolidaciones_ia
+        .last()
+        .map(|r| anonimizar_registro_consolidacion(r, &anon));
+
+    let denom_aclar =
+        (memoria.estado_aclaracion.alpha_resp + memoria.estado_aclaracion.beta_omit).max(1e-6);
+    let tasa_respuesta_aclaraciones = (memoria.estado_aclaracion.alpha_resp / denom_aclar).clamp(0.0, 1.0);
+
     DiagnosticoAprendizaje {
         aciertos_totales: memoria.aciertos,
         correcciones_totales: memoria.correcciones.len(),
@@ -3400,6 +6849,8 @@ pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje
         llamadas_induccion_llm_total: memoria.llamadas_induccion_llm_total,
         clusters_pendientes,
         clusters_listos,
+        perfiles_defensores: defensores_resumen.len(),
+        conexiones_grafo: priors.map(|p| p.grafo.total_conexiones()).unwrap_or(0),
         drift_campos_activos,
         enfriamiento_aclaracion: memoria.enfriamiento_aclaracion,
         reglas_por_estado,
@@ -3408,16 +6859,31 @@ pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje
         preferencias_estilo: construir_preferencias_resumen(&memoria.preferencias_estilo),
         alias_validados: alias_validados.into_iter().take(12).collect(),
         reglas_destacadas,
+        consolidaciones_totales: memoria.llamadas_consolidacion_total,
+        presion_consolidacion_global,
+        presiones_por_defensor,
+        ultima_consolidacion,
+        perfiles_sinteticos,
+        tasa_respuesta_aclaraciones,
+        defensores_resumen,
     }
 }
 
-pub fn exportar_aprendizaje_completo_en(
+pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje {
+    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+    let memoria = cargar_memoria_en(ruta);
+    construir_diagnostico_desde_memoria(&memoria, None, &[])
+}
+
+pub fn exportar_aprendizaje_completo_con_priors_en(
     ruta: &Path,
     ruta_uso: Option<&Path>,
     carpeta_archivos: Option<&Path>,
+    priors_explicitos: Option<&IndicePriorsExcel>,
     carpeta_destino: &Path,
     juzgados_usuario: &[String],
     tipos_usuario: &[String],
+    nombres_defensores_settings: &[String],
 ) -> Result<String, String> {
     let uso = match (ruta_uso, carpeta_archivos) {
         (Some(r_uso), Some(carp)) => {
@@ -3434,6 +6900,13 @@ pub fn exportar_aprendizaje_completo_en(
         .map(recolectar_radicados_en)
         .unwrap_or_default();
 
+    let priors_propios: Option<IndicePriorsExcel> = if priors_explicitos.is_some() {
+        None
+    } else {
+        carpeta_archivos.map(cargar_o_inicializar_priors_en)
+    };
+    let priors_ref = priors_explicitos.or(priors_propios.as_ref());
+
     let destino_str = {
         let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
         let mut memoria = cargar_memoria_en(ruta);
@@ -3441,6 +6914,7 @@ pub fn exportar_aprendizaje_completo_en(
             && memoria.reglas.is_empty()
             && memoria.aciertos == 0
             && memoria.ejemplos_aciertos.is_empty()
+            && memoria.consolidaciones_ia.is_empty()
             && juzgados_usuario.is_empty()
             && tipos_usuario.is_empty()
             && uso.total_audiencias_contabilizadas == 0
@@ -3458,24 +6932,18 @@ pub fn exportar_aprendizaje_completo_en(
             }
         }
 
-        let mut todos_radicados: Vec<&str> = Vec::new();
-        for c in &memoria.correcciones {
-            if !c.prediccion.radicado.trim().is_empty() {
-                todos_radicados.push(&c.prediccion.radicado);
-            }
-            if !c.final_usuario.radicado.trim().is_empty() {
-                todos_radicados.push(&c.final_usuario.radicado);
-            }
+        let defensores_directorio =
+            construir_directorio_defensores(&memoria, priors_ref, nombres_defensores_settings);
+        let mut nombres_extra: Vec<String> = nombres_defensores_settings.to_vec();
+        for d in &defensores_directorio {
+            nombres_extra.push(d.nombre.clone());
+            nombres_extra.push(d.clave.clone());
         }
-        for e in &memoria.ejemplos_aciertos {
-            if !e.salida_anonimizada.radicado.trim().is_empty() {
-                todos_radicados.push(&e.salida_anonimizada.radicado);
-            }
-        }
-        for rad in &radicados_excel {
-            todos_radicados.push(rad.as_str());
-        }
-        let anon_global = Anonimizador::desde_radicados(&todos_radicados);
+        let (todos_radicados, escudos) =
+            recoger_radicados_y_escudos(&memoria, &radicados_excel, &nombres_extra);
+        let radicados_ref: Vec<&str> = todos_radicados.iter().map(String::as_str).collect();
+        let anon_global =
+            Anonimizador::desde_radicados(&radicados_ref).con_escudos_defensores(&escudos);
 
         let reglas_anonimizadas: Vec<ReglaAprendida> = memoria
             .reglas
@@ -3490,12 +6958,21 @@ pub fn exportar_aprendizaje_completo_en(
                         !limpio.is_empty()
                             && limpio != "[PROCESADO]"
                             && limpio != "[RADICADO]"
+                            && limpio != "[TELEFONO]"
                             && limpio != "[NUMERO]"
                     })
+                    .collect();
+                let confirmantes_norm: Vec<String> = r
+                    .defensores_confirmantes
+                    .iter()
+                    .map(|d| normalizar_clave_defensor(d))
+                    .filter(|d| !d.is_empty())
                     .collect();
                 ReglaAprendida {
                     regla: anon_global.aplicar(&r.regla),
                     triggers: triggers_limpios,
+                    defensor_alcance: alcance_canonico(&r.defensor_alcance),
+                    defensores_confirmantes: confirmantes_norm,
                     ..r.clone()
                 }
             })
@@ -3504,28 +6981,160 @@ pub fn exportar_aprendizaje_completo_en(
         let correcciones_anonimizadas: Vec<CorreccionIa> = memoria
             .correcciones
             .iter()
-            .map(|c| anonimizar_correccion_con_global(c, Some(&anon_global)))
+            .map(|c| {
+                let mut ca = anonimizar_correccion_con_global(c, Some(&anon_global));
+                ca.defensor_clave = if c.defensor_clave.trim().is_empty() {
+                    String::new()
+                } else {
+                    normalizar_clave_defensor(&c.defensor_clave)
+                };
+                ca
+            })
             .collect();
 
         let juzgados_anon: Vec<String> = juzgados_usuario
             .iter()
-            .map(|j| anon_global.aplicar(j))
+            .map(|j| anonimizar_valor_catalogo(j, &anon_global))
             .collect();
         let tipos_anon: Vec<String> = tipos_usuario
             .iter()
-            .map(|t| anon_global.aplicar(t))
+            .map(|t| anonimizar_valor_catalogo(t, &anon_global))
             .collect();
 
         let reporte_uso = construir_reporte_uso_catalogos(
             &uso,
             juzgados_usuario,
             tipos_usuario,
-            &|s| anon_global.aplicar(s),
+            &|s| anonimizar_valor_catalogo(s, &anon_global),
         );
 
         let (metricas_por_campo, metricas_por_modelo, alias_validados, _) =
             construir_metricas_diagnostico(&memoria, &anon_global);
         let preferencias_estilo = construir_preferencias_resumen(&memoria.preferencias_estilo);
+        let preferencias_por_defensor: BTreeMap<String, PreferenciasEstiloResumen> = memoria
+            .preferencias_por_defensor
+            .iter()
+            .filter_map(|(k, p)| {
+                let dk = normalizar_clave_defensor(k);
+                if dk.is_empty() {
+                    None
+                } else {
+                    Some((dk, construir_preferencias_resumen(p)))
+                }
+            })
+            .collect();
+
+        let resumen_patrones_generales = construir_resumen_patrones_generales(
+            &memoria,
+            priors_ref,
+            &defensores_directorio,
+            &anon_global,
+        );
+
+        let grafo_asociaciones: GrafoAsociaciones = priors_ref
+            .map(|p| {
+                let mut g = GrafoAsociaciones::default();
+                for (dk, m) in &p.grafo.defensor_a_juzgados {
+                    let k_norm = normalizar_clave_defensor(dk);
+                    if k_norm.is_empty() {
+                        continue;
+                    }
+                    let dest = g.defensor_a_juzgados.entry(k_norm).or_default();
+                    for (juz, &cnt) in m {
+                        let juz_limpio = anonimizar_valor_catalogo(juz, &anon_global);
+                        *dest.entry(juz_limpio).or_insert(0) += cnt;
+                    }
+                }
+                for (dk, m) in &p.grafo.defensor_a_tipos {
+                    let k_norm = normalizar_clave_defensor(dk);
+                    if k_norm.is_empty() {
+                        continue;
+                    }
+                    let dest = g.defensor_a_tipos.entry(k_norm).or_default();
+                    for (tp, &cnt) in m {
+                        let tp_limpio = anonimizar_valor_catalogo(tp, &anon_global);
+                        *dest.entry(tp_limpio).or_insert(0) += cnt;
+                    }
+                }
+                for (dk, siglas) in &p.grafo.defensor_sigla_a_juzgado {
+                    let k_norm = normalizar_clave_defensor(dk);
+                    if k_norm.is_empty() {
+                        continue;
+                    }
+                    let dest_dk = g.defensor_sigla_a_juzgado.entry(k_norm).or_default();
+                    for (sig, m) in siglas {
+                        let dest_sig = dest_dk.entry(sig.clone()).or_default();
+                        for (juz, &cnt) in m {
+                            let juz_limpio = anonimizar_valor_catalogo(juz, &anon_global);
+                            *dest_sig.entry(juz_limpio).or_insert(0) += cnt;
+                        }
+                    }
+                }
+                for (pref, m) in &p.grafo.prefijo_radicado_a_juzgados {
+                    let dest = g.prefijo_radicado_a_juzgados.entry(pref.clone()).or_default();
+                    for (juz, &cnt) in m {
+                        let juz_limpio = anonimizar_valor_catalogo(juz, &anon_global);
+                        *dest.entry(juz_limpio).or_insert(0) += cnt;
+                    }
+                }
+                for (tp, m) in &p.grafo.tipo_a_juzgados {
+                    let tp_limpio = anonimizar_valor_catalogo(tp, &anon_global);
+                    let dest = g.tipo_a_juzgados.entry(tp_limpio).or_default();
+                    for (juz, &cnt) in m {
+                        let juz_limpio = anonimizar_valor_catalogo(juz, &anon_global);
+                        *dest.entry(juz_limpio).or_insert(0) += cnt;
+                    }
+                }
+                g
+            })
+            .unwrap_or_default();
+
+        let mapa_nombres: BTreeMap<String, String> = defensores_directorio
+            .iter()
+            .map(|d| (d.clave.clone(), d.nombre.clone()))
+            .collect();
+
+        let mut perfiles_sinteticos: Vec<PerfilSinteticoDefensor> = memoria
+            .perfiles_sinteticos
+            .values()
+            .map(|p| {
+                let amb = alcance_canonico(&p.ambito);
+                let nombre_mostrar = if amb == "*" {
+                    "General (transversal)".to_string()
+                } else {
+                    mapa_nombres
+                        .get(&amb)
+                        .cloned()
+                        .filter(|s| !s.trim().is_empty())
+                        .or_else(|| {
+                            if !p.nombre_mostrar.trim().is_empty() {
+                                Some(p.nombre_mostrar.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| title_case_basico(&amb))
+                };
+                PerfilSinteticoDefensor {
+                    ambito: amb,
+                    nombre_mostrar,
+                    resumen: anon_global.aplicar(&p.resumen),
+                    version: p.version,
+                    ultima_actualizacion: p.ultima_actualizacion.clone(),
+                }
+            })
+            .collect();
+        perfiles_sinteticos.sort_by(|a, b| {
+            (a.ambito != "*")
+                .cmp(&(b.ambito != "*"))
+                .then_with(|| a.ambito.cmp(&b.ambito))
+        });
+
+        let consolidaciones_ia: Vec<RegistroConsolidacionIa> = memoria
+            .consolidaciones_ia
+            .iter()
+            .map(|c| anonimizar_registro_consolidacion(c, &anon_global))
+            .collect();
 
         let paquete = PaqueteExportacion {
             app: "Lokus",
@@ -3536,11 +7145,20 @@ pub fn exportar_aprendizaje_completo_en(
             total_reglas: reglas_anonimizadas.len(),
             total_correcciones: correcciones_anonimizadas.len(),
             total_ejemplos_aciertos: memoria.ejemplos_aciertos.len(),
+            perfiles_defensores: defensores_directorio.len(),
             llamadas_induccion_llm_total: memoria.llamadas_induccion_llm_total,
+            llamadas_extraccion_total: memoria.llamadas_extraccion_total,
+            llamadas_consolidacion_total: memoria.llamadas_consolidacion_total,
             correcciones_por_campo,
             metricas_por_campo,
             metricas_por_modelo,
             preferencias_estilo,
+            preferencias_por_defensor,
+            defensores_directorio,
+            resumen_patrones_generales,
+            grafo_asociaciones,
+            perfiles_sinteticos,
+            consolidaciones_ia,
             alias_validados,
             juzgados_agregados_usuario: juzgados_anon,
             tipos_audiencia_agregados_usuario: tipos_anon,
@@ -3584,6 +7202,26 @@ pub fn exportar_aprendizaje_completo_en(
     Ok(destino_str)
 }
 
+pub fn exportar_aprendizaje_completo_en(
+    ruta: &Path,
+    ruta_uso: Option<&Path>,
+    carpeta_archivos: Option<&Path>,
+    carpeta_destino: &Path,
+    juzgados_usuario: &[String],
+    tipos_usuario: &[String],
+) -> Result<String, String> {
+    exportar_aprendizaje_completo_con_priors_en(
+        ruta,
+        ruta_uso,
+        carpeta_archivos,
+        None,
+        carpeta_destino,
+        juzgados_usuario,
+        tipos_usuario,
+        &[],
+    )
+}
+
 pub fn exportar_aprendizaje_con_catalogos_en(
     ruta: &Path,
     carpeta_destino: &Path,
@@ -3608,21 +7246,90 @@ pub fn exportar_aprendizaje_en(ruta: &Path, carpeta_destino: &Path) -> Result<St
 // API pública usada por `ai.rs` y `lib.rs`
 // ---------------------------------------------------------------------------
 
-pub fn obtener_contexto_prompt_con_traza(texto_nuevo: &str) -> (String, Vec<String>, Vec<String>) {
+pub fn obtener_contexto_prompt_con_traza_y_defensor(
+    texto_nuevo: &str,
+    defensor: Option<&str>,
+) -> (String, Vec<String>, Vec<String>) {
     let estado = estado_desde_settings(&cargar_settings());
     let modelo_actual = format!("{}:{}", estado.provider.trim(), estado.model.trim());
     let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
     let local = cargar_memoria_en(&ruta_memoria());
-    formatear_contexto_prompt_con_detalle_para_modelo(
+    formatear_contexto_prompt_con_detalle_para_defensor(
         texto_nuevo,
         memoria_base_embebida(),
         &local,
         Some(&modelo_actual),
+        defensor,
     )
+}
+
+pub fn obtener_contexto_prompt_con_traza(texto_nuevo: &str) -> (String, Vec<String>, Vec<String>) {
+    obtener_contexto_prompt_con_traza_y_defensor(texto_nuevo, None)
 }
 
 pub fn obtener_contexto_prompt(texto_nuevo: &str) -> String {
     obtener_contexto_prompt_con_traza(texto_nuevo).0
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn registrar_resultado_ia_completo_en(
+    ruta: &Path,
+    texto: &str,
+    prediccion: &AudienciaInput,
+    final_usuario: &AudienciaInput,
+    reglas_inyectadas: &[String],
+    defensor: Option<&str>,
+    prediccion_local: Option<&PrediccionLocalResumen>,
+) -> Result<(ResumenAprendizaje, Option<CorreccionIa>), String> {
+    let estado = estado_desde_settings(&cargar_settings());
+    registrar_resultado_completo_en(
+        ruta,
+        texto,
+        prediccion,
+        final_usuario,
+        &estado.provider,
+        &estado.model,
+        reglas_inyectadas,
+        defensor,
+        prediccion_local,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn registrar_resultado_ia_completo(
+    texto: &str,
+    prediccion: &AudienciaInput,
+    final_usuario: &AudienciaInput,
+    reglas_inyectadas: &[String],
+    defensor: Option<&str>,
+    prediccion_local: Option<&PrediccionLocalResumen>,
+) -> Result<(ResumenAprendizaje, Option<CorreccionIa>), String> {
+    registrar_resultado_ia_completo_en(
+        &ruta_memoria(),
+        texto,
+        prediccion,
+        final_usuario,
+        reglas_inyectadas,
+        defensor,
+        prediccion_local,
+    )
+}
+
+pub fn registrar_resultado_ia_con_traza_y_defensor(
+    texto: &str,
+    prediccion: &AudienciaInput,
+    final_usuario: &AudienciaInput,
+    reglas_inyectadas: &[String],
+    defensor: Option<&str>,
+) -> Result<(ResumenAprendizaje, Option<CorreccionIa>), String> {
+    registrar_resultado_ia_completo(
+        texto,
+        prediccion,
+        final_usuario,
+        reglas_inyectadas,
+        defensor,
+        None,
+    )
 }
 
 pub fn registrar_resultado_ia_con_traza(
@@ -3631,16 +7338,7 @@ pub fn registrar_resultado_ia_con_traza(
     final_usuario: &AudienciaInput,
     reglas_inyectadas: &[String],
 ) -> Result<(ResumenAprendizaje, Option<CorreccionIa>), String> {
-    let estado = estado_desde_settings(&cargar_settings());
-    registrar_resultado_con_traza_en(
-        &ruta_memoria(),
-        texto,
-        prediccion,
-        final_usuario,
-        &estado.provider,
-        &estado.model,
-        reglas_inyectadas,
-    )
+    registrar_resultado_ia_con_traza_y_defensor(texto, prediccion, final_usuario, reglas_inyectadas, None)
 }
 
 pub fn registrar_resultado_ia(
@@ -3662,7 +7360,15 @@ pub fn obtener_resumen_aprendizaje() -> ResumenAprendizaje {
 }
 
 pub fn obtener_diagnostico_aprendizaje() -> DiagnosticoAprendizaje {
-    obtener_diagnostico_aprendizaje_en(&ruta_memoria())
+    let settings = cargar_settings();
+    let priors = cargar_priors_actuales();
+    let mut diag = {
+        let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+        let memoria = cargar_memoria_en(&ruta_memoria());
+        construir_diagnostico_desde_memoria(&memoria, Some(&priors), &settings.defensores)
+    };
+    diag.conexiones_grafo = priors.grafo.total_conexiones();
+    diag
 }
 
 pub fn obtener_cluster_listo_para_inducir_ia() -> Option<(String, Vec<CorreccionIa>)> {
@@ -3681,13 +7387,16 @@ pub fn exportar_aprendizaje_ia() -> Result<String, String> {
     let settings = cargar_settings();
     let ruta_uso = ruta_uso_catalogos();
     let carpeta = obtener_carpeta_archivos();
-    exportar_aprendizaje_completo_en(
+    let priors = cargar_priors_actuales();
+    exportar_aprendizaje_completo_con_priors_en(
         &ruta_memoria(),
         Some(&ruta_uso),
         Some(&carpeta),
+        Some(&priors),
         &carpeta_descargas()?,
         &settings.juzgados,
         &settings.tipos_audiencia,
+        &settings.defensores,
     )
 }
 
@@ -3780,6 +7489,7 @@ mod tests {
             registrada: "2025-08-15T10:00:00-05:00".into(),
             proveedor: "openai".into(),
             modelo: "gpt-5-mini".into(),
+            defensor_clave: String::new(),
             texto_original: "Audiencia de JUAN PÉREZ GÓMEZ rad 200016001075202400123 del 15-08-2025 a las 14:30. Pérez no asistió. Cel 3001234567".into(),
             prediccion: pred.clone(),
             final_usuario: audiencia_base(),
@@ -3867,6 +7577,7 @@ mod tests {
                 registrada: String::new(),
                 proveedor: String::new(),
                 modelo: String::new(),
+                defensor_clave: String::new(),
                 texto_original: "t".into(),
                 prediccion: pred.clone(),
                 final_usuario: pred.clone(),
@@ -3938,6 +7649,7 @@ mod tests {
                 registrada: String::new(),
                 proveedor: "openai".into(),
                 modelo: "gpt-5-mini".into(),
+                defensor_clave: String::new(),
                 texto_original: t.to_string(),
                 prediccion: pred.clone(),
                 final_usuario: pred.clone(),
@@ -3985,6 +7697,7 @@ mod tests {
                 registrada: String::new(),
                 proveedor: "openai".into(),
                 modelo: "gpt-5-mini".into(),
+                defensor_clave: String::new(),
                 texto_original: format!("Audiencia concentrada fiscalia ausente caso {}", i),
                 prediccion: pred.clone(),
                 final_usuario: pred.clone(),
@@ -4028,7 +7741,7 @@ mod tests {
         let mut fin = pred.clone();
         fin.juzgado = "Juzgado 12 CTO 3".into();
 
-        let (_, c1) = registrar_resultado_en(
+        let (res_r1, c1) = registrar_resultado_en(
             &ruta,
             "Audiencia en Juzgado 12 CTO 3",
             &pred,
@@ -4039,24 +7752,12 @@ mod tests {
         .expect("registrar c1");
         let id1 = c1.expect("c1").id;
 
-        // 1) Análisis que solicita aclaración al usuario
-        let res_acl = aplicar_analisis_en(
-            &ruta,
-            &id1,
-            &AnalisisCorreccionIa {
-                es_error_de_ia: true,
-                tipo_error: "abreviacion".into(),
-                regla: "Conservar CTO abreviado en juzgados".into(),
-                confianza: 0.4,
-                necesita_aclaracion: true,
-                pregunta: "¿Por qué cambiaste Circuito por CTO?".into(),
-            },
-        )
-        .expect("aplicar aclaración");
-        assert!(res_acl.aclaracion_pendiente.is_some());
-        assert_eq!(res_acl.total_reglas, 0);
+        // 1) Motor local decide aclaración inmediatamente en c1 sin consumir tokens LLM
+        assert!(res_r1.aclaracion_pendiente.is_some());
+        assert_eq!(res_r1.total_reglas, 0);
 
-        // El usuario responde la aclaración -> se guarda la nota y se crea la regla
+        // El usuario responde la aclaración -> NO inserta regla cruda activa; la deja en "pendiente"
+        // con nota_usuario para análisis LLM posterior (0 huérfanas con triggers vacíos)
         let (res_nota, _) = guardar_nota_aclaracion_en(
             &ruta,
             &id1,
@@ -4064,7 +7765,26 @@ mod tests {
         )
         .expect("guardar nota");
         assert!(res_nota.aclaracion_pendiente.is_none());
-        assert_eq!(res_nota.total_reglas, 1);
+        assert_eq!(res_nota.total_reglas, 0);
+
+        // Luego el análisis LLM con la nota crea la regla en estado "prueba" y con triggers poblados
+        let res_con_nota = aplicar_analisis_en(
+            &ruta,
+            &id1,
+            &AnalisisCorreccionIa {
+                es_error_de_ia: true,
+                tipo_error: "abreviacion".into(),
+                regla: "Dejar CTO abreviado siempre en el nombre del juzgado".into(),
+                confianza: 0.92,
+                necesita_aclaracion: false,
+                pregunta: String::new(),
+            },
+        )
+        .expect("aplicar analisis tras nota");
+        assert_eq!(res_con_nota.total_reglas, 1);
+        let mem_reg1 = cargar_memoria_en(&ruta);
+        assert_eq!(mem_reg1.reglas[0].estado, "prueba");
+        assert!(!mem_reg1.reglas[0].triggers.is_empty());
 
         // 2) Segunda corrección con la misma regla -> refuerza la regla existente en lugar de duplicarla
         let (_, c2) = registrar_resultado_en(
@@ -4150,6 +7870,7 @@ mod tests {
                 registrada: String::new(),
                 proveedor: "openai".into(),
                 modelo: "gpt-5-mini".into(),
+                defensor_clave: String::new(),
                 texto_original: "Audiencia preparatoria en Juzgado 12 CTO 3".into(),
                 prediccion: pred.clone(),
                 final_usuario: pred.clone(),
@@ -4209,7 +7930,7 @@ mod tests {
         let pred = audiencia_base();
         let mut fin = pred.clone();
         fin.juzgado = "Juzgado 3 MPAL".into();
-        let (_, corr) = registrar_resultado_en(
+        let (res_acl, corr) = registrar_resultado_en(
             &ruta,
             "Audiencia en Juzgado 3 MPAL",
             &pred,
@@ -4218,23 +7939,27 @@ mod tests {
             "gpt-5-mini",
         )
         .unwrap();
+        assert!(res_acl.aclaracion_pendiente.is_some());
         let cid = corr.unwrap().id;
-        aplicar_analisis_en(
+        let (res_nota, _) =
+            guardar_nota_aclaracion_en(&ruta, &cid, "Dejar MPAL sin expandir").unwrap();
+        assert!(res_nota.aclaracion_pendiente.is_none());
+        assert_eq!(res_nota.total_reglas, 0);
+
+        let res_primero = aplicar_analisis_en(
             &ruta,
             &cid,
             &AnalisisCorreccionIa {
                 es_error_de_ia: true,
                 tipo_error: "abreviacion".into(),
-                regla: "Conservar MPAL".into(),
-                confianza: 0.4,
-                necesita_aclaracion: true,
-                pregunta: "¿Qué significa MPAL?".into(),
+                regla: "Conservar MPAL en el juzgado".into(),
+                confianza: 0.85,
+                necesita_aclaracion: false,
+                pregunta: String::new(),
             },
         )
         .unwrap();
-        let (res_nota, _) =
-            guardar_nota_aclaracion_en(&ruta, &cid, "Dejar MPAL sin expandir").unwrap();
-        assert_eq!(res_nota.total_reglas, 1);
+        assert_eq!(res_primero.total_reglas, 1);
 
         let res_refinado = aplicar_analisis_en(
             &ruta,
@@ -4253,7 +7978,9 @@ mod tests {
         let mem_despues = cargar_memoria_en(&ruta);
         assert_eq!(mem_despues.reglas.len(), 1);
         assert_eq!(mem_despues.reglas[0].refuerzos, 1);
+        assert_eq!(mem_despues.reglas[0].estado, "prueba");
         assert!(mem_despues.reglas[0].regla.contains("MPAL"));
+        assert!(!mem_despues.reglas[0].triggers.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -4475,7 +8202,7 @@ mod tests {
         fs::write(&ruta, json_v1).unwrap();
 
         let mem = cargar_memoria_en(&ruta);
-        assert_eq!(mem.version, 2);
+        assert_eq!(mem.version, VERSION_FORMATO);
         assert_eq!(mem.aciertos, 4);
         assert_eq!(mem.reglas.len(), 2);
         assert_eq!(mem.reglas[0].estado, "activa");
@@ -4652,6 +8379,7 @@ mod tests {
                 registrada: String::new(),
                 proveedor: "openai".into(),
                 modelo: "gpt-5-mini".into(),
+                defensor_clave: String::new(),
                 texto_original: format!("Juzgado 3 CTO Penal audiencia preparatoria caso {}", i),
                 prediccion: pred.clone(),
                 final_usuario: pred.clone(),
@@ -4673,6 +8401,7 @@ mod tests {
             registrada: String::new(),
             proveedor: "openai".into(),
             modelo: "gpt-5-mini".into(),
+            defensor_clave: String::new(),
             texto_anonimizado: "Juzgado 3 CTO Penal audiencia preparatoria sin novedad".into(),
             salida_anonimizada: pred,
             reglas_inyectadas: Vec::new(),
@@ -4860,29 +8589,18 @@ mod tests {
             "El drift debe acelerar el decaimiento de reglas afectadas"
         );
 
-        // 4) Política mínima de aclaración: bloqueo por cooldown y cambios no contradictorios
+        // 4) Política local de aclaración: exclusión de fecha/hora/radicado y cooldown exponencial tras Omitir
+        let dir_acl = preparar_dir("fase3_aclaracion_local");
+        let ruta_acl = dir_acl.join(NOMBRE_ARCHIVO_MEMORIA);
         let mut fin_fecha = audiencia_base();
         fin_fecha.fecha = "16/08/2025".into();
-        let (_, c_fecha) = registrar_resultado_en(
-            &ruta_ph,
-            "Audiencia el 16/08/2025",
+        let (res_no_acl, _) = registrar_resultado_en(
+            &ruta_acl,
+            "Audiencia programada el 16/08/2025 en despacho",
             &audiencia_base(),
             &fin_fecha,
             "openai",
             "gpt-5-mini",
-        )
-        .unwrap();
-        let res_no_acl = aplicar_analisis_en(
-            &ruta_ph,
-            &c_fecha.unwrap().id,
-            &AnalisisCorreccionIa {
-                es_error_de_ia: true,
-                tipo_error: "fecha".into(),
-                regla: "Ajustar fecha literal".into(),
-                confianza: 0.4,
-                necesita_aclaracion: true,
-                pregunta: "¿Seguro la fecha?".into(),
-            },
         )
         .unwrap();
         assert!(
@@ -4890,9 +8608,9 @@ mod tests {
             "No debe pedir aclaración en cambios simples de fecha"
         );
 
-        // En cambio semántico (juzgado CTO), pide aclaración -> al descartar activa cooldown de 4 interacciones
-        let (_, c_juz1) = registrar_resultado_en(
-            &ruta_ph,
+        // En cambio semántico (juzgado CTO), pide aclaración localmente -> al descartar activa cooldown exponencial
+        let (res_si_acl, c_juz1) = registrar_resultado_en(
+            &ruta_acl,
             "Audiencia en Juzgado 3 CTO",
             &audiencia_base(),
             &fin_cto,
@@ -4901,42 +8619,16 @@ mod tests {
         )
         .unwrap();
         let id_j1 = c_juz1.unwrap().id;
-        let res_si_acl = aplicar_analisis_en(
-            &ruta_ph,
-            &id_j1,
-            &AnalisisCorreccionIa {
-                es_error_de_ia: true,
-                tipo_error: "abreviacion".into(),
-                regla: "Conservar CTO".into(),
-                confianza: 0.4,
-                necesita_aclaracion: true,
-                pregunta: "¿Qué significa CTO en este juzgado?".into(),
-            },
-        )
-        .unwrap();
         assert!(res_si_acl.aclaracion_pendiente.is_some());
-        descartar_aclaracion_en(&ruta_ph, &id_j1).unwrap();
+        descartar_aclaracion_en(&ruta_acl, &id_j1).unwrap();
 
-        let (_, c_juz2) = registrar_resultado_en(
-            &ruta_ph,
-            "Otra en Juzgado 5 CTO",
+        let (res_bloqueada, _) = registrar_resultado_en(
+            &ruta_acl,
+            "Otra audiencia en Juzgado 5 CTO",
             &audiencia_base(),
             &fin_cto,
             "openai",
             "gpt-5-mini",
-        )
-        .unwrap();
-        let res_bloqueada = aplicar_analisis_en(
-            &ruta_ph,
-            &c_juz2.unwrap().id,
-            &AnalisisCorreccionIa {
-                es_error_de_ia: true,
-                tipo_error: "abreviacion".into(),
-                regla: "Conservar CTO".into(),
-                confianza: 0.4,
-                necesita_aclaracion: true,
-                pregunta: "¿Seguro?".into(),
-            },
         )
         .unwrap();
         assert!(
@@ -4947,6 +8639,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir_sim);
         let _ = fs::remove_dir_all(&dir_ph);
+        let _ = fs::remove_dir_all(&dir_acl);
     }
 
     #[test]
@@ -5063,6 +8756,1542 @@ mod tests {
             .iter()
             .any(|h| h["hora_24"] == "08:30" && h["conteo"] == 1));
         assert!(parsed["uso_catalogos"]["horas"]["resumen_por_franja_horaria"].is_array());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_v3_migracion_v2_pista_1ra_vez_dos_cuadernos_sombra_y_anonimizacion() {
+        // 1) Migración limpia v2 -> v3 sin pérdida (reglas y alias heredan alcance "*")
+        let dir_mig = preparar_dir("migracion_v2_v3");
+        let ruta_mig = dir_mig.join(NOMBRE_ARCHIVO_MEMORIA);
+        let json_v2 = r#"{
+          "version": 2,
+          "aciertos": 9,
+          "reglas": [
+            {
+              "id": "r-v2-1",
+              "tipo_error": "motivo",
+              "regla": "Si la fiscal no asiste marcar Fiscalía",
+              "refuerzos": 3,
+              "actualizada": "2025-07-01T10:00:00-05:00",
+              "estado": "activa",
+              "campo_objetivo": "motivo",
+              "alpha": 5.0,
+              "beta": 1.0
+            }
+          ],
+          "tabla_alias": [
+            {
+              "campo": "juzgado",
+              "entrada_norm": "juzgado 2 circuito",
+              "canonico": "Juzgado 2 CTO",
+              "alpha": 4.0,
+              "beta": 1.2,
+              "ultima_actualizacion": "2025-07-01T10:00:00-05:00"
+            }
+          ],
+          "correcciones": []
+        }"#;
+        fs::write(&ruta_mig, json_v2).unwrap();
+        let mem_mig = cargar_memoria_en(&ruta_mig);
+        assert_eq!(mem_mig.version, VERSION_FORMATO);
+        assert_eq!(mem_mig.aciertos, 9);
+        assert_eq!(mem_mig.reglas[0].defensor_alcance, "*");
+        assert_eq!(mem_mig.tabla_alias[0].defensor_alcance, "*");
+        let _ = fs::remove_dir_all(&dir_mig);
+
+        // 2) Pista suave desde la 1.ª corrección pendiente en texto casi idéntico (sin contaminar otros textos ni defensores)
+        let dir = preparar_dir("v3_dos_cuadernos");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let pred = audiencia_base();
+        let mut fin_si = pred.clone();
+        fin_si.realizada = "NO".into();
+        fin_si.motivo = "Fiscalía".into();
+
+        let texto_base =
+            "J04 CONTROL AUDIENCIA PREPARATORIA DEL PROCESADO EN VALLEDUPAR SE REPROGRAMA POR AUSENCIA DE LA FISCALIA DELEGADA";
+        registrar_resultado_con_traza_y_defensor_en(
+            &ruta,
+            texto_base,
+            &pred,
+            &fin_si,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+
+        let local_1 = cargar_memoria_en(&ruta);
+        let base_vacia = MemoriaAprendizaje::default();
+        let texto_casi_igual =
+            "J04 CONTROL AUDIENCIA PREPARATORIA DEL PROCESADO EN VALLEDUPAR SE REPROGRAMA POR AUSENCIA DE LA FISCALIA DELEGADA NUEVA FECHA";
+        let det_igual = seleccionar_contexto_detallado_para_defensor(
+            texto_casi_igual,
+            &base_vacia,
+            &local_1,
+            Some("openai:gpt-5-mini"),
+            Some("Dra. Ana Pérez"),
+        );
+        assert!(
+            det_igual.pista_pendiente.is_some(),
+            "Debe emitir pista suave en texto casi idéntico del mismo defensor"
+        );
+        let (bloque_pista, _, _) = formatear_contexto_prompt_con_detalle_para_defensor(
+            texto_casi_igual,
+            &base_vacia,
+            &local_1,
+            Some("openai:gpt-5-mini"),
+            Some("Dra. Ana Pérez"),
+        );
+        assert!(bloque_pista.contains("Pista reciente del defensor en texto casi idéntico"));
+
+        // Texto distinto, fragmento diminuto u otro defensor NO reciben la pista
+        let det_distinto = seleccionar_contexto_detallado_para_defensor(
+            "Lectura de fallo en proceso de alimentos ante juzgado de familia en Riohacha",
+            &base_vacia,
+            &local_1,
+            Some("openai:gpt-5-mini"),
+            Some("Dra. Ana Pérez"),
+        );
+        assert!(det_distinto.pista_pendiente.is_none());
+        let det_fragmento = seleccionar_contexto_detallado_para_defensor(
+            "Audiencia preparatoria",
+            &base_vacia,
+            &local_1,
+            Some("openai:gpt-5-mini"),
+            Some("Dra. Ana Pérez"),
+        );
+        assert!(det_fragmento.pista_pendiente.is_none());
+        let det_otro_def = seleccionar_contexto_detallado_para_defensor(
+            texto_casi_igual,
+            &base_vacia,
+            &local_1,
+            Some("openai:gpt-5-mini"),
+            Some("Dr. Luis Mora"),
+        );
+        assert!(det_otro_def.pista_pendiente.is_none());
+
+        // 3) Activación en 2 repeticiones con confianza = 0.60 (>= 0.55) pasa directo a "prueba" en el cuaderno de Ana
+        registrar_resultado_con_traza_y_defensor_en(
+            &ruta,
+            "J04 CONTROL AUDIENCIA PREPARATORIA EN VALLEDUPAR SE REPROGRAMA POR AUSENCIA FISCALIA DELEGADA CASO DOS",
+            &pred,
+            &fin_si,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        let (cid, corrs) = obtener_cluster_listo_para_inducir_en(&ruta)
+            .expect("2 correcciones coherentes deben dejar el clúster listo");
+        let ids: Vec<String> = corrs.iter().map(|c| c.id.clone()).collect();
+        aplicar_analisis_cluster_en(
+            &ruta,
+            &cid,
+            &ids,
+            &AnalisisCorreccionIa {
+                es_error_de_ia: true,
+                tipo_error: "realizacion".into(),
+                regla: "Cuando se reprograma por ausencia de fiscalia delegada marcar NO y Fiscalía"
+                    .into(),
+                confianza: 0.60,
+                necesita_aclaracion: false,
+                pregunta: String::new(),
+            },
+        )
+        .unwrap();
+
+        let mem_2 = cargar_memoria_en(&ruta);
+        let regla_ana = mem_2
+            .reglas
+            .iter()
+            .find(|r| r.regla.contains("ausencia de fiscalia delegada"))
+            .expect("debe crearse la regla");
+        assert_eq!(regla_ana.estado, "prueba");
+        assert_eq!(regla_ana.defensor_alcance, "ana perez");
+
+        // Aislamiento: Luis no recibe la regla privada de Ana
+        let det_luis = seleccionar_contexto_detallado_para_defensor(
+            "Se reprograma por ausencia de fiscalia delegada en Valledupar",
+            &base_vacia,
+            &mem_2,
+            Some("openai:gpt-5-mini"),
+            Some("Dr. Luis Mora"),
+        );
+        assert!(det_luis.reglas.iter().all(|r| r.id != regla_ana.id));
+
+        // 4) Evaluación en sombra aislada: aciertos de Luis NO retiran una regla "candidata" privada de Ana
+        let mut mem_sombra = mem_2.clone();
+        let rid_cand = agregar_regla_interna_con_defensor(
+            &mut mem_sombra,
+            "observaciones",
+            "Incluir frase exacta expediente digital verificado en observaciones",
+            "candidata",
+            Some("observaciones"),
+            &["expediente".into(), "digital".into(), "verificado".into()],
+            "mitigacion_modelo",
+            "*",
+            "Dra. Ana Pérez",
+            &[],
+            0.5,
+            "",
+        )
+        .unwrap();
+        guardar_memoria_en(&ruta, &mem_sombra).unwrap();
+        for i in 0..4 {
+            registrar_resultado_con_traza_y_defensor_en(
+                &ruta,
+                &format!("Audiencia con expediente digital verificado caso {}", i),
+                &pred,
+                &pred,
+                "openai",
+                "gpt-5-mini",
+                &[],
+                Some("Dr. Luis Mora"),
+            )
+            .unwrap();
+        }
+        let mem_tras_luis = cargar_memoria_en(&ruta);
+        let cand_ana = mem_tras_luis
+            .reglas
+            .iter()
+            .find(|r| r.id == rid_cand)
+            .unwrap();
+        assert_eq!(
+            cand_ana.estado, "candidata",
+            "Aciertos de otro defensor no deben retirar regla candidata de Ana"
+        );
+
+        // 5) Promoción automática al Cuaderno General ("*") cuando Luis confirma la misma regla que Ana
+        let mut mem_promo = mem_tras_luis;
+        agregar_regla_interna_con_defensor(
+            &mut mem_promo,
+            "realizacion",
+            "Cuando se reprograma por ausencia de fiscalia delegada marcar NO y Fiscalía",
+            "prueba",
+            Some("realizada"),
+            &["fiscalia".into(), "delegada".into()],
+            "mitigacion_modelo",
+            "*",
+            "Dr. Luis Mora",
+            &[],
+            0.85,
+            "",
+        );
+        let regla_promo = mem_promo
+            .reglas
+            .iter()
+            .find(|r| r.id == regla_ana.id)
+            .unwrap();
+        assert_eq!(regla_promo.defensor_alcance, "*");
+        assert_eq!(regla_promo.defensores_confirmantes.len(), 2);
+        guardar_memoria_en(&ruta, &mem_promo).unwrap();
+
+        // 6) Diagnóstico y exportación conservan nombres reales + claves unificadas de defensores
+        //    (SIN DEFENSOR_1..2), manteniendo 100% anonimizados procesados, radicados y teléfonos.
+        let mut pred_texto_def = pred.clone();
+        pred_texto_def.radicado = "CARLOS MENDOZA - 200016001075202499999".into();
+        pred_texto_def.observaciones = "Nota con Dra. Ana Pérez, Dr. Luis Mora y procesado Carlos Mendoza tel 3009876543".into();
+        let mut fin_texto_def = pred_texto_def.clone();
+        fin_texto_def.observaciones =
+            "Defensora Ana Pérez confirmó coordinación con Defensor Mora en audiencia de Carlos Mendoza".into();
+        registrar_resultado_con_traza_y_defensor_en(
+            &ruta,
+            "La Dra. Ana Pérez informó que el despacho reprogramó proceso 200016001075202499999 de Carlos Mendoza cel 3009876543",
+            &pred_texto_def,
+            &fin_texto_def,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+
+        let diag = obtener_diagnostico_aprendizaje_en(&ruta);
+        assert_eq!(diag.perfiles_defensores, 2);
+        let diag_json = serde_json::to_string(&diag).unwrap();
+        let diag_lower = diag_json.to_lowercase();
+        assert!(!diag_json.contains("DEFENSOR_1"), "{}", diag_json);
+        assert!(diag_lower.contains("ana perez"), "{}", diag_json);
+        assert!(diag_lower.contains("luis mora"), "{}", diag_json);
+        assert!(!diag_lower.contains("carlos mendoza"), "{}", diag_json);
+        assert!(!diag_json.contains("200016001075202499999"), "{}", diag_json);
+
+        let descargas = dir.join("descargas");
+        let ruta_uso = dir.join("uso_catalogos.json");
+        let archivo_exp = exportar_aprendizaje_completo_en(
+            &ruta,
+            Some(&ruta_uso),
+            None,
+            &descargas,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let exp_txt = fs::read_to_string(&archivo_exp).unwrap();
+        assert!(!exp_txt.contains("DEFENSOR_1"), "{}", exp_txt);
+        assert!(!exp_txt.contains("DEFENSOR_2"), "{}", exp_txt);
+        let exp_lower = exp_txt.to_lowercase();
+        assert!(exp_lower.contains("ana perez"), "{}", exp_txt);
+        assert!(exp_lower.contains("luis mora"), "{}", exp_txt);
+        assert!(exp_txt.contains("Dra. Ana Pérez"), "{}", exp_txt);
+        assert!(exp_lower.contains("defensor mora"), "{}", exp_txt);
+        assert!(!exp_lower.contains("carlos mendoza"), "fuga procesado en export: {}", exp_txt);
+        assert!(!exp_txt.contains("200016001075202499999"), "fuga radicado en export: {}", exp_txt);
+        assert!(!exp_txt.contains("3009876543"), "fuga telefono en export: {}", exp_txt);
+        assert!(exp_txt.contains("[PROCESADO]"), "{}", exp_txt);
+        assert!(exp_txt.contains("[RADICADO]"), "{}", exp_txt);
+        assert!(exp_txt.contains("[TELEFONO]"), "{}", exp_txt);
+
+        // 7) Dos correcciones NO->SI no relacionadas de defensores distintos NO deben fusionarse en un clúster
+        //    ni promover falsamente al Cuaderno General; y reactivar una regla retirada de otro defensor no la promueve a "*".
+        let dir_iso = preparar_dir("v3_cluster_aislado");
+        let ruta_iso = dir_iso.join(NOMBRE_ARCHIVO_MEMORIA);
+        let mut pred_no = audiencia_base();
+        pred_no.realizada = "NO".into();
+        pred_no.motivo = "Juez".into();
+        let mut fin_si_only = audiencia_base();
+        fin_si_only.realizada = "SI".into();
+        fin_si_only.motivo = String::new();
+        registrar_resultado_con_traza_y_defensor_en(
+            &ruta_iso,
+            "Se instaló la audiencia preparatoria pero luego se suspendió por agenda del despacho",
+            &pred_no,
+            &fin_si_only,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        registrar_resultado_con_traza_y_defensor_en(
+            &ruta_iso,
+            "Lectura de fallo condenatorio efectuada normalmente con presencia de todas las partes",
+            &pred_no,
+            &fin_si_only,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dr. Luis Mora"),
+        )
+        .unwrap();
+        assert!(
+            obtener_cluster_listo_para_inducir_en(&ruta_iso).is_none(),
+            "Dos textos totalmente distintos NO->SI de defensores distintos no deben fusionarse en un mismo clúster"
+        );
+
+        let mut mem_rev = MemoriaAprendizaje::default();
+        let rid_old = agregar_regla_interna_con_defensor(
+            &mut mem_rev,
+            "observaciones",
+            "Conservar frase exacta despacho virtual verificado en observaciones",
+            "retirada",
+            Some("observaciones"),
+            &[],
+            "mitigacion_modelo",
+            "*",
+            "Dra. Ana Pérez",
+            &[],
+            0.5,
+            "",
+        )
+        .unwrap();
+        agregar_regla_interna_con_defensor(
+            &mut mem_rev,
+            "observaciones",
+            "Conservar frase exacta despacho virtual verificado en observaciones",
+            "prueba",
+            Some("observaciones"),
+            &[],
+            "mitigacion_modelo",
+            "*",
+            "Dr. Luis Mora",
+            &[],
+            0.8,
+            "",
+        );
+        let r_rev = mem_rev.reglas.iter().find(|r| r.id == rid_old).unwrap();
+        assert_eq!(
+            r_rev.defensor_alcance, "luis mora",
+            "Reactivar una regla retirada de Ana por Luis no debe promocionarla a '*'"
+        );
+
+        let _ = fs::remove_dir_all(&dir_iso);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pilar1_migracion_v3_v4_fusion_colisiones_y_brechas_a_d_e_f() {
+        let dir = preparar_dir("pilar1_v3_v4_brechas");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let json_v3 = r#"{
+          "version": 3,
+          "aciertos": 12,
+          "reglas": [
+            {
+              "id": "base-perfil-luis",
+              "tipo_error": "observaciones",
+              "regla": "Luis incluye hora de reprogramación al final",
+              "refuerzos": 3,
+              "actualizada": "2025-07-01T10:00:00-05:00",
+              "estado": "activa",
+              "campo_objetivo": "observaciones",
+              "triggers": ["reprogramacion"],
+              "alpha": 5.0,
+              "beta": 1.0,
+              "origen": "base_perfil",
+              "defensor_alcance": "Dr. Luis Mora"
+            },
+            {
+              "id": "r-jose-1",
+              "tipo_error": "juzgado",
+              "regla": "J5 significa Juzgado 5 Penal del Circuito",
+              "refuerzos": 2,
+              "actualizada": "2025-07-01T10:00:00-05:00",
+              "estado": "prueba",
+              "campo_objetivo": "juzgado",
+              "triggers": ["j5"],
+              "alpha": 3.0,
+              "beta": 3.0,
+              "origen": "mitigacion_modelo",
+              "defensor_alcance": "Dr. José Daniel"
+            },
+            {
+              "id": "r-jose-2",
+              "tipo_error": "juzgado",
+              "regla": "J5 significa Juzgado 5 Penal del Circuito",
+              "refuerzos": 2,
+              "actualizada": "2025-07-02T10:00:00-05:00",
+              "estado": "activa",
+              "campo_objetivo": "juzgado",
+              "triggers": ["juzgado", "5"],
+              "alpha": 4.0,
+              "beta": 3.0,
+              "origen": "mitigacion_modelo",
+              "defensor_alcance": "JOSE DANIEL"
+            }
+          ],
+          "tabla_alias": [
+            {
+              "campo": "juzgado",
+              "entrada_norm": "j5",
+              "canonico": "Juzgado 5 Penal del Circuito",
+              "alpha": 3.0,
+              "beta": 1.2,
+              "defensor_alcance": "Dr. José Daniel",
+              "defensores_confirmantes": ["Dr. José Daniel"],
+              "ultima_actualizacion": "2025-07-01T10:00:00-05:00"
+            },
+            {
+              "campo": "juzgado",
+              "entrada_norm": "j5",
+              "canonico": "Juzgado 5 Penal del Circuito",
+              "alpha": 3.0,
+              "beta": 1.2,
+              "defensor_alcance": "Defensor Público José Daniel",
+              "defensores_confirmantes": ["JOSE DANIEL"],
+              "ultima_actualizacion": "2025-07-02T10:00:00-05:00"
+            }
+          ],
+          "preferencias_por_defensor": {
+            "Dr. José Daniel": { "instalada_reprogramada_si_alpha": 4.0, "instalada_reprogramada_si_beta": 2.0 },
+            "JOSE DANIEL": { "instalada_reprogramada_si_alpha": 4.0, "instalada_reprogramada_si_beta": 2.0 }
+          },
+          "correcciones": [],
+          "ejemplos_aciertos": []
+        }"#;
+        fs::write(&ruta, json_v3).unwrap();
+
+        let mem = cargar_memoria_en(&ruta);
+        assert_eq!(mem.version, VERSION_FORMATO);
+
+        // Brecha A: base-perfil-luis conserva alcance normalizado y origen
+        let r_base_luis = mem.reglas.iter().find(|r| r.id == "base-perfil-luis").unwrap();
+        assert_eq!(r_base_luis.defensor_alcance, "luis mora");
+        assert_eq!(r_base_luis.origen, "base_perfil");
+
+        // Fusión de colisiones v3 -> v4 sobre "jose daniel" preservando nombre más informativo y evidencia Beta aditiva
+        let reglas_jose: Vec<&ReglaAprendida> = mem
+            .reglas
+            .iter()
+            .filter(|r| r.defensor_alcance == "jose daniel")
+            .collect();
+        assert_eq!(reglas_jose.len(), 1);
+        assert_eq!(reglas_jose[0].refuerzos, 4);
+        assert!(reglas_jose[0].alpha > 4.5, "alpha={}", reglas_jose[0].alpha);
+
+        let aliases_jose: Vec<&AliasEstadistico> = mem
+            .tabla_alias
+            .iter()
+            .filter(|a| a.defensor_alcance == "jose daniel")
+            .collect();
+        assert_eq!(aliases_jose.len(), 1);
+        assert!(aliases_jose[0].alpha >= 4.9, "alpha alias={}", aliases_jose[0].alpha);
+        assert_eq!(aliases_jose[0].defensores_confirmantes, vec!["jose daniel".to_string()]);
+        assert!(mem
+            .nombres_defensores
+            .get("jose daniel")
+            .is_some_and(|n| n.contains("José Daniel")));
+
+        // Brecha D: deduplicación base.reglas + local.reglas priorizando local
+        let mut base = MemoriaAprendizaje::default();
+        base.reglas.push(construir_regla_v2(
+            "b-reg".into(),
+            "motivo".into(),
+            "Si fiscal no asiste marcar Fiscalía siempre".into(),
+            3,
+            "2025-07-01T10:00:00-05:00".into(),
+            "activa",
+            "motivo".into(),
+            vec!["fiscal".into()],
+            "base_invariante",
+            "*".into(),
+            0.9,
+            String::new(),
+        ));
+        let mut local = MemoriaAprendizaje::default();
+        let mut loc_r = construir_regla_v2(
+            "l-reg".into(),
+            "motivo".into(),
+            "Si fiscal no asiste marcar Fiscalía siempre".into(),
+            4,
+            "2025-08-01T10:00:00-05:00".into(),
+            "activa",
+            "motivo".into(),
+            vec!["fiscal".into()],
+            "mitigacion_modelo",
+            "*".into(),
+            0.95,
+            String::new(),
+        );
+        loc_r.alpha = 8.0;
+        local.reglas.push(loc_r);
+        let det = seleccionar_contexto_detallado_para_defensor(
+            "La fiscal no asiste a la audiencia",
+            &base,
+            &local,
+            None,
+            Some("Dr. José Daniel"),
+        );
+        assert_eq!(det.reglas.len(), 1);
+        assert_eq!(det.reglas[0].id, "l-reg");
+
+        // Brecha E: preferencias_efectivas_con_base_para_defensor hereda de base cuando local no tiene al defensor
+        let mut pref_luis_base = PreferenciasEstilo::default();
+        pref_luis_base.instalada_reprogramada_si_alpha = 7.0;
+        pref_luis_base.instalada_reprogramada_si_beta = 1.0;
+        base.preferencias_por_defensor
+            .insert("Dr. Luis Mora".into(), pref_luis_base);
+        let eff_luis = preferencias_efectivas_con_base_para_defensor(&base, &local, Some("luis mora"));
+        assert!((eff_luis.instalada_reprogramada_si_alpha - 7.0).abs() < 1e-6);
+
+        // Brecha F: obtener_resumenes_consolidados_prompt aplica precedencia local > base y recorte 320/380
+        base.perfiles_sinteticos.insert(
+            "*".into(),
+            PerfilSinteticoDefensor {
+                ambito: "*".into(),
+                nombre_mostrar: "General".into(),
+                resumen: "Criterio base general".into(),
+                version: 1,
+                ultima_actualizacion: String::new(),
+            },
+        );
+        local.perfiles_sinteticos.insert(
+            "*".into(),
+            PerfilSinteticoDefensor {
+                ambito: "*".into(),
+                nombre_mostrar: "General".into(),
+                resumen: "Criterio local ".repeat(40),
+                version: 2,
+                ultima_actualizacion: String::new(),
+            },
+        );
+        local.perfiles_sinteticos.insert(
+            "Dra. Ana Pérez".into(),
+            PerfilSinteticoDefensor {
+                ambito: "ana perez".into(),
+                nombre_mostrar: "Dra. Ana Pérez".into(),
+                resumen: "Perfil específico Ana ".repeat(35),
+                version: 1,
+                ultima_actualizacion: String::new(),
+            },
+        );
+        let (rg, rd) = obtener_resumenes_consolidados_prompt(&base, &local, Some("Dra. Ana Pérez"));
+        let rg_txt = rg.expect("resumen general");
+        let rd_txt = rd.expect("resumen defensor");
+        assert!(rg_txt.starts_with("Criterio local"));
+        assert!(rg_txt.chars().count() <= 320);
+        assert!(rd_txt.starts_with("Perfil específico Ana"));
+        assert!(rd_txt.chars().count() <= 380);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pilar1_renombrado_y_export_con_priors_sin_fuga_pii() {
+        let dir = preparar_dir("pilar1_renombrado_export");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let descargas = dir.join("descargas");
+
+        let mut pred = audiencia_base();
+        pred.radicado = "JUAN CESAR - 200016001075202588888".into();
+        pred.juzgado = "Juzgado 1 Promiscuo Municipal de San Juan del Cesar".into();
+        let mut fin = pred.clone();
+        fin.motivo = "Fiscalía".into();
+        fin.realizada = "NO".into();
+
+        for def in ["Dr. José Daniel", "Dra. Ana Pérez"] {
+            registrar_resultado_con_traza_y_defensor_en(
+                &ruta,
+                "Audiencia de JUAN CESAR rad 200016001075202588888 cel 3101234567 fiscal no vino",
+                &pred,
+                &fin,
+                "openai",
+                "gpt-5-mini",
+                &[],
+                Some(def),
+            )
+            .unwrap();
+        }
+
+        // Añadir perfil sintético y registro de consolidación con PII accidental para verificar sanitización en export
+        {
+            let mut m = cargar_memoria_en(&ruta);
+            m.perfiles_sinteticos.insert(
+                "jose daniel".into(),
+                PerfilSinteticoDefensor {
+                    ambito: "jose daniel".into(),
+                    nombre_mostrar: "Dr. José Daniel".into(),
+                    resumen: "Dr. José Daniel prioriza radicado 200016001075202588888 de JUAN CESAR cel 3101234567".into(),
+                    version: 1,
+                    ultima_actualizacion: Local::now().to_rfc3339(),
+                },
+            );
+            m.consolidaciones_ia.push(RegistroConsolidacionIa {
+                id: "cons-test".into(),
+                fecha: Local::now().to_rfc3339(),
+                ambito: "*".into(),
+                nombre_ambito: "General".into(),
+                modelo: "openai:gpt-5-mini".into(),
+                acciones_reglas: Vec::new(),
+                resumen_actualizado: "Resumen sobre JUAN CESAR 200016001075202588888".into(),
+                sugerencias_build: vec![SugerenciaBuild {
+                    categoria: "jerga".into(),
+                    ambito: "*".into(),
+                    detalle: "Detalle de JUAN CESAR cel 3101234567".into(),
+                    evidencia: "ev".into(),
+                }],
+                telemetria_disparo: TelemetriaDisparoConsolidacion::default(),
+            });
+            guardar_memoria_en(&ruta, &m).unwrap();
+        }
+
+        let mut priors = IndicePriorsExcel::default();
+        priors
+            .juzgados_freq
+            .insert("Juzgado 1 Promiscuo Municipal de San Juan del Cesar".into(), 5);
+        priors.tipos_freq.insert("Audiencia concentrada".into(), 5);
+        priors.horas_freq.insert(9, 4);
+        priors
+            .grafo
+            .defensor_a_juzgados
+            .entry("jose daniel".into())
+            .or_default()
+            .insert("Juzgado 1 Promiscuo Municipal de San Juan del Cesar".into(), 3);
+
+        let arch = exportar_aprendizaje_completo_con_priors_en(
+            &ruta,
+            None,
+            None,
+            Some(&priors),
+            &descargas,
+            &[],
+            &[],
+            &["Dr. José Daniel".into(), "Dra. Ana Pérez".into()],
+        )
+        .unwrap();
+        let json_str = fs::read_to_string(&arch).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(parsed.get("defensores_directorio").is_some());
+        assert!(parsed.get("resumen_patrones_generales").is_some());
+        assert!(parsed.get("preferencias_por_defensor").is_some());
+        assert!(parsed.get("grafo_asociaciones").is_some());
+        assert!(parsed.get("perfiles_sinteticos").is_some());
+        assert!(parsed.get("consolidaciones_ia").is_some());
+
+        assert!(!json_str.contains("DEFENSOR_1"));
+        assert!(json_str.contains("jose daniel"));
+        assert!(json_str.contains("Dr. José Daniel"));
+        assert!(json_str.contains("San Juan del Cesar"));
+        assert!(!json_str.to_lowercase().contains("juan cesar"), "{}", json_str);
+        assert!(!json_str.contains("200016001075202588888"), "{}", json_str);
+        assert!(!json_str.contains("3101234567"), "{}", json_str);
+
+        // Renombrar defensor migra todas sus claves en memoria
+        migrar_defensor_en_memoria_en(&ruta, "Dr. José Daniel", "José Daniel Martínez").unwrap();
+        let post = cargar_memoria_en(&ruta);
+        assert_eq!(
+            post.nombres_defensores.get("jose daniel martinez").map(String::as_str),
+            Some("José Daniel Martínez")
+        );
+        assert!(post.perfiles_sinteticos.contains_key("jose daniel martinez"));
+        assert!(!post.perfiles_sinteticos.contains_key("jose daniel"));
+        assert!(post
+            .correcciones
+            .iter()
+            .any(|c| c.defensor_clave == "jose daniel martinez"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pilar2_consolidacion_dual_shannon_watermark_y_concurrencia() {
+        // 1) Guard atómico CONSOLIDACION_EN_CURSO
+        assert!(intentar_reservar_consolidacion());
+        assert!(!intentar_reservar_consolidacion());
+        liberar_consolidacion();
+        assert!(intentar_reservar_consolidacion());
+        liberar_consolidacion();
+
+        let dir = preparar_dir("pilar2_consolidacion");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let ok = audiencia_base();
+        let mut p_err = ok.clone();
+        p_err.radicado = "MARIO GOMEZ - 200016001075202577777".into();
+        let mut f_err = p_err.clone();
+        f_err.realizada = "NO".into();
+        f_err.motivo = "Fiscalía".into();
+
+        // Calentar ewma con 5 aciertos: q10 subiría pero precision_ewma refleja certeza actual
+        for i in 0..5 {
+            registrar_resultado_con_traza_y_defensor_en(
+                &ruta,
+                &format!("Audiencia preparatoria sin novedad caso {} en despacho", i),
+                &ok,
+                &ok,
+                "openai",
+                "gpt-5-mini",
+                &[],
+                Some("Dra. Ana Pérez"),
+            )
+            .unwrap();
+        }
+        let mem_frio = cargar_memoria_en(&ruta);
+        let p_tras_ok = mem_frio
+            .estados_consolidacion
+            .get("*")
+            .map(|e| e.presion)
+            .unwrap_or(0.0);
+        assert!(p_tras_ok <= 1e-6);
+
+        // Guardas bloquean con pocas correcciones (< 3) aunque RNG sea 0.0
+        let mut mem_guard = cargar_memoria_en(&ruta);
+        assert!(evaluar_candidato_consolidacion(&mut mem_guard, Some("Dra. Ana Pérez"), Some(0.0)).is_none());
+
+        // Provocar 5 errores transversales en Ana y Luis sobre motivo Fiscalía
+        let mut ids_corr = Vec::new();
+        for i in 0..4 {
+            let def = if i < 2 { "Dra. Ana Pérez" } else { "Dr. Luis Mora" };
+            let (_, c) = registrar_resultado_con_traza_y_defensor_en(
+                &ruta,
+                &format!(
+                    "Audiencia de MARIO GOMEZ rad 200016001075202577777 cel 3001112233 fiscalia ausente caso {}",
+                    i
+                ),
+                &p_err,
+                &f_err,
+                "openai",
+                "gpt-5-mini",
+                &[],
+                Some(def),
+            )
+            .unwrap();
+            ids_corr.push(c.unwrap().id);
+        }
+
+        // Añadir 2 reglas redundantes + 1 regla base_invariante en memoria
+        {
+            let mut m = cargar_memoria_en(&ruta);
+            m.reglas.push(construir_regla_v2(
+                "base-intocable".into(),
+                "motivo".into(),
+                "Base invariante nunca se pone en cuarentena".into(),
+                5,
+                Local::now().to_rfc3339(),
+                "activa",
+                "motivo".into(),
+                vec!["fiscal".into()],
+                "base_invariante",
+                "*".into(),
+                0.95,
+                String::new(),
+            ));
+            m.reglas.push(construir_regla_v2(
+                "loc-dup-1".into(),
+                "motivo".into(),
+                "Marcar Fiscalía si el fiscal no asiste".into(),
+                2,
+                Local::now().to_rfc3339(),
+                "prueba",
+                "motivo".into(),
+                vec!["fiscal".into()],
+                "mitigacion_modelo",
+                "*".into(),
+                0.8,
+                String::new(),
+            ));
+            m.reglas.push(construir_regla_v2(
+                "loc-dup-2".into(),
+                "motivo".into(),
+                "Cuando la fiscal no comparece usar Fiscalía".into(),
+                1,
+                Local::now().to_rfc3339(),
+                "candidata",
+                "motivo".into(),
+                vec!["comparece".into()],
+                "mitigacion_modelo",
+                "*".into(),
+                0.7,
+                String::new(),
+            ));
+            m.reglas.push(construir_regla_v2(
+                "loc-conf".into(),
+                "motivo".into(),
+                "Regla obsoleta contradictoria de prueba".into(),
+                1,
+                Local::now().to_rfc3339(),
+                "activa",
+                "motivo".into(),
+                vec!["obsoleta".into()],
+                "mitigacion_modelo",
+                "*".into(),
+                0.6,
+                String::new(),
+            ));
+            // Asegurar presión elevada tras errores
+            m.estados_consolidacion.entry("*".into()).or_default().presion = 8.0;
+            guardar_memoria_en(&ruta, &m).unwrap();
+        }
+
+        let mut mem_eval = cargar_memoria_en(&ruta);
+        // Con rng=0.9999 no dispara (modelo probabilístico no determinista)
+        assert!(evaluar_candidato_consolidacion(&mut mem_eval, Some("Dra. Ana Pérez"), Some(0.9999)).is_none());
+        let tel = evaluar_candidato_consolidacion(&mut mem_eval, Some("Dra. Ana Pérez"), Some(0.001))
+            .expect("debe disparar consolidación con presión alta y rng bajo");
+        assert_eq!(tel.ambito, "*");
+
+        let lote = preparar_lote_consolidacion_en(&ruta, &tel.ambito, tel.clone(), false)
+            .expect("debe preparar lote");
+        let lote_json = serde_json::to_string(&lote).unwrap();
+        assert!(!lote_json.to_lowercase().contains("mario gomez"), "{}", lote_json);
+        assert!(!lote_json.contains("200016001075202577777"), "{}", lote_json);
+        assert!(!lote_json.contains("3001112233"), "{}", lote_json);
+        assert!(!lote.watermark_ids.is_empty());
+
+        // Simular llegada concurrente de una nueva corrección DESPUÉS de tomar el snapshot (no está en watermark_ids)
+        registrar_resultado_con_traza_y_defensor_en(
+            &ruta,
+            "Audiencia adicional concurrente con fiscalia ausente en sala",
+            &p_err,
+            &f_err,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        let sin_cons_antes = cargar_memoria_en(&ruta).estados_consolidacion["*"].correcciones_sin_consolidar;
+
+        let res_cons = ResultadoConsolidacionIa {
+            acciones_reglas: vec![
+                AccionConsolidacionInput {
+                    tipo_accion: "fusionar".into(),
+                    ids_origen: vec!["loc-dup-1".into(), "loc-dup-2".into()],
+                    tipo_error: "motivo".into(),
+                    campo_objetivo: "motivo".into(),
+                    regla: "Si el fiscal no se conecta o no comparece usar Fiscalía".into(),
+                    triggers: vec!["fiscal".into(), "comparece".into()],
+                    motivo: "Unificación".into(),
+                    confianza: 0.9,
+                },
+                AccionConsolidacionInput {
+                    tipo_accion: "conflicto".into(),
+                    ids_origen: vec!["base-intocable".into(), "loc-conf".into()],
+                    tipo_error: "motivo".into(),
+                    campo_objetivo: "motivo".into(),
+                    regla: String::new(),
+                    triggers: Vec::new(),
+                    motivo: "Obsoleta".into(),
+                    confianza: 0.95,
+                },
+                AccionConsolidacionInput {
+                    tipo_accion: "sintetizar".into(),
+                    ids_origen: Vec::new(),
+                    tipo_error: "motivo".into(),
+                    campo_objetivo: "motivo".into(),
+                    regla: "Nueva síntesis 1 sobre Fiscalía".into(),
+                    triggers: vec!["sintesis1".into()],
+                    motivo: "S1".into(),
+                    confianza: 0.85,
+                },
+                AccionConsolidacionInput {
+                    tipo_accion: "sintetizar".into(),
+                    ids_origen: Vec::new(),
+                    tipo_error: "motivo".into(),
+                    campo_objetivo: "motivo".into(),
+                    regla: "Nueva síntesis 2 sobre preacuerdos".into(),
+                    triggers: vec!["preacuerdo".into()],
+                    motivo: "S2".into(),
+                    confianza: 0.85,
+                },
+                AccionConsolidacionInput {
+                    tipo_accion: "sintetizar".into(),
+                    ids_origen: Vec::new(),
+                    tipo_error: "motivo".into(),
+                    campo_objetivo: "motivo".into(),
+                    regla: "Tercera síntesis debe respetarse tope de 2".into(),
+                    triggers: vec!["exceso".into()],
+                    motivo: "S3".into(),
+                    confianza: 0.85,
+                },
+            ],
+            resumen_actualizado: "Resumen transversal consolidado ".repeat(20),
+            sugerencias_build: vec![SugerenciaBuildInput {
+                categoria: "jerga".into(),
+                detalle: "Agregar abreviación".into(),
+                evidencia: "4 casos".into(),
+            }],
+        };
+
+        let diag = aplicar_consolidacion_ia_en(&ruta, &lote, &res_cons, "openai:gpt-5-mini").unwrap();
+        assert_eq!(diag.consolidaciones_totales, 1);
+        let mem_fin = cargar_memoria_en(&ruta);
+        assert_eq!(
+            mem_fin.reglas.iter().find(|r| r.id == "base-intocable").unwrap().estado,
+            "activa",
+            "base_invariante nunca debe tocarse"
+        );
+        assert_eq!(
+            mem_fin.reglas.iter().find(|r| r.id == "loc-conf").unwrap().estado,
+            "cuarentena"
+        );
+        assert_eq!(
+            mem_fin.reglas.iter().find(|r| r.id == "loc-dup-2").unwrap().estado,
+            "retirada"
+        );
+        assert_eq!(
+            mem_fin
+                .reglas
+                .iter()
+                .filter(|r| r.origen == "consolidacion_ia")
+                .count(),
+            2
+        );
+        assert!(mem_fin.reglas.iter().filter(|r| r.origen == "consolidacion_ia").all(|r| r.estado == "prueba"));
+        assert!(mem_fin.perfiles_sinteticos["*"].resumen.chars().count() <= MAX_CHARS_RESUMEN_GENERAL);
+
+        // Solo watermark_ids se restan: queda >= 1 corrección concurrente pendiente
+        let sin_cons_despues = mem_fin.estados_consolidacion["*"].correcciones_sin_consolidar;
+        assert_eq!(
+            sin_cons_despues,
+            sin_cons_antes.saturating_sub(lote.watermark_ids.len() as u32)
+        );
+        assert!(sin_cons_despues >= 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pilar2_simulacion_prequential_presion_consolidacion_y_decaimiento() {
+        let dir = preparar_dir("pilar2_sim_prequential");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let ok = audiencia_base();
+        let mut p_err = ok.clone();
+        p_err.realizada = "NO".into();
+        p_err.motivo = "Usuario".into();
+        let mut f_err = p_err.clone();
+        f_err.motivo = "Fiscalía".into();
+
+        // Tramo 1: 15 aciertos limpios -> presión ~0, cero disparos
+        for i in 0..15 {
+            registrar_resultado_con_traza_y_defensor_en(
+                &ruta,
+                &format!("Audiencia sin novedad limpia caso {}", i),
+                &ok,
+                &ok,
+                "openai",
+                "gpt-5-mini",
+                &[],
+                Some("Dra. Ana Pérez"),
+            )
+            .unwrap();
+        }
+        let m1 = cargar_memoria_en(&ruta);
+        assert!(m1.estados_consolidacion["*"].presion < 0.05);
+
+        // Tramo 2: racha de errores transversales de 2 defensores -> presión crece por sorpresa de Shannon y dispara
+        for i in 0..10 {
+            let def = if i % 2 == 0 { "Dra. Ana Pérez" } else { "Dr. Luis Mora" };
+            registrar_resultado_con_traza_y_defensor_en(
+                &ruta,
+                &format!("Diligencia aplazada por ausencia de fiscalia caso {}", i),
+                &p_err,
+                &f_err,
+                "openai",
+                "gpt-5-mini",
+                &[],
+                Some(def),
+            )
+            .unwrap();
+        }
+        let mut m2 = cargar_memoria_en(&ruta);
+        let presion_pico = m2.estados_consolidacion["*"].presion;
+        assert!(presion_pico > 4.5, "presion_pico={}", presion_pico);
+        let tel = evaluar_candidato_consolidacion(&mut m2, Some("Dra. Ana Pérez"), Some(0.01))
+            .expect("debe disparar tras drift transversal");
+        let amb_tel = tel.ambito.clone();
+        let lote = preparar_lote_consolidacion_en(&ruta, &amb_tel, tel, false).unwrap();
+        aplicar_consolidacion_ia_en(
+            &ruta,
+            &lote,
+            &ResultadoConsolidacionIa {
+                acciones_reglas: Vec::new(),
+                resumen_actualizado: "Regla transversal fiscalía ausente".into(),
+                sugerencias_build: Vec::new(),
+            },
+            "openai:gpt-5-mini",
+        )
+        .unwrap();
+
+        // Tramo 3: 10 aciertos siguientes reducen presión residual exponencialmente (0.93^10)
+        for i in 0..10 {
+            registrar_resultado_con_traza_y_defensor_en(
+                &ruta,
+                &format!("Audiencia post consolidacion correcta {}", i),
+                &ok,
+                &ok,
+                "openai",
+                "gpt-5-mini",
+                &[],
+                Some("Dra. Ana Pérez"),
+            )
+            .unwrap();
+        }
+        let m3 = cargar_memoria_en(&ruta);
+        assert!(m3.estados_consolidacion["*"].presion < presion_pico * 0.15);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pilar3_aclaracion_adaptativa_dato_externo_y_cero_huerfanas() {
+        let dir = preparar_dir("pilar3_aclaracion");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let pred = audiencia_base();
+        let mut fin_juz = pred.clone();
+        fin_juz.juzgado = "Juzgado 3 CTO".into();
+
+        // 1) Modulación por precision_ewma del defensor + firma ya explicada
+        let mut mem_fria = MemoriaAprendizaje::default();
+        let corr_test = CorreccionIa {
+            id: "c-mod".into(),
+            registrada: String::new(),
+            proveedor: "openai".into(),
+            modelo: "gpt-5-mini".into(),
+            texto_original: "Audiencia en Juzgado 3 CTO en Valledupar".into(),
+            prediccion: pred.clone(),
+            final_usuario: fin_juz.clone(),
+            campos: vec![CampoCorregido {
+                campo: "juzgado".into(),
+                valor_ia: pred.juzgado.clone(),
+                valor_usuario: fin_juz.juzgado.clone(),
+            }],
+            estado: "pendiente".into(),
+            regla_generada: String::new(),
+            regla_id_asociada: String::new(),
+            pregunta_ia: String::new(),
+            nota_usuario: String::new(),
+            exportada: false,
+            defensor_clave: "ana perez".into(),
+        };
+        assert!(decidir_aclaracion_local(&mem_fria, &corr_test, None, "ana perez").is_some());
+
+        // Con defensor ya maduro y precision_ewma=0.95 en juzgado, deja de molestar
+        mem_fria.llamadas_extraccion_total = 65;
+        let mut md = MetricasDefensor::default();
+        md.por_campo.insert(
+            "juzgado".into(),
+            MetricasCampo {
+                campo: "juzgado".into(),
+                evaluaciones: 30,
+                aciertos: 29,
+                correcciones: 1,
+                alpha: 25.0,
+                beta: 2.0,
+                precision_ewma: 0.95,
+                ultima_actualizacion: String::new(),
+            },
+        );
+        mem_fria.metricas_por_defensor.insert("ana perez".into(), md);
+        assert!(decidir_aclaracion_local(&mem_fria, &corr_test, None, "ana perez").is_none());
+
+        // 2) "Dato externo (no estaba en el texto)" a 0 tokens + limpieza de regla asociada (0 huérfanas)
+        let (r1, c1) = registrar_resultado_con_traza_y_defensor_en(
+            &ruta,
+            "Audiencia preparatoria en Juzgado 3 CTO Valledupar",
+            &pred,
+            &fin_juz,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        assert!(r1.aclaracion_pendiente.is_some());
+        let id1 = c1.unwrap().id;
+        // Simular que existía regla candidata asociada previamente
+        {
+            let mut m = cargar_memoria_en(&ruta);
+            let rid = agregar_regla_interna_con_defensor(
+                &mut m,
+                "juzgado",
+                "Regla asociada temporal candidata",
+                "candidata",
+                Some("juzgado"),
+                &[],
+                "mitigacion_modelo",
+                "*",
+                "ana perez",
+                &[],
+                0.5,
+                &id1,
+            )
+            .unwrap();
+            m.correcciones.iter_mut().find(|c| c.id == id1).unwrap().regla_id_asociada = rid;
+            guardar_memoria_en(&ruta, &m).unwrap();
+        }
+        let res_ext = marcar_dato_externo_en(&ruta, &id1).unwrap();
+        assert!(res_ext.aclaracion_pendiente.is_none());
+        let mem_ext = cargar_memoria_en(&ruta);
+        let corr_ext = mem_ext.correcciones.iter().find(|c| c.id == id1).unwrap();
+        assert_eq!(corr_ext.estado, "descartada");
+        assert_eq!(corr_ext.nota_usuario, "Dato externo (no estaba en el texto)");
+        assert!(mem_ext.reglas.is_empty(), "regla huérfana debió eliminarse");
+
+        // Firma ya explicada no vuelve a preguntar en las siguientes 30 interacciones
+        let (r_rep, _) = registrar_resultado_con_traza_y_defensor_en(
+            &ruta,
+            "Audiencia preparatoria en Juzgado 8 CTO Valledupar",
+            &pred,
+            &fin_juz,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        assert!(r_rep.aclaracion_pendiente.is_none());
+
+        // 3) Auto-descarte tras >= 2 turnos sin responder y al cambiar de defensor
+        let dir2 = preparar_dir("pilar3_autodescarte");
+        let ruta2 = dir2.join(NOMBRE_ARCHIVO_MEMORIA);
+        let mut fin_tipo = pred.clone();
+        fin_tipo.tipo = "Audiencia preliminar".into();
+        let (r_ask, c_ask) = registrar_resultado_con_traza_y_defensor_en(
+            &ruta2,
+            "Diligencia en Juzgado 3 CTO sobre control preliminar",
+            &pred,
+            &fin_juz,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        assert!(r_ask.aclaracion_pendiente.is_some());
+        let ask_id = c_ask.unwrap().id;
+        // 2 turnos del mismo defensor sin responder auto-descartan aclaración e incrementan beta_omit
+        registrar_resultado_con_traza_y_defensor_en(
+            &ruta2,
+            "Turno 1 sin responder",
+            &pred,
+            &pred,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        let (r_t2, _) = registrar_resultado_con_traza_y_defensor_en(
+            &ruta2,
+            "Turno 2 sin responder",
+            &pred,
+            &pred,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        assert!(r_t2.aclaracion_pendiente.is_none());
+        let mem_auto = cargar_memoria_en(&ruta2);
+        assert!(mem_auto.estado_aclaracion.beta_omit >= 2.0);
+        assert_eq!(mem_auto.estado_aclaracion.racha_omisiones, 1);
+        assert!(mem_auto.enfriamiento_aclaracion >= 6);
+        assert_eq!(
+            mem_auto.correcciones.iter().find(|c| c.id == ask_id).unwrap().estado,
+            "pendiente"
+        );
+
+        // Cambio de defensor limpia esperando_aclaracion de inmediato
+        mem_auto_check_cambio_def(&ruta2, &pred, &fin_tipo);
+
+        // 4) aplicar_analisis_en con !es_error_de_ia retira/elimina regla_id_asociada (0 huérfanas)
+        let mut pred_h = pred.clone();
+        pred_h.juzgado = "Juzgado 2 Penal del Circuito".into();
+        let mut fin_h = pred.clone();
+        fin_h.realizada = "NO".into();
+        fin_h.motivo = "Fiscalía".into();
+        let dir3 = preparar_dir("pilar3_huerfana_no_error");
+        let ruta3 = dir3.join(NOMBRE_ARCHIVO_MEMORIA);
+        let (_, c_h) = registrar_resultado_con_traza_y_defensor_en(
+            &ruta3,
+            "Audiencia en Juzgado 2 Penal reprogramada por fiscalia",
+            &pred_h,
+            &fin_h,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        let cid_h = c_h.unwrap().id;
+        {
+            let mut m = cargar_memoria_en(&ruta3);
+            let rid = agregar_regla_interna_con_defensor(
+                &mut m,
+                "motivo",
+                "Regla preliminar asociada a corrección",
+                "candidata",
+                Some("motivo"),
+                &["fiscalia".into()],
+                "mitigacion_modelo",
+                "*",
+                "ana perez",
+                &[],
+                0.5,
+                &cid_h,
+            )
+            .unwrap();
+            m.correcciones.iter_mut().find(|c| c.id == cid_h).unwrap().regla_id_asociada = rid;
+            guardar_memoria_en(&ruta3, &m).unwrap();
+        }
+        aplicar_analisis_en(
+            &ruta3,
+            &cid_h,
+            &AnalisisCorreccionIa {
+                es_error_de_ia: false,
+                tipo_error: "otro".into(),
+                regla: String::new(),
+                confianza: 0.9,
+                necesita_aclaracion: false,
+                pregunta: String::new(),
+            },
+        )
+        .unwrap();
+        let mem_h = cargar_memoria_en(&ruta3);
+        assert!(mem_h.reglas.iter().all(|r| r.estado == "retirada") || mem_h.reglas.is_empty());
+        assert_eq!(
+            mem_h.correcciones.iter().find(|c| c.id == cid_h).unwrap().regla_id_asociada,
+            ""
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir2);
+        let _ = fs::remove_dir_all(&dir3);
+    }
+
+    fn mem_auto_check_cambio_def(ruta: &Path, pred: &AudienciaInput, fin_tipo: &AudienciaInput) {
+        let mut m = cargar_memoria_en(ruta);
+        m.enfriamiento_aclaracion = 0;
+        guardar_memoria_en(ruta, &m).unwrap();
+
+        // Tras omisión previa (beta_omit >= 2.0 -> r_resp menor), una variación leve de `tipo` ya NO molesta
+        let (r_leve, _) = registrar_resultado_con_traza_y_defensor_en(
+            ruta,
+            "Audiencia preliminar urgente en despacho penal ordinario",
+            pred,
+            fin_tipo,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dr. Luis Mora"),
+        )
+        .unwrap();
+        assert!(r_leve.aclaracion_pendiente.is_none());
+
+        // En cambio, una corrección de alto VoI (realizada + motivo) sí solicita aclaración para Luis
+        // y se auto-descarta inmediatamente al cambiar a Ana
+        let mut fin_amb = pred.clone();
+        fin_amb.realizada = "NO".into();
+        fin_amb.motivo = "Juez".into();
+        let (r_b, _) = registrar_resultado_con_traza_y_defensor_en(
+            ruta,
+            "Diligencia se instaló pero se suspendió y se reprogramó por despacho en sala",
+            pred,
+            &fin_amb,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dr. Luis Mora"),
+        )
+        .unwrap();
+        assert!(r_b.aclaracion_pendiente.is_some());
+        let (r_otro, _) = registrar_resultado_con_traza_y_defensor_en(
+            ruta,
+            "Audiencia normal de control",
+            pred,
+            pred,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        assert!(r_otro.aclaracion_pendiente.is_none());
+    }
+
+    #[test]
+    fn test_regresiones_rng_notas_consolidadas_renombrado_y_anonimizador() {
+        let dir = preparar_dir("regresiones_v4");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let pred = audiencia_base();
+
+        // 1) evaluar_y_preparar_consolidacion_en persiste semilla_rng aunque u >= prob rechace el disparo
+        {
+            let mut m = MemoriaAprendizaje::default();
+            m.llamadas_extraccion_total = 12;
+            m.semilla_rng = DEFAULT_SEMILLA_RNG;
+            let mut est = EstadoConsolidacion::default();
+            est.extracciones_desde_ultima = 8;
+            est.correcciones_sin_consolidar = 4;
+            est.presion = 0.5; // prob muy baja -> primer u casi seguro >= prob
+            m.estados_consolidacion.insert("*".into(), est);
+            m.correcciones.push(CorreccionIa {
+                id: "c-rng".into(),
+                registrada: String::new(),
+                proveedor: "openai".into(),
+                modelo: "gpt-5-mini".into(),
+                texto_original: "Audiencia de prueba rng".into(),
+                prediccion: pred.clone(),
+                final_usuario: pred.clone(),
+                campos: vec![CampoCorregido {
+                    campo: "motivo".into(),
+                    valor_ia: "Juez".into(),
+                    valor_usuario: "Fiscalía".into(),
+                }],
+                estado: "pendiente".into(),
+                regla_generada: String::new(),
+                regla_id_asociada: String::new(),
+                pregunta_ia: String::new(),
+                nota_usuario: String::new(),
+                exportada: false,
+                defensor_clave: String::new(),
+            });
+            guardar_memoria_en(&ruta, &m).unwrap();
+        }
+        let lote_rech = evaluar_y_preparar_consolidacion_en(&ruta, None);
+        assert!(lote_rech.is_none());
+        let mem_post_rng = cargar_memoria_en(&ruta);
+        assert_ne!(
+            mem_post_rng.semilla_rng, DEFAULT_SEMILLA_RNG,
+            "semilla_rng debe avanzar en disco aunque el roll no dispare"
+        );
+
+        // 2) guardar_nota_aclaracion_en reabre una corrección ya consolidada y no cuenta IDs inexistentes
+        {
+            let mut m = cargar_memoria_en(&ruta);
+            let est = m.estados_consolidacion.get_mut("*").unwrap();
+            est.ids_consolidadas_recientes.push("c-rng".into());
+            est.correcciones_sin_consolidar = 0;
+            est.notas_sin_consolidar = 0;
+            guardar_memoria_en(&ruta, &m).unwrap();
+        }
+        let (_, fantasma) = guardar_nota_aclaracion_en(&ruta, "id-inexistente", "Nota fantasma").unwrap();
+        assert!(fantasma.is_none());
+        assert_eq!(cargar_memoria_en(&ruta).estados_consolidacion["*"].notas_sin_consolidar, 0);
+
+        let (_, real_nota) = guardar_nota_aclaracion_en(&ruta, "c-rng", "Nota nueva tras consolidar").unwrap();
+        assert!(real_nota.is_some());
+        let m_reabierta = cargar_memoria_en(&ruta);
+        assert!(!m_reabierta.estados_consolidacion["*"].ids_consolidadas_recientes.contains(&"c-rng".to_string()));
+        assert_eq!(m_reabierta.estados_consolidacion["*"].correcciones_sin_consolidar, 1);
+        assert_eq!(m_reabierta.estados_consolidacion["*"].notas_sin_consolidar, 1);
+
+        // 3) descartar_aclaracion_en no refuerza regla ya asociada; retiro respeta otra corrección activa
+        {
+            let mut m = MemoriaAprendizaje::default();
+            let rid = agregar_regla_interna_con_defensor(
+                &mut m,
+                "motivo",
+                "Regla compartida de cluster dos casos",
+                "prueba",
+                Some("motivo"),
+                &["fiscal".into()],
+                "mitigacion_modelo",
+                "*",
+                "ana perez",
+                &[],
+                0.85,
+                "c1",
+            )
+            .unwrap();
+            for (cid, est_c) in [("c1", "esperando_aclaracion"), ("c2", "analizada")] {
+                m.correcciones.push(CorreccionIa {
+                    id: cid.into(),
+                    registrada: String::new(),
+                    proveedor: "openai".into(),
+                    modelo: "gpt-5-mini".into(),
+                    texto_original: "Fiscal ausente".into(),
+                    prediccion: pred.clone(),
+                    final_usuario: pred.clone(),
+                    campos: vec![CampoCorregido {
+                        campo: "motivo".into(),
+                        valor_ia: "Usuario".into(),
+                        valor_usuario: "Fiscalía".into(),
+                    }],
+                    estado: est_c.into(),
+                    regla_generada: "Regla compartida de cluster dos casos".into(),
+                    regla_id_asociada: rid.clone(),
+                    pregunta_ia: if cid == "c1" { "¿Por qué?".into() } else { String::new() },
+                    nota_usuario: String::new(),
+                    exportada: false,
+                    defensor_clave: "ana perez".into(),
+                });
+            }
+            guardar_memoria_en(&ruta, &m).unwrap();
+        }
+        descartar_aclaracion_en(&ruta, "c1").unwrap();
+        assert_eq!(cargar_memoria_en(&ruta).reglas[0].refuerzos, 1);
+        marcar_dato_externo_en(&ruta, "c1").unwrap();
+        assert_eq!(
+            cargar_memoria_en(&ruta).reglas[0].estado,
+            "prueba",
+            "No debe eliminar regla mientras c2 siga respaldándola"
+        );
+
+        // 4) Anonimizador no censura palabra legal 'procesado' y protege sub-frases honoríficas de 3 tokens
+        let anon = Anonimizador::desde_radicados(&["PROCESADO - 1234", "PEDRO DANIEL - 200016001075202500111"])
+            .con_escudos_defensores(&["Dr. José Daniel Martínez".into()]);
+        let out_regla = anon.aplicar("No pude contactar al procesado Pedro Daniel ni a Daniel; confirmó el Dr. José Daniel.");
+        assert!(out_regla.contains("al procesado"), "{}", out_regla);
+        assert!(!out_regla.to_lowercase().contains("pedro"), "{}", out_regla);
+        assert_eq!(out_regla.matches("[PROCESADO]").count(), 2, "{}", out_regla);
+        assert!(out_regla.contains("Dr. José Daniel"), "{}", out_regla);
+
+        // 5) Renombrar defensor actualiza consolidaciones_ia y repoints regla_id_asociada al colapsar reglas
+        let mut mem_ren = MemoriaAprendizaje::default();
+        mem_ren.consolidaciones_ia.push(RegistroConsolidacionIa {
+            id: "cons-1".into(),
+            fecha: String::new(),
+            ambito: "jose daniel".into(),
+            nombre_ambito: "Dr. José Daniel".into(),
+            modelo: "openai:gpt-5-mini".into(),
+            acciones_reglas: Vec::new(),
+            resumen_actualizado: "Ok".into(),
+            sugerencias_build: vec![SugerenciaBuild {
+                categoria: "jerga".into(),
+                ambito: "jose daniel".into(),
+                detalle: "d".into(),
+                evidencia: "e".into(),
+            }],
+            telemetria_disparo: TelemetriaDisparoConsolidacion {
+                ambito: "jose daniel".into(),
+                ..Default::default()
+            },
+        });
+        let r_a = agregar_regla_interna_con_defensor(
+            &mut mem_ren,
+            "juzgado",
+            "Mantener abreviacion CTO en juzgado",
+            "activa",
+            Some("juzgado"),
+            &["cto".into()],
+            "mitigacion_modelo",
+            "*",
+            "Dra. Ana Pérez",
+            &[],
+            0.9,
+            "ca",
+        )
+        .unwrap();
+        let r_b = agregar_regla_interna_con_defensor(
+            &mut mem_ren,
+            "juzgado",
+            "Mantener abreviacion CTO en juzgado",
+            "prueba",
+            Some("juzgado"),
+            &["cto".into()],
+            "mitigacion_modelo",
+            "*",
+            "Dr. José Daniel",
+            &[],
+            0.8,
+            "cb",
+        )
+        .unwrap();
+        // Separar reglas manualmente para probar colapso en renombrado y repoint de regla_id_asociada
+        assert_eq!(r_a, r_b);
+        mem_ren.reglas.clear();
+        mem_ren.reglas.push(construir_regla_v2(
+            "r-ana-dup".into(),
+            "juzgado".into(),
+            "Conservar sigla MPAL intacta".into(),
+            2,
+            String::new(),
+            "activa",
+            "juzgado".into(),
+            vec!["mpal".into()],
+            "mitigacion_modelo",
+            "*".into(),
+            0.9,
+            "ca".into(),
+        ));
+        mem_ren.reglas[0].defensor_alcance = "ana perez".into();
+        let mut r_jose = mem_ren.reglas[0].clone();
+        r_jose.id = "r-jose-dup".into();
+        r_jose.defensor_alcance = "jose daniel".into();
+        mem_ren.reglas.push(r_jose);
+        mem_ren.correcciones.push(CorreccionIa {
+            id: "c-col".into(),
+            registrada: String::new(),
+            proveedor: "openai".into(),
+            modelo: "gpt-5-mini".into(),
+            texto_original: "Juzgado 3 MPAL".into(),
+            prediccion: pred.clone(),
+            final_usuario: pred,
+            campos: Vec::new(),
+            estado: "analizada".into(),
+            regla_generada: "Conservar sigla MPAL intacta".into(),
+            regla_id_asociada: "r-jose-dup".into(),
+            pregunta_ia: String::new(),
+            nota_usuario: String::new(),
+            exportada: false,
+            defensor_clave: "jose daniel".into(),
+        });
+
+        assert!(renombrar_defensor_en_memoria_struct(&mut mem_ren, "Dr. José Daniel", "José Daniel Martínez"));
+        assert_eq!(mem_ren.consolidaciones_ia[0].ambito, "jose daniel martinez");
+        assert_eq!(mem_ren.consolidaciones_ia[0].nombre_ambito, "José Daniel Martínez");
+        assert_eq!(mem_ren.consolidaciones_ia[0].sugerencias_build[0].ambito, "jose daniel martinez");
+
+        // Fusionar José Daniel Martínez -> Ana Pérez colapsa reglas duplicadas y repunta regla_id_asociada
+        assert!(renombrar_defensor_en_memoria_struct(&mut mem_ren, "José Daniel Martínez", "Dra. Ana Pérez"));
+        assert_eq!(mem_ren.reglas.len(), 1);
+        assert_eq!(mem_ren.correcciones[0].regla_id_asociada, "r-ana-dup");
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -1,5 +1,5 @@
 <script>
-  import { Check, ChevronDown } from "@lucide/svelte";
+  import { Check, ChevronDown, Edit3, Trash2, X } from "@lucide/svelte";
 
   let {
     id = "",
@@ -20,14 +20,32 @@
     inputEl = $bindable(null),
     onEnter = undefined,
     onSelect = undefined,
+    onEditOption = undefined,
+    onDeleteOption = undefined,
   } = $props();
 
   let open = $state(false);
   let mostrarTodas = $state(false);
   let highlightedIndex = $state(-1);
   let rootEl = $state(null);
+  let editingItem = $state(null);
+  let editDraft = $state("");
+  let editError = $state("");
+  let editInputEl = $state(null);
+  let ultimoEditingFoco = null;
+  let busyOption = $state(false);
   const fallbackId = `ac-${Math.random().toString(36).slice(2, 8)}`;
   let listboxId = $derived(`${id || fallbackId}-listbox`);
+
+  $effect(() => {
+    if (editingItem && editInputEl && ultimoEditingFoco !== editingItem) {
+      ultimoEditingFoco = editingItem;
+      editInputEl.focus();
+      editInputEl.select?.();
+    } else if (!editingItem) {
+      ultimoEditingFoco = null;
+    }
+  });
 
   function normalizar(txt) {
     return String(txt || "")
@@ -69,7 +87,14 @@
     return unicas;
   });
 
+  function limpiarEdicion() {
+    editingItem = null;
+    editDraft = "";
+    editError = "";
+  }
+
   function selectSuggestion(item) {
+    limpiarEdicion();
     value = item;
     open = false;
     mostrarTodas = false;
@@ -80,14 +105,97 @@
   function toggleDropdown() {
     if (suggestions.length === 0) return;
     if (open) {
+      limpiarEdicion();
       open = false;
       mostrarTodas = false;
       highlightedIndex = -1;
     } else {
+      limpiarEdicion();
       open = true;
       mostrarTodas = true;
       highlightedIndex = -1;
       inputEl?.focus();
+    }
+  }
+
+  function iniciarEdicion(item) {
+    if (busyOption) return;
+    open = true;
+    mostrarTodas = true;
+    ultimoEditingFoco = null;
+    editingItem = item;
+    editDraft = item;
+    editError = "";
+    highlightedIndex = -1;
+  }
+
+  function cancelarEdicion() {
+    limpiarEdicion();
+    inputEl?.focus();
+  }
+
+  async function confirmarEdicion() {
+    if (!editingItem || busyOption || !onEditOption) return;
+    const actual = editingItem;
+    const nuevo = editDraft.trim().replace(/\s+/g, " ");
+    if (!nuevo) {
+      editError = "El nombre no puede estar vacío.";
+      return;
+    }
+    if (nuevo === actual) {
+      limpiarEdicion();
+      return;
+    }
+    busyOption = true;
+    editError = "";
+    try {
+      const res = await onEditOption(actual, nuevo);
+      if (res && res.ok) {
+        const valorFinal = (res.valor || nuevo).trim();
+        if (normalizar(value) === normalizar(actual)) {
+          value = valorFinal;
+        }
+        limpiarEdicion();
+        mostrarTodas = true;
+        setTimeout(() => inputEl?.focus(), 10);
+      } else {
+        editError = res?.error || "No se pudo guardar el cambio.";
+      }
+    } catch (err) {
+      editError = String(err);
+    } finally {
+      busyOption = false;
+    }
+  }
+
+  async function confirmarEliminacion(item) {
+    if (busyOption || !onDeleteOption) return;
+    busyOption = true;
+    editError = "";
+    try {
+      await onDeleteOption(item);
+      if (editingItem && normalizar(editingItem) === normalizar(item)) {
+        limpiarEdicion();
+      }
+      if (normalizar(value) === normalizar(item)) {
+        value = "";
+      }
+      const quedan = suggestions.some((s) => normalizar(s) !== normalizar(item));
+      if (!quedan) {
+        open = false;
+        mostrarTodas = false;
+      } else {
+        mostrarTodas = true;
+      }
+    } finally {
+      busyOption = false;
+    }
+  }
+
+  function bloquearCancelDialogo() {
+    const dlg = rootEl?.closest("dialog");
+    if (dlg) {
+      dlg.dataset.blockCancelUntil = String(Date.now() + 150);
     }
   }
 
@@ -97,6 +205,8 @@
     if (e.key === "Escape" && open && (filtradas.length > 0 || (allowEmptyOption && value.trim() !== ""))) {
       e.preventDefault();
       e.stopPropagation();
+      bloquearCancelDialogo();
+      limpiarEdicion();
       open = false;
       mostrarTodas = false;
       highlightedIndex = -1;
@@ -125,6 +235,7 @@
         selectSuggestion(filtradas[highlightedIndex]);
       } else if (onEnter) {
         e.preventDefault();
+        limpiarEdicion();
         open = false;
         mostrarTodas = false;
         onEnter();
@@ -134,6 +245,7 @@
 
   function handleWindowPointerDown(e) {
     if (open && rootEl && !rootEl.contains(e.target)) {
+      limpiarEdicion();
       open = false;
       mostrarTodas = false;
       highlightedIndex = -1;
@@ -252,25 +364,131 @@
         {#each filtradas as item, idx}
           {@const isSelected = normalizar(value) === normalizar(item)}
           {@const isHighlighted = highlightedIndex === idx}
-          <button
-            id="{listboxId}-opt-{idx}"
-            type="button"
-            role="option"
-            aria-selected={isSelected}
-            class="custom-select-option {isSelected ? 'selected' : ''} {isHighlighted ? 'highlighted' : ''}"
-            onmouseenter={() => (highlightedIndex = idx)}
-            onpointerdown={(e) => {
-              e.preventDefault();
-              selectSuggestion(item);
-            }}
-          >
-            <span class="opt-text">{item}</span>
-            {#if isSelected}
-              <span class="opt-check">
-                <Check size={14} strokeWidth={2.5} />
-              </span>
-            {/if}
-          </button>
+          {#if editingItem === item}
+            <div class="autocomplete-edit-block">
+              <div class="custom-select-add-form autocomplete-edit-row">
+                <input
+                  type="text"
+                  class="custom-select-add-input"
+                  bind:this={editInputEl}
+                  bind:value={editDraft}
+                  aria-label="Nuevo nombre para {item}"
+                  autocorrect="off"
+                  spellcheck="false"
+                  disabled={busyOption}
+                  onkeydown={(e) => {
+                    if (!e.isComposing && e.key === "Enter") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      confirmarEdicion();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      bloquearCancelDialogo();
+                      cancelarEdicion();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  class="btn btn-solid custom-select-add-save"
+                  disabled={busyOption || !editDraft.trim()}
+                  onpointerdown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    confirmarEdicion();
+                  }}
+                >
+                  Guardar
+                </button>
+                <button
+                  type="button"
+                  class="clear-search-btn"
+                  title="Cancelar edición"
+                  aria-label="Cancelar edición"
+                  disabled={busyOption}
+                  onpointerdown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    cancelarEdicion();
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+              {#if editError}
+                <div class="autocomplete-edit-error" role="alert">{editError}</div>
+              {/if}
+            </div>
+          {:else}
+            <div
+              class="custom-select-option-row {isSelected ? 'selected' : ''} {isHighlighted ? 'highlighted' : ''}"
+            >
+              <button
+                id="{listboxId}-opt-{idx}"
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                class="custom-select-option"
+                onmouseenter={() => (highlightedIndex = idx)}
+                onpointerdown={(e) => {
+                  e.preventDefault();
+                  selectSuggestion(item);
+                }}
+              >
+                <span class="opt-text">{item}</span>
+                {#if isSelected}
+                  <span class="opt-check">
+                    <Check size={14} strokeWidth={2.5} />
+                  </span>
+                {/if}
+              </button>
+              {#if onEditOption}
+                <button
+                  type="button"
+                  class="custom-select-edit-btn"
+                  title="Editar '{item}'"
+                  aria-label="Editar {item}"
+                  disabled={busyOption}
+                  onpointerdown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    iniciarEdicion(item);
+                  }}
+                >
+                  <Edit3 size={13} />
+                </button>
+              {/if}
+              {#if onDeleteOption}
+                <button
+                  type="button"
+                  class="custom-select-delete-btn"
+                  title="Eliminar '{item}' de la lista"
+                  aria-label="Eliminar {item}"
+                  disabled={busyOption}
+                  onpointerdown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    confirmarEliminacion(item);
+                  }}
+                >
+                  <Trash2 size={13} />
+                </button>
+              {/if}
+            </div>
+          {/if}
         {/each}
       </div>
     </div>

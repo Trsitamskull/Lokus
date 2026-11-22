@@ -2,36 +2,312 @@ import { test, expect } from "@playwright/test";
 
 function mockTauriInit(opts = {}) {
   const configured = Boolean(opts?.configured);
+  const sinDefensorInicial = Boolean(opts?.sinDefensor);
   const carpetas = ["2026", "2026/Enero"];
-  const archivos = ["2026/Enero/audiencias_enero.xlsx"];
+  const extraArchivos = Array.isArray(opts?.extraArchivos) ? opts.extraArchivos : [];
+  let archivos = ["2026/Enero/audiencias_enero.xlsx", ...extraArchivos];
+  const defensoresPorArchivo = {
+    "2026/Enero/audiencias_enero.xlsx": sinDefensorInicial ? "" : "Dra. Laura Gómez",
+  };
+  for (const extra of extraArchivos) {
+    defensoresPorArchivo[extra] = opts?.defensoresPorArchivo?.[extra] ?? "Dra. Laura Gómez";
+  }
   const colores = { "2026": "azul", "2026/Enero": "verde" };
-  const defensores = ["Dra. Laura Gómez", "Dr. Carlos Mendoza"];
+  let defensores = [
+    "Dra. Laura Gómez",
+    "Dr. Carlos Mendoza",
+    ...(Array.isArray(opts?.extraDefensores) ? opts.extraDefensores : []),
+  ];
+  let providerActual = "openai";
+  let openaiModelActual = "gpt-5-mini";
+  let geminiModelActual = "gemini-2.5-flash";
   let temaActual = "dark";
+  let consolidacionIaActiva = opts?.consolidacion_ia_activa ?? true;
+  let usarResumenConsolidado = opts?.usar_resumen_consolidado ?? true;
   let juzgadosUsuario = [];
   let tiposUsuario = [];
+
+  let aciertos = 12;
+  let totalCorrecciones = 2;
+  let totalReglas = 3;
+  let pendientesExportar = 3;
+  let pendientesIa = 1;
+  let pendientesUso = 2;
+  let totalAudienciasContabilizadas = 5;
+  let aclaracionPendiente = null;
+  let seqCorr = 0;
+  let consolidacionesTotales = 0;
+  let presionGlobal = 1.45;
+  let ultimaConsolidacion = null;
+  let perfilesSinteticos = Array.isArray(opts?.perfilesIniciales)
+    ? [...opts.perfilesIniciales]
+    : [];
+
+  function normalizarCmp(v) {
+    return String(v || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function normalizarClaveDef(v) {
+    return normalizarCmp(v).replace(/^(?:defensora?\s+public[ao]|doctor[a]?|dra?|abg|lic)\.?\s+/i, "");
+  }
+
+  function construirResumen(huboCorreccion = false) {
+    return {
+      aciertos,
+      total_correcciones: totalCorrecciones,
+      total_reglas: totalReglas,
+      pendientes_exportar: pendientesExportar,
+      pendientes_ia: pendientesIa,
+      pendientes_uso: pendientesUso,
+      total_audiencias_contabilizadas: totalAudienciasContabilizadas,
+      puede_exportar: true,
+      hubo_correccion: huboCorreccion,
+      aclaracion_pendiente: aclaracionPendiente,
+    };
+  }
+
+  function construirDiagnostico() {
+    return {
+      aciertos_totales: aciertos,
+      correcciones_totales: totalCorrecciones,
+      ejemplos_positivos_totales: 10,
+      llamadas_induccion_llm_total: 1,
+      clusters_pendientes: 1,
+      clusters_listos: 0,
+      perfiles_defensores: 2,
+      conexiones_grafo: 14,
+      drift_campos_activos: [],
+      enfriamiento_aclaracion: 0,
+      reglas_por_estado: { activa: 2, prueba: 1 },
+      metricas_por_campo: [
+        {
+          campo: "realizada",
+          evaluaciones: 14,
+          aciertos: 13,
+          correcciones: 1,
+          precision_ewma: 0.93,
+          confianza_q10: 0.72,
+          drift_activo: false,
+        },
+        {
+          campo: "motivo",
+          evaluaciones: 14,
+          aciertos: 12,
+          correcciones: 2,
+          precision_ewma: 0.86,
+          confianza_q10: 0.61,
+          drift_activo: false,
+        },
+      ],
+      metricas_por_modelo: [
+        {
+          clave: `${providerActual}:${providerActual === "gemini" ? geminiModelActual : openaiModelActual}`,
+          evaluaciones: 14,
+          aciertos: 12,
+          correcciones: 2,
+          precision_media: 0.86,
+        },
+      ],
+      preferencias_estilo: {
+        incluir_causas_secundarias_prob: 0.75,
+        incluir_reprogramacion_prob: 0.8,
+        se_fija_aplazamiento_prob: 0.5,
+        instalada_reprogramada_si_prob: 0.4,
+      },
+      alias_validados: [],
+      reglas_destacadas: [
+        {
+          id: "base-1",
+          estado: "activa",
+          campo_objetivo: "juzgado",
+          origen: "base_invariante",
+          defensor_alcance: "*",
+          regla: "Conservar abreviaciones CTO, MPAL y PCTO tal como aparecen",
+          impresiones: 6,
+          aciertos_directos: 6,
+          fallos_directos: 0,
+          confianza_q10: 0.81,
+        },
+      ],
+      consolidaciones_totales: consolidacionesTotales,
+      presion_consolidacion_global: presionGlobal,
+      presiones_por_defensor: [
+        {
+          clave: "*",
+          nombre: "General (transversal)",
+          presion: presionGlobal,
+          correcciones_sin_consolidar: 2,
+          notas_sin_consolidar: 0,
+          extracciones_desde_ultima: 8,
+          ultima_consolidacion: ultimaConsolidacion?.fecha || "",
+        },
+        {
+          clave: "laura gomez",
+          nombre: "Dra. Laura Gómez",
+          presion: 2.1,
+          correcciones_sin_consolidar: 2,
+          notas_sin_consolidar: 1,
+          extracciones_desde_ultima: 6,
+          ultima_consolidacion: "",
+        },
+      ],
+      ultima_consolidacion: ultimaConsolidacion,
+      perfiles_sinteticos: perfilesSinteticos,
+      tasa_respuesta_aclaraciones: 0.8,
+      defensores_resumen: [
+        {
+          clave: "laura gomez",
+          nombre: "Dra. Laura Gómez",
+          aciertos: 10,
+          correcciones: 2,
+          tasa_acierto: 0.833,
+          por_campo: [],
+        },
+        {
+          clave: "carlos mendoza",
+          nombre: "Dr. Carlos Mendoza",
+          aciertos: 2,
+          correcciones: 0,
+          tasa_acierto: 1.0,
+          por_campo: [],
+        },
+      ],
+    };
+  }
+
+  function construirStatus() {
+    return {
+      configured,
+      provider: providerActual,
+      model: providerActual === "gemini" ? geminiModelActual : openaiModelActual,
+      has_openai_key: configured,
+      has_gemini_key: false,
+      masked_openai_key: configured ? "sk-***1234" : "",
+      masked_gemini_key: "",
+    };
+  }
+
+  window.__LOKUS_TEST_CALLS__ = {
+    crearArchivo: [],
+    autocompletarIa: [],
+    registrarResultadoIa: [],
+    actualizarDefensor: [],
+    renombrarDefensor: [],
+    eliminarDefensor: [],
+    guardarConfig: [],
+    responderAclaracionIa: [],
+    descartarAclaracionIa: [],
+    consolidarMemoriaIa: [],
+  };
 
   window.__TAURI_INTERNALS__ = {
     invoke: async (cmd, args = {}) => {
       switch (cmd) {
+        case "cmd_crear_archivo": {
+          window.__LOKUS_TEST_CALLS__.crearArchivo.push(args);
+          const defTrim = (args.defensor || "").trim();
+          if (!defTrim) {
+            throw "Debes asignar un Defensor Público para crear la planilla.";
+          }
+          const nombreBase = (args.nombre || "").trim().replace(/\.xlsx$/i, "");
+          const rel = args.carpeta ? `${args.carpeta}/${nombreBase}.xlsx` : `${nombreBase}.xlsx`;
+          if (!archivos.includes(rel)) {
+            archivos = [...archivos, rel];
+          }
+          defensoresPorArchivo[rel] = defTrim;
+          return rel;
+        }
+        case "cmd_agregar_defensor": {
+          const limpio = (args.nombre || "").trim();
+          if (limpio && !defensores.some((d) => d.toLowerCase() === limpio.toLowerCase())) {
+            defensores = [...defensores, limpio];
+          }
+          return { defensores };
+        }
+        case "cmd_renombrar_defensor": {
+          window.__LOKUS_TEST_CALLS__.renombrarDefensor.push(args);
+          const actual = (args.actual || "").trim();
+          const nuevo = (args.nuevo || "").trim().replace(/\s+/g, " ");
+          if (!nuevo) {
+            throw "El nuevo nombre del defensor no puede estar vacío.";
+          }
+          const idx = defensores.findIndex((d) => d.toLowerCase() === actual.toLowerCase());
+          const nuevaClave = normalizarClaveDef(nuevo);
+          const colision = defensores.some(
+            (d, i) => i !== idx && (d.toLowerCase() === nuevo.toLowerCase() || normalizarClaveDef(d) === nuevaClave)
+          );
+          if (colision) {
+            throw `Ya existe otro defensor llamado '${nuevo}'.`;
+          }
+          if (idx >= 0) {
+            defensores = defensores.map((d, i) => (i === idx ? nuevo : d));
+          } else {
+            defensores = [...defensores, nuevo];
+          }
+          return { defensores };
+        }
+        case "cmd_eliminar_defensor": {
+          window.__LOKUS_TEST_CALLS__.eliminarDefensor.push(args);
+          const targetLower = (args.nombre || "").trim().toLowerCase();
+          const targetClave = normalizarClaveDef(args.nombre || "");
+          defensores = defensores.filter(
+            (d) => d.toLowerCase() !== targetLower && normalizarClaveDef(d) !== targetClave
+          );
+          return { defensores };
+        }
+        case "cmd_actualizar_defensor_archivo": {
+          window.__LOKUS_TEST_CALLS__.actualizarDefensor.push(args);
+          const limpio = (args.defensor || "").trim();
+          const target = args.nombreArchivo || args.nombre;
+          if (target) {
+            defensoresPorArchivo[target] = limpio;
+          }
+          return limpio;
+        }
         case "cmd_obtener_config":
           return {
-            provider: "openai",
-            openai_model: "gpt-5-mini",
-            gemini_model: "gemini-2.5-flash",
+            provider: providerActual,
+            openai_model: openaiModelActual,
+            gemini_model: geminiModelActual,
             theme: temaActual,
             defensores,
             juzgados: juzgadosUsuario,
             tipos_audiencia: tiposUsuario,
-            status: {
-              configured,
-              provider: "openai",
-              model: "gpt-5-mini",
-              has_openai_key: configured,
-              has_gemini_key: false,
-              masked_openai_key: configured ? "sk-***1234" : "",
-              masked_gemini_key: "",
-            },
+            consolidacion_ia_activa: consolidacionIaActiva,
+            usar_resumen_consolidado: usarResumenConsolidado,
+            status: construirStatus(),
           };
+        case "cmd_guardar_config": {
+          window.__LOKUS_TEST_CALLS__.guardarConfig.push(args);
+          const cfg = args.config || {};
+          if (cfg.provider) providerActual = cfg.provider;
+          if (cfg.openai_model) openaiModelActual = cfg.openai_model;
+          if (cfg.gemini_model) geminiModelActual = cfg.gemini_model;
+          if (cfg.theme) temaActual = cfg.theme;
+          if (typeof cfg.consolidacion_ia_activa === "boolean") {
+            consolidacionIaActiva = cfg.consolidacion_ia_activa;
+          }
+          if (typeof cfg.usar_resumen_consolidado === "boolean") {
+            usarResumenConsolidado = cfg.usar_resumen_consolidado;
+          }
+          return {
+            provider: providerActual,
+            openai_model: openaiModelActual,
+            gemini_model: geminiModelActual,
+            theme: temaActual,
+            defensores,
+            juzgados: juzgadosUsuario,
+            tipos_audiencia: tiposUsuario,
+            consolidacion_ia_activa: consolidacionIaActiva,
+            usar_resumen_consolidado: usarResumenConsolidado,
+            status: construirStatus(),
+          };
+        }
         case "cmd_agregar_juzgado": {
           const limpio = (args.nombre || "").trim().replace(/\s+/g, " ");
           const norm = limpio
@@ -91,21 +367,76 @@ function mockTauriInit(opts = {}) {
         case "cmd_obtener_colores_carpetas":
           return colores;
         case "cmd_resumen_aprendizaje_ia":
+          return construirResumen(false);
+        case "cmd_guardar_audiencia":
           return {
-            aciertos: 12,
-            total_correcciones: 2,
-            total_reglas: 3,
-            pendientes_exportar: 3,
-            pendientes_ia: 1,
-            pendientes_uso: 2,
-            total_audiencias_contabilizadas: 5,
-            puede_exportar: true,
-            hubo_correccion: false,
-            aclaracion_pendiente: null,
+            num_registros: 2,
+            total_si: 2,
+            total_no: 0,
+            totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
           };
+        case "cmd_registrar_resultado_ia": {
+          window.__LOKUS_TEST_CALLS__.registrarResultadoIa.push(args);
+          const pred = args.prediccion || {};
+          const fin = args.finalUsuario || {};
+          const camposDef = [
+            "radicado",
+            "tipo",
+            "fecha",
+            "hora",
+            "juzgado",
+            "realizada",
+            "motivo",
+            "observaciones",
+          ];
+          const campos = [];
+          for (const campo of camposDef) {
+            const vIa = String(pred[campo] || "").trim();
+            const vUsr = String(fin[campo] || "").trim();
+            if (normalizarCmp(vIa) !== normalizarCmp(vUsr)) {
+              campos.push({ campo, valor_ia: vIa, valor_usuario: vUsr });
+            }
+          }
+          if (campos.length > 0) {
+            totalCorrecciones += 1;
+            pendientesIa += 1;
+            pendientesExportar += 1;
+            seqCorr += 1;
+            aclaracionPendiente = {
+              correccion_id: `corr-${seqCorr}`,
+              pregunta: `¿Por qué se marcó '${fin.realizada || campos[0].valor_usuario}' en ${campos[0].campo}?`,
+              campos,
+            };
+            return construirResumen(true);
+          }
+          aciertos += 1;
+          aclaracionPendiente = null;
+          return construirResumen(false);
+        }
+        case "cmd_responder_aclaracion_ia": {
+          if (window.__LOKUS_FAIL_NEXT_RESPONDER__) {
+            window.__LOKUS_FAIL_NEXT_RESPONDER__ = false;
+            throw "Error temporal de red";
+          }
+          window.__LOKUS_TEST_CALLS__.responderAclaracionIa.push(args);
+          aclaracionPendiente = null;
+          if (!args.esDatoExterno) {
+            totalReglas += 1;
+          }
+          return construirResumen(false);
+        }
+        case "cmd_descartar_aclaracion_ia": {
+          window.__LOKUS_TEST_CALLS__.descartarAclaracionIa.push(args);
+          aclaracionPendiente = null;
+          return construirResumen(false);
+        }
         case "cmd_exportar_aprendizaje_ia":
+          pendientesExportar = 0;
+          pendientesIa = 0;
+          pendientesUso = 0;
           return "/home/test/Descargas/lokus_uso_y_aprendizaje_ia_test.json";
         case "cmd_autocompletar_ia":
+          window.__LOKUS_TEST_CALLS__.autocompletarIa.push(args);
           return {
             radicado: "200016001075202500999",
             tipo_audiencia: "Audiencia de imputacion",
@@ -118,67 +449,75 @@ function mockTauriInit(opts = {}) {
             motivo: "",
             observaciones: "Se realizó audiencia preliminar.",
             reglas_inyectadas: [],
+            ejemplos_inyectados: [],
+            prediccion_local: {
+              realizada: "SI",
+              realizada_confianza: 0.72,
+              motivo: null,
+              motivo_confianza: 0.2,
+              juzgado_sugerido: null,
+              tipo_sugerido: null,
+              radicado_sugerido: null,
+              muestras_entrenamiento: 12,
+              realizadas_clases_vistas: 2,
+              realizada_soporte_clase: 6,
+              motivos_clases_vistas: 2,
+              motivo_soporte_clase: 2,
+              knn_realizada_acuerdo: true,
+              knn_motivo_acuerdo: false,
+              drift_realizada: false,
+              drift_motivo: false,
+            },
           };
         case "cmd_diagnostico_aprendizaje_ia":
-          return {
-            aciertos_totales: 12,
-            correcciones_totales: 2,
-            ejemplos_positivos_totales: 10,
-            llamadas_induccion_llm_total: 1,
-            clusters_pendientes: 1,
-            clusters_listos: 0,
-            drift_campos_activos: [],
-            enfriamiento_aclaracion: 0,
-            reglas_por_estado: { activa: 2, prueba: 1 },
-            metricas_por_campo: [
-              {
-                campo: "realizada",
-                evaluaciones: 14,
-                aciertos: 13,
-                correcciones: 1,
-                precision_ewma: 0.93,
-                confianza_q10: 0.72,
-                drift_activo: false,
-              },
-              {
-                campo: "motivo",
-                evaluaciones: 14,
-                aciertos: 12,
-                correcciones: 2,
-                precision_ewma: 0.86,
-                confianza_q10: 0.61,
-                drift_activo: false,
-              },
-            ],
-            metricas_por_modelo: [
-              {
-                clave: "openai:gpt-5-mini",
-                evaluaciones: 14,
-                aciertos: 12,
-                correcciones: 2,
-                precision_media: 0.86,
-              },
-            ],
-            preferencias_estilo: {
-              incluir_causas_secundarias_prob: 0.75,
-              incluir_reprogramacion_prob: 0.8,
-              se_fija_aplazamiento_prob: 0.5,
-            },
-            alias_validados: [],
-            reglas_destacadas: [
-              {
-                id: "base-1",
-                estado: "activa",
-                campo_objetivo: "juzgado",
-                origen: "base_invariante",
-                regla: "Conservar abreviaciones CTO, MPAL y PCTO tal como aparecen",
-                impresiones: 6,
-                aciertos_directos: 6,
-                fallos_directos: 0,
-                confianza_q10: 0.81,
-              },
-            ],
+          return construirDiagnostico();
+        case "cmd_consolidar_memoria_ia": {
+          window.__LOKUS_TEST_CALLS__.consolidarMemoriaIa.push(args);
+          consolidacionesTotales += 1;
+          const ambRaw = String(args.ambito || "").trim();
+          const esGeneral = !ambRaw || ambRaw === "*";
+          const ambito = esGeneral ? "*" : normalizarClaveDef(ambRaw) || "laura gomez";
+          const nombreMostrar = esGeneral ? "General (transversal)" : ambRaw;
+          const prev = perfilesSinteticos.find((p) => p.ambito === ambito);
+          const version = (prev?.version ?? 0) + 1;
+          const resumen = esGeneral
+            ? "Criterio transversal consolidado: priorizar causa principal de aplazamiento y conservar siglas CTO/MPAL."
+            : `Perfil de ${nombreMostrar}: consolida criterios propios en audiencias reprogramadas y siglas J01PMGC_VALLEDUPAR_2026_COMPLETO_SIN_ESPACIOS.`;
+          const actualizado = {
+            ambito,
+            nombre_mostrar: nombreMostrar,
+            resumen,
+            version,
+            ultima_actualizacion: "2026-11-20T16:30:00-05:00",
           };
+          perfilesSinteticos = [
+            ...perfilesSinteticos.filter((p) => p.ambito !== ambito),
+            actualizado,
+          ].sort((a, b) => (a.ambito === "*" ? -1 : b.ambito === "*" ? 1 : a.ambito.localeCompare(b.ambito)));
+          if (esGeneral) {
+            presionGlobal = 0.29;
+          }
+          ultimaConsolidacion = {
+            id: `cons-${consolidacionesTotales}`,
+            fecha: "2026-11-20T16:30:00-05:00",
+            ambito,
+            nombre_ambito: nombreMostrar,
+            modelo: `${providerActual}:${openaiModelActual}`,
+            acciones_reglas: [],
+            resumen_actualizado: resumen,
+            sugerencias_build: [],
+            telemetria_disparo: {
+              ambito,
+              presion: presionGlobal,
+              umbral_adaptativo: 4.5,
+              probabilidad_disparo: 1,
+              muestra_rng: 0,
+              manual: true,
+              razones: ["consolidacion_manual"],
+            },
+          };
+          return construirDiagnostico();
+        }
         case "cmd_leer_archivo":
           return {
             registros: [
@@ -201,7 +540,7 @@ function mockTauriInit(opts = {}) {
               total_no: 0,
               totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
             },
-            defensor: "Dra. Laura Gómez",
+            defensor: defensoresPorArchivo[args.nombre] ?? "",
           };
         default:
           return null;
@@ -467,8 +806,15 @@ test.describe("Lokus UI smoke checks", () => {
     await diagSummary.click();
     await expect(page.getByRole("heading", { level: 3, name: "Fiabilidad por campo" })).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Modelos evaluados" })).toBeVisible();
+    await expect(page.locator(".ia-diag-metrics-row")).toContainText("Perfiles def.");
+    await expect(page.locator(".ia-diag-metrics-row")).toContainText("Mapa conex.");
+    await expect(page.locator(".ia-diag-metrics-row")).toContainText("14");
+    await expect(page.locator(".ia-diag-details")).toContainText("Instalada");
+    await expect(page.locator(".ia-diag-details")).toContainText("40%");
     await expect(page.locator(".ia-diag-table")).toContainText("realizada");
     await expect(page.locator(".ia-diag-rules-list")).toContainText("CTO");
+    await expect(page.getByRole("button", { name: "Consolidar defensor" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Consolidar general (*)" })).toBeDisabled();
     await page.getByRole("button", { name: "Cancelar" }).click();
 
     // Cambio de tema y verificación de no desbordamiento horizontal en tema claro
@@ -510,6 +856,11 @@ test.describe("Lokus UI smoke checks", () => {
       "Audiencia de imputacion ante juzgado 1 promiscuo municipal de agustin codazzi a las 3 pm"
     );
     await page.getByRole("button", { name: /Autocompletar con IA/i }).click();
+
+    // Verifica que el autocompletado con IA recibe el defensor activo de la planilla
+    const iaCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.autocompletarIa);
+    expect(iaCalls.length).toBe(1);
+    expect(iaCalls[0].defensor).toBe("Dra. Laura Gómez");
 
     await expect(page.locator("#tipo-audiencia")).toContainText("Audiencia de imputación");
     await expect(page.locator("#tipo-otra")).toHaveCount(0);
@@ -569,6 +920,406 @@ test.describe("Lokus UI smoke checks", () => {
     await page.locator("#juzgado").click();
     await page.getByRole("button", { name: "Eliminar Juzgado 2 Penal" }).click();
     await expect(page.locator("#juzgado")).toContainText("Sin especificar");
+
+    // El desplegable de juzgados sigue abierto tras eliminar: seleccionar un juzgado y guardar para
+    // verificar que cmd_registrar_resultado_ia recibe el defensor activo de la planilla
+    await page
+      .getByRole("option", { name: "Juzgado 1 Promiscuo Municipal de Agustín Codazzi" })
+      .click();
+    await page.getByRole("button", { name: "Registrar audiencia" }).click();
+    await expect
+      .poll(async () =>
+        page.evaluate(() => window.__LOKUS_TEST_CALLS__.registrarResultadoIa.length)
+      )
+      .toBe(1);
+    const regCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.registrarResultadoIa);
+    expect(regCalls[0].defensor).toBe("Dra. Laura Gómez");
+
+    expect(errors).toEqual([]);
+  });
+
+  test("defensor obligatorio al crear planilla y aviso discreto en planilla antigua sin defensor", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, { sinDefensor: true, configured: true });
+    await page.goto("/");
+
+    // 1) Planilla antigua sin defensor muestra aviso discreto en .active-doc-bar en ambos temas sin desbordar
+    const emptyDefBtn = page.locator(".active-doc-defensor-btn.is-empty");
+    await expect(emptyDefBtn).toBeVisible();
+    await expect(emptyDefBtn).toContainText("Sin defensor (perfil general)");
+
+    // Autocompletar con IA en planilla antigua sin defensor envía defensor: null (usa Cuaderno General)
+    await page.locator("#ia-inline-textarea").fill("Audiencia preliminar en J04");
+    await page.getByRole("button", { name: /Autocompletar con IA/i }).click();
+    const iaLegacy = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.autocompletarIa);
+    expect(iaLegacy.length).toBe(1);
+    expect(iaLegacy[0].defensor).toBeNull();
+
+    for (const theme of ["dark", "light"]) {
+      if (theme === "light") {
+        await page.getByRole("button", { name: "Cambiar tema" }).click();
+        await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+      }
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth > document.documentElement.clientWidth
+      );
+      expect(overflow, `overflow en tema ${theme}`).toBe(false);
+    }
+
+    // 2) Clic en el aviso abre el modal y permite asignar un defensor en 1 clic, retirando el aviso
+    await emptyDefBtn.click();
+    await expect(page.getByRole("heading", { name: "Defensor Público de la planilla" })).toBeVisible();
+    await page
+      .locator(".defensor-row", { hasText: "Dr. Carlos Mendoza" })
+      .getByRole("button", { name: "Usar en planilla" })
+      .click();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".active-doc-defensor-btn")).toContainText("Dr. Carlos Mendoza");
+    await expect(page.locator(".active-doc-defensor-btn.is-empty")).toHaveCount(0);
+
+    // 3) Modal "Nuevo archivo de audiencias" exige defensor obligatorio y no ofrece opción vacía
+    const carpeta2026Row = page.locator('[data-context-folder="2026"]');
+    await carpeta2026Row.click({ button: "right" });
+    await page.locator(".folder-context-menu").getByRole("button", { name: "Nueva planilla aquí" }).click();
+    await expect(page.getByRole("heading", { name: "Nuevo archivo de audiencias" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Mostrar opciones guardadas" }).click();
+    await expect(page.getByRole("option", { name: "Dra. Laura Gómez" })).toBeVisible();
+    await expect(page.getByRole("option", { name: /Dejar sin defensor/i })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    // Intentar crear solo con nombre y sin defensor -> bloquea y muestra alerta
+    await page.locator("#nuevo-archivo-input").fill("audiencias_febrero");
+    await page.getByRole("button", { name: "Crear archivo" }).click();
+    await expect(page.locator("#nuevo-archivo-defensor-error")).toContainText(
+      "Debes asignar un Defensor Público"
+    );
+    const llamadasAntes = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.crearArchivo.length);
+    expect(llamadasAntes).toBe(0);
+
+    // Completar el defensor y crear -> invoca cmd_crear_archivo y muestra el defensor en la barra activa
+    await page.locator("#nuevo-archivo-defensor").fill("Dra. Laura Gómez");
+    await page.getByRole("button", { name: "Crear archivo" }).click();
+    await expect(page.getByRole("heading", { name: "Nuevo archivo de audiencias" })).toBeHidden();
+    const llamadasDespues = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.crearArchivo);
+    expect(llamadasDespues.length).toBe(1);
+    expect(llamadasDespues[0].nombre).toBe("audiencias_febrero");
+    expect(llamadasDespues[0].defensor).toBe("Dra. Laura Gómez");
+    await expect(page.locator(".active-doc-defensor-btn")).toContainText("Dra. Laura Gómez");
+    await expect(page.locator(".active-doc-defensor-btn.is-empty")).toHaveCount(0);
+
+    expect(errors).toEqual([]);
+  });
+
+  test("cuadro adaptativo de aclaración, recomendación de defensores y consolidación en config_ia", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, {
+      configured: true,
+      extraArchivos: ["2026/Enero/audiencias_febrero.xlsx"],
+      extraDefensores: ["Dr. Mario Núñez"],
+    });
+    await page.goto("/");
+
+    // 1) Recomendación sin títulos (Dr./Dra.) y edición/borrado inline en desplegable de defensores
+    await page.locator('[data-context-folder="2026"]').click({ button: "right" });
+    await page.locator(".folder-context-menu").getByRole("button", { name: "Nueva planilla aquí" }).click();
+    await expect(page.getByRole("heading", { name: "Nuevo archivo de audiencias" })).toBeVisible();
+    await expect(
+      page.getByText(/Recomendación: escribe el nombre completo sin títulos \(Dr\.\/Dra\.\)/i)
+    ).toBeVisible();
+
+    // Desplegable de #nuevo-archivo-defensor: editar inline y eliminar defensor guardado sin cerrar el modal
+    await page.getByRole("button", { name: "Mostrar opciones guardadas" }).click();
+    await page.getByRole("button", { name: "Editar Dr. Mario Núñez" }).click();
+    const inlineDefInput = page.getByLabel("Nuevo nombre para Dr. Mario Núñez");
+    await expect(inlineDefInput).toBeVisible();
+    await inlineDefInput.fill("Mario Núñez Díaz");
+    await page.locator(".autocomplete-edit-row").getByRole("button", { name: "Guardar" }).click();
+    await expect(page.getByRole("option", { name: "Mario Núñez Díaz" })).toBeVisible();
+    await expect(page.locator(".toast")).toContainText("Defensor renombrado a 'Mario Núñez Díaz'");
+    const renCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.renombrarDefensor);
+    expect(renCalls.length).toBe(1);
+    expect(renCalls[0].actual).toBe("Dr. Mario Núñez");
+    expect(renCalls[0].nuevo).toBe("Mario Núñez Díaz");
+
+    // Verificar Escape en edición inline no cierra el modal y eliminar defensor lo retira de la lista
+    await page.getByRole("button", { name: "Editar Mario Núñez Díaz" }).click();
+    await expect(page.getByLabel("Nuevo nombre para Mario Núñez Díaz")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("heading", { name: "Nuevo archivo de audiencias" })).toBeVisible();
+    await page.getByRole("button", { name: "Eliminar Mario Núñez Díaz" }).click();
+    await expect(page.getByRole("option", { name: "Mario Núñez Díaz" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Nuevo archivo de audiencias" })).toBeVisible();
+    await expect(page.locator(".toast")).toContainText("eliminado de los defensores guardados");
+    const delCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.eliminarDefensor);
+    expect(delCalls.length).toBe(1);
+    expect(delCalls[0].nombre).toBe("Mario Núñez Díaz");
+
+    await page.getByRole("button", { name: "Cancelar" }).click();
+
+    await page.locator(".active-doc-defensor-btn").click();
+    await expect(page.getByRole("heading", { name: "Defensor Público de la planilla" })).toBeVisible();
+    await expect(
+      page.getByText(/Recomendación: escribe el nombre completo sin títulos \(Dr\.\/Dra\.\)/i)
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    // 2) Autocompletar con IA -> corregir campo -> aparece .ia-clarify-panel con pills IA -> Usuario
+    await page.locator("#ia-inline-textarea").fill(
+      "Audiencia de imputacion ante juzgado 1 promiscuo municipal de agustin codazzi a las 3 pm"
+    );
+    await page.getByRole("button", { name: /Autocompletar con IA/i }).click();
+    await page.getByRole("radio", { name: /No realizada \/ Aplazada \(NO\)/i }).click();
+    await page.getByRole("radio", { name: /Fiscalía/i }).click();
+    await page.getByRole("button", { name: "Registrar audiencia" }).click();
+
+    const clarifyPanel = page.locator(".ia-clarify-panel");
+    await expect(clarifyPanel).toBeVisible();
+    await expect(clarifyPanel.locator("svg.ia-clarify-icon")).toBeVisible();
+    await expect(clarifyPanel.locator(".ia-clarify-diff-strip")).toContainText("Realizada:");
+    await expect(clarifyPanel.locator(".ia-clarify-diff-strip")).toContainText("SI → NO");
+    await expect(clarifyPanel.locator(".ia-clarify-diff-strip")).toContainText("Motivo:");
+    await expect(clarifyPanel.locator(".ia-clarify-diff-strip")).toContainText("vacío → Fiscalía");
+
+    // Verificar cascada CSS: pills y chips deben aplicar estilos cálidos/elevados y no quedar sobrescritos por .ia-diag-pill / .preset-btn
+    const clarifyStyles = await page.evaluate(() => {
+      const root = getComputedStyle(document.documentElement);
+      const pill = document.querySelector(".ia-clarify-diff-pill");
+      const chip = document.querySelector(".ia-clarify-chip");
+      const bgProbe = document.createElement("div");
+      bgProbe.style.backgroundColor = root.getPropertyValue("--bg-elevated").trim();
+      document.body.appendChild(bgProbe);
+      const expectedElevated = getComputedStyle(bgProbe).backgroundColor;
+      bgProbe.remove();
+      return {
+        pillBg: getComputedStyle(pill).backgroundColor,
+        chipBg: getComputedStyle(chip).backgroundColor,
+        chipFontSize: getComputedStyle(chip).fontSize,
+        expectedElevated,
+      };
+    });
+    expect(clarifyStyles.pillBg).toBe(clarifyStyles.expectedElevated);
+    expect(clarifyStyles.chipBg).toBe(clarifyStyles.expectedElevated);
+    expect(clarifyStyles.chipFontSize).toBe("11.5px");
+
+    // Verificar forwarding de prediccionLocal
+    const regCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.registrarResultadoIa);
+    expect(regCalls.length).toBe(1);
+    expect(regCalls[0].prediccionLocal?.realizada).toBe("SI");
+
+    // Verificar tema oscuro y claro sin desbordamiento horizontal con .ia-clarify-panel visible
+    for (const theme of ["dark", "light"]) {
+      if (theme === "light") {
+        await page.getByRole("button", { name: "Cambiar tema" }).click();
+        await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+      }
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth > document.documentElement.clientWidth
+      );
+      expect(overflow, `overflow con clarify panel en tema ${theme}`).toBe(false);
+    }
+    await page.getByRole("button", { name: "Cambiar tema" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+
+    // Chips rápidos prellenan y "Dato externo" descarta con esDatoExterno: true
+    await clarifyPanel.getByRole("button", { name: "Criterio de este defensor" }).click();
+    const clarifyInput = clarifyPanel.locator("input[type='text']");
+    await expect(clarifyInput).toHaveValue("Criterio habitual de este defensor: ");
+    await expect(clarifyInput).toBeFocused();
+
+    await clarifyPanel.getByRole("button", { name: "Sigla / abreviación habitual" }).click();
+    await expect(clarifyInput).toHaveValue("Abreviación habitual: ");
+    await expect(clarifyInput).toBeFocused();
+
+    await clarifyPanel.getByRole("button", { name: "Dato externo (no estaba en el texto)" }).click();
+    await expect(clarifyPanel).toBeHidden();
+    await expect(page.locator(".toast")).toContainText("Marcado como dato externo — no se creará regla");
+    const respCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.responderAclaracionIa);
+    expect(respCalls.length).toBe(1);
+    expect(respCalls[0].esDatoExterno).toBe(true);
+
+    // 3) Reaparece con nuevo correccion_id, resetea input, se oculta al cambiar de planilla y no resucita al refrescar resumen
+    await page.locator("#ia-inline-textarea").fill("Audiencia de imputacion J1 Valledupar 3 pm");
+    await page.getByRole("button", { name: /Autocompletar con IA/i }).click();
+    await page.getByRole("radio", { name: /No realizada \/ Aplazada \(NO\)/i }).click();
+    await page.getByRole("radio", { name: /Juez/i }).click();
+    await page.getByRole("button", { name: "Registrar audiencia" }).click();
+
+    await expect(clarifyPanel).toBeVisible();
+    await expect(clarifyInput).toHaveValue("");
+    await page.locator('[data-context-file="2026/Enero/audiencias_febrero.xlsx"]').click();
+    await expect(clarifyPanel).toBeHidden();
+
+    // Agregar juzgado dispara cargarResumenAprendizaje(): el panel oculto no debe reaparecer
+    await page.locator("#juzgado").click();
+    await page.locator(".custom-select-add-trigger").click();
+    await page.locator(".custom-select-add-input").fill("Juzgado Prueba Zombie");
+    await page.locator(".custom-select-add-save").click();
+    await expect(clarifyPanel).toBeHidden();
+
+    // 4) También se oculta si cambia el defensor de la planilla activa
+    await page.locator("#ia-inline-textarea").fill("Audiencia de imputacion J2 Valledupar 3 pm");
+    await page.getByRole("button", { name: /Autocompletar con IA/i }).click();
+    await page.getByRole("radio", { name: /No realizada \/ Aplazada \(NO\)/i }).click();
+    await page.getByRole("radio", { name: /Usuario/i }).click();
+    await page.getByRole("button", { name: "Registrar audiencia" }).click();
+    await expect(clarifyPanel).toBeVisible();
+
+    await page.locator(".active-doc-defensor-btn").click();
+    await page
+      .locator(".defensor-row", { hasText: "Dr. Carlos Mendoza" })
+      .getByRole("button", { name: "Usar en planilla" })
+      .click();
+    await page.keyboard.press("Escape");
+    await expect(clarifyPanel).toBeHidden();
+
+    // 4b) Si falla cmd_responder_aclaracion_ia conserva el texto; luego "Guardar regla" envía esDatoExterno: false
+    await page.locator("#ia-inline-textarea").fill("Audiencia de imputacion J3 Valledupar 3 pm");
+    await page.getByRole("button", { name: /Autocompletar con IA/i }).click();
+    await page.getByRole("radio", { name: /No realizada \/ Aplazada \(NO\)/i }).click();
+    await page.getByRole("radio", { name: /INPEC/i }).click();
+    await page.getByRole("button", { name: "Registrar audiencia" }).click();
+    await expect(clarifyPanel).toBeVisible();
+    await clarifyPanel.getByRole("button", { name: "Criterio de este defensor" }).click();
+    await clarifyInput.fill("Criterio habitual de este defensor: INPEC no trasladó");
+    await page.evaluate(() => {
+      window.__LOKUS_FAIL_NEXT_RESPONDER__ = true;
+    });
+    await clarifyPanel.getByRole("button", { name: "Guardar regla" }).click();
+    await expect(clarifyPanel).toBeVisible();
+    await expect(clarifyInput).toHaveValue("Criterio habitual de este defensor: INPEC no trasladó");
+    await expect(page.locator(".toast")).toContainText("No se pudo guardar la aclaración");
+
+    await clarifyPanel.getByRole("button", { name: "Guardar regla" }).click();
+    await expect(clarifyPanel).toBeHidden();
+    await expect(page.locator(".toast")).toContainText("Aclaración guardada en el aprendizaje de la IA");
+    const respCallsManual = await page.evaluate(
+      () => window.__LOKUS_TEST_CALLS__.responderAclaracionIa
+    );
+    expect(respCallsManual.length).toBe(2);
+    expect(respCallsManual[1].esDatoExterno).toBe(false);
+
+    // 4c) Enter en campo vacío no descarta; clic en "Omitir" invoca cmd_descartar_aclaracion_ia
+    await page.locator("#ia-inline-textarea").fill("Audiencia de imputacion J4 Valledupar 3 pm");
+    await page.getByRole("button", { name: /Autocompletar con IA/i }).click();
+    await page.getByRole("radio", { name: /No realizada \/ Aplazada \(NO\)/i }).click();
+    await page.getByRole("radio", { name: /ICBF/i }).click();
+    await page.getByRole("button", { name: "Registrar audiencia" }).click();
+    await expect(clarifyPanel).toBeVisible();
+    await clarifyInput.focus();
+    await page.keyboard.press("Enter");
+    await expect(clarifyPanel).toBeVisible();
+    await clarifyPanel.getByRole("button", { name: "Omitir" }).click();
+    await expect(clarifyPanel).toBeHidden();
+    const discardCalls = await page.evaluate(
+      () => window.__LOKUS_TEST_CALLS__.descartarAclaracionIa
+    );
+    expect(discardCalls.length).toBe(1);
+
+    // 5) En config_ia: 2 interruptores (con rollback al cancelar), toast en top-layer, métricas y perfiles sintéticos
+    await page.locator(".ai-config-trigger").click();
+    const chkConsolidacion = page.getByRole("checkbox", {
+      name: /Consolidación periódica automática con IA/i,
+    });
+    const chkResumen = page.getByRole("checkbox", {
+      name: /Inyectar resumen consolidado al extraer/i,
+    });
+    await expect(chkConsolidacion).toBeVisible();
+    await expect(chkConsolidacion).toBeChecked();
+    await expect(chkResumen).toBeVisible();
+    await expect(chkResumen).toBeChecked();
+
+    // Cancelar sin guardar no debe conservar cambios en el estado del formulario
+    await chkConsolidacion.uncheck();
+    await page.getByRole("button", { name: "Cancelar" }).click();
+    await page.locator(".ai-config-trigger").click();
+    await expect(chkConsolidacion).toBeChecked();
+
+    await chkResumen.uncheck();
+    await page.getByRole("button", { name: "Guardar" }).click();
+    const savedCfg = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.guardarConfig);
+    expect(savedCfg.length).toBe(1);
+    expect(savedCfg[0].config.consolidacion_ia_activa).toBe(true);
+    expect(savedCfg[0].config.usar_resumen_consolidado).toBe(false);
+
+    await page.locator(".ai-config-trigger").click();
+    await expect(chkResumen).not.toBeChecked();
+
+    await page.locator("summary.ia-diag-summary").click();
+    const metricsRow = page.locator(".ia-diag-metrics-row");
+    await expect(metricsRow).toContainText("Consolidaciones");
+    await expect(metricsRow).toContainText("Presión global");
+    await expect(metricsRow).toContainText("1.45");
+    await expect(metricsRow).toContainText("Resp. aclarac.");
+
+    const btnConsDef = page.getByRole("button", { name: "Consolidar defensor" });
+    const btnConsGen = page.getByRole("button", { name: "Consolidar general (*)" });
+    await expect(btnConsDef).toBeEnabled();
+    await expect(btnConsGen).toBeEnabled();
+
+    await btnConsGen.click();
+    await expect(
+      page.getByRole("heading", { level: 3, name: "Perfiles sintéticos consolidados" })
+    ).toBeVisible();
+    await expect(page.locator(".ia-diag-details")).toContainText("General (transversal)");
+    await expect(page.locator(".ia-diag-details")).toContainText(
+      "Criterio transversal consolidado"
+    );
+    await expect(metricsRow).toContainText("0.29");
+
+    // El toast debe renderizarse por encima de <dialog> abierto (Top Layer)
+    const toastLocator = page.locator(".toast");
+    await expect(toastLocator).toBeVisible();
+    await expect(toastLocator).toContainText("Memoria general de IA consolidada");
+    const toastOnTop = await page.evaluate(() => {
+      const el = document.querySelector(".toast");
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const topEl = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return Boolean(topEl && el.contains(topEl));
+    });
+    expect(toastOnTop).toBe(true);
+
+    await btnConsDef.click();
+    await expect(page.locator(".ia-diag-details")).toContainText("Dr. Carlos Mendoza");
+
+    const consCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.consolidarMemoriaIa);
+    expect(consCalls.length).toBe(2);
+    expect(consCalls[0].ambito).toBe("*");
+    expect(consCalls[1].ambito).toBe("Dr. Carlos Mendoza");
+
+    // Verificar cero desbordamiento en diálogo config_ia en tema oscuro y claro (incluyendo token largo sin espacios)
+    for (const theme of ["dark", "light"]) {
+      if (theme === "light") {
+        await page.getByRole("button", { name: "Cancelar" }).click();
+        await page.getByRole("button", { name: "Cambiar tema" }).click();
+        await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+        await page.locator(".ai-config-trigger").click();
+        await page.locator("summary.ia-diag-summary").click();
+      }
+      const dlgOverflow = await page.evaluate(() => {
+        const docOver = document.documentElement.scrollWidth > document.documentElement.clientWidth;
+        const dlgBody = document.querySelector("dialog[open] .modal-body");
+        const bodyOver = dlgBody ? dlgBody.scrollWidth > dlgBody.clientWidth + 1 : false;
+        return { docOver, bodyOver };
+      });
+      expect(dlgOverflow.docOver, `docOverflow en config_ia (${theme})`).toBe(false);
+      expect(dlgOverflow.bodyOver, `modal body overflow en config_ia (${theme})`).toBe(false);
+    }
 
     expect(errors).toEqual([]);
   });

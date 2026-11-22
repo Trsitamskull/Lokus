@@ -5,6 +5,7 @@
     XCircle,
     Edit3,
     SlidersHorizontal,
+    HelpCircle,
   } from "@lucide/svelte";
   import CustomSelect from "./CustomSelect.svelte";
   import DatePickerInput from "./DatePickerInput.svelte";
@@ -54,6 +55,7 @@
     onAgregarTipo,
     onEliminarTipo,
     aclaracionPendiente = null,
+    respondiendoAclaracion = false,
     onResponderAclaracion,
     onOmitirAclaracion,
   } = $props();
@@ -64,6 +66,7 @@
   let amBtnEl = $state(null);
   let pmBtnEl = $state(null);
   let notaAclaracion = $state("");
+  let clarifyInputEl = $state(null);
   let fechaTouched = $state(false);
   let horaTouched = $state(false);
   let intentoEnviar = $state(false);
@@ -71,6 +74,54 @@
   let periodo = $state("AM");
   let ultimoHora24Sync = "";
   let ultimoResetTick = 0;
+  let ultimoAclaracionId = "";
+
+  const ETIQUETAS_CAMPO_IA = {
+    realizada: "Realizada",
+    motivo: "Motivo",
+    juzgado: "Juzgado",
+    tipo: "Tipo",
+    observaciones: "Observaciones",
+    radicado: "Radicado",
+    fecha: "Fecha",
+    hora: "Hora",
+  };
+
+  function etiquetaCampoIa(campo) {
+    return ETIQUETAS_CAMPO_IA[campo] || campo;
+  }
+
+  function resumirValorDiff(val) {
+    const limpio = (val || "").trim();
+    if (!limpio) return "vacío";
+    return limpio.length > 42 ? `${limpio.slice(0, 39).trimEnd()}...` : limpio;
+  }
+
+  $effect(() => {
+    const idActual = aclaracionPendiente?.correccion_id || "";
+    if (idActual !== ultimoAclaracionId) {
+      ultimoAclaracionId = idActual;
+      notaAclaracion = "";
+    }
+  });
+
+  async function enviarNotaAclaracion() {
+    if (respondiendoAclaracion) return;
+    const texto = notaAclaracion.trim();
+    if (!texto) return;
+    const ok = await onResponderAclaracion?.(texto, false);
+    if (ok !== false) {
+      notaAclaracion = "";
+    }
+  }
+
+  async function marcarDatoExternoAclaracion() {
+    if (respondiendoAclaracion) return;
+    const ok = await onResponderAclaracion?.("Dato externo (no estaba en el texto)", true);
+    if (ok !== false) {
+      notaAclaracion = "";
+    }
+  }
 
   function convertir24a12(h24Str) {
     const limpio = (h24Str || "").trim();
@@ -487,14 +538,22 @@
     {/if}
 
     {#if !modoEdicion && aclaracionPendiente}
-      <div class="extract-panel">
+      <div
+        class="extract-panel ia-clarify-panel"
+        role="region"
+        aria-label="Aclaración de aprendizaje de la IA"
+      >
         <div class="extract-panel-head">
-          <span class="field-label" style="text-transform: none; letter-spacing: 0">
-            {aclaracionPendiente.pregunta}
-          </span>
+          <div class="ia-clarify-title-wrap">
+            <HelpCircle size={15} class="ia-clarify-icon" aria-hidden="true" />
+            <span class="field-label ia-clarify-question">
+              {aclaracionPendiente.pregunta}
+            </span>
+          </div>
           <button
             type="button"
-            class="btn btn-subtle"
+            class="btn btn-subtle ia-clarify-skip-btn"
+            disabled={respondiendoAclaracion}
             onclick={() => {
               notaAclaracion = "";
               onOmitirAclaracion?.();
@@ -503,33 +562,76 @@
             Omitir
           </button>
         </div>
+
+        {#if aclaracionPendiente.campos?.length > 0}
+          <div class="ia-clarify-diff-strip">
+            {#each aclaracionPendiente.campos.slice(0, 3) as c}
+              <span
+                class="ia-diag-pill ia-clarify-diff-pill"
+                title={`${etiquetaCampoIa(c.campo)}: ${c.valor_ia || "vacío"} → ${c.valor_usuario || "vacío"}`}
+              >
+                <strong>{etiquetaCampoIa(c.campo)}:</strong>
+                <span>{resumirValorDiff(c.valor_ia)} &rarr; {resumirValorDiff(c.valor_usuario)}</span>
+              </span>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="ia-clarify-chips" role="group" aria-label="Respuestas rápidas de aclaración">
+          <button
+            type="button"
+            class="preset-btn ia-clarify-chip"
+            disabled={respondiendoAclaracion}
+            onclick={marcarDatoExternoAclaracion}
+          >
+            Dato externo (no estaba en el texto)
+          </button>
+          <button
+            type="button"
+            class="preset-btn ia-clarify-chip"
+            disabled={respondiendoAclaracion}
+            onclick={() => {
+              notaAclaracion = "Criterio habitual de este defensor: ";
+              clarifyInputEl?.focus();
+            }}
+          >
+            Criterio de este defensor
+          </button>
+          <button
+            type="button"
+            class="preset-btn ia-clarify-chip"
+            disabled={respondiendoAclaracion}
+            onclick={() => {
+              notaAclaracion = "Abreviación habitual: ";
+              clarifyInputEl?.focus();
+            }}
+          >
+            Sigla / abreviación habitual
+          </button>
+        </div>
+
         <div class="ia-clarify-row">
           <input
             type="text"
             class="input"
+            bind:this={clarifyInputEl}
             bind:value={notaAclaracion}
+            disabled={respondiendoAclaracion}
             placeholder="Nota breve opcional para recordarlo en próximas extracciones..."
             onkeydown={(e) => {
-              if (e.key === "Enter") {
+              if (!e.isComposing && e.key === "Enter") {
                 e.preventDefault();
-                const texto = notaAclaracion.trim();
-                notaAclaracion = "";
-                if (texto) onResponderAclaracion?.(texto);
-                else onOmitirAclaracion?.();
+                enviarNotaAclaracion();
               }
             }}
           />
           <button
             type="button"
             class="btn btn-solid"
-            disabled={!notaAclaracion.trim()}
-            onclick={() => {
-              const texto = notaAclaracion.trim();
-              notaAclaracion = "";
-              onResponderAclaracion?.(texto);
-            }}
+            disabled={respondiendoAclaracion || !notaAclaracion.trim()}
+            onclick={enviarNotaAclaracion}
           >
-            <span>Guardar regla</span>
+            <span>{respondiendoAclaracion && notaAclaracion.trim() ? "Guardando..." : "Guardar regla"}</span>
           </button>
         </div>
       </div>

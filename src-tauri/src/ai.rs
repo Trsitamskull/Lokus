@@ -7,19 +7,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::aprendizaje::{
-    cargar_memoria_local_snapshot, memoria_base_embebida, obtener_contexto_prompt_con_traza,
-    quitar_tildes, AnalisisCorreccionIa, CorreccionIa, MemoriaAprendizaje,
-    PrediccionLocalResumen, PreferenciasEstilo,
+    cargar_memoria_local_snapshot, memoria_base_embebida,
+    obtener_contexto_prompt_con_traza_y_defensor, obtener_resumenes_consolidados_prompt,
+    preferencias_efectivas_con_base_para_defensor, quitar_tildes, AnalisisCorreccionIa,
+    CorreccionIa, LoteConsolidacion, MemoriaAprendizaje, PrediccionLocalResumen,
+    PreferenciasEstilo, ResultadoConsolidacionIa,
 };
 use crate::config::{cargar_settings, guardar_settings};
 use crate::estadistica_ia::{
-    juzgados_base, resolver_alias_exacto_validado, resolver_hora_con_prior,
-    seleccionar_candidatos_prompt, CandidatosPrompt, MotorEstadisticoLocal,
+    juzgados_base, resolver_alias_exacto_validado_con_base_para_defensor, resolver_hora_con_prior,
+    seleccionar_candidatos_prompt_con_base_para_defensor, CandidatosPrompt,
+    MotorEstadisticoLocal,
 };
 use crate::excel::cargar_priors_actuales;
 use crate::models::{
-    extraer_numeros_radicado, mapear_motivo_a_indice, normalizar_clave_catalogo,
-    normalizar_texto_sin_tildes, IndicePriorsExcel, MOTIVOS_LABELS, TIPOS_AUDIENCIA,
+    es_solo_sigla_corta_juzgado, extraer_numeros_radicado, extraer_siglas_cortas_juzgado,
+    mapear_motivo_a_indice, normalizar_clave_catalogo, normalizar_texto_sin_tildes,
+    texto_indica_instalacion_efectiva, texto_indica_no_instalacion, IndicePriorsExcel,
+    MOTIVOS_LABELS, TIPOS_AUDIENCIA,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -121,6 +126,14 @@ fn expandir_abreviaciones_y_compacto(texto: &str, current_year: i32) -> String {
         (r"(?i)\bFRACASA\b", "Fracasó"),
         (r"(?i)\bFRCASA\b", "Fracasó"),
         (r"(?i)\bDEPACHO\b", "Despacho"),
+        (r"(?i)\bDESPCHO\b", "Despacho"),
+        (r"(?i)\bCONOCIEMIENTO\b", "Conocimiento"),
+        (r"(?i)\bVALLEDUPARA\b", "Valledupar"),
+        (r"(?i)\bSOLCITO\b", "Solicitó"),
+        (r"(?i)\bREPRGRAMACION\b", "Reprogramación"),
+        (r"(?i)\bAPALZAMIENTO\b", "Aplazamiento"),
+        (r"(?i)\bDILIGNCIA\b", "Diligencia"),
+        (r"(?i)\bDOILIGENCA\b", "Diligencia"),
         (r"(?i)\bEZADO\b", "Especializado"),
         (r"(?i)\bEZADA\b", "Especializada"),
         (r"(?i)\bGRAVADO\b", "Agravado"),
@@ -131,6 +144,8 @@ fn expandir_abreviaciones_y_compacto(texto: &str, current_year: i32) -> String {
         (r"(?i)\bHUBICARSE\b", "Ubicarse"),
         (r"(?i)\bTESTI\b", "Testigos"),
         (r"(?i)\bPREPARATOR\b", "Preparatoria"),
+        (r"(?i)\bPREPARATORI\b", "Preparatoria"),
+        (r"(?i)\bINSTLO\b", "Instaló"),
         (r"(?i)\bGENDA\b", "Agenda"),
         (r"(?i)\bCONTINUCION\b", "Continuación"),
         (r"(?i)\bNO CONEXION\b", "No se pudo establecer conexión"),
@@ -160,6 +175,11 @@ fn expandir_abreviaciones_y_compacto(texto: &str, current_year: i32) -> String {
         if let Ok(re) = Regex::new(pat) {
             out = re.replace_all(&out, rep).to_string();
         }
+    }
+
+    // Formatos de hora con puntuación irregular ("HORA. 12:00", "HORA; 8:00", "HORA: 2.30")
+    if let Ok(re_hora) = Regex::new(r"(?i)\bHORA\s*[.;:]\s*(\d{1,2})\s*[.:]\s*(\d{2})\b") {
+        out = re_hora.replace_all(&out, "HORA: $1:$2").to_string();
     }
 
     // Fechas compactas tipo "JUNIO 24.-"
@@ -546,14 +566,35 @@ fn detectar_patron_fracaso_con_preferencias(
     pref: &PreferenciasEstilo,
 ) -> bool {
     let texto_norm = quitar_tildes(texto_lower);
+
+    // Negación explícita de instalación ("no se instaló", "no pudo ser instalada", "sin instalarse")
+    // indica inequívocamente que la audiencia NO se realizó.
+    if texto_indica_no_instalacion(&texto_norm) {
+        return true;
+    }
+
+    // Si la audiencia efectivamente se instaló/inició (sin negación como "no se instaló")
+    // y luego se reprogramó/suspendió, respetamos el criterio aprendido del defensor si prefiere SI.
+    let hubo_instalacion = texto_indica_instalacion_efectiva(&texto_norm);
+    if hubo_instalacion {
+        let denom_inst =
+            (pref.instalada_reprogramada_si_alpha + pref.instalada_reprogramada_si_beta).max(1.0);
+        let p_instalada_si = pref.instalada_reprogramada_si_alpha / denom_inst;
+        if p_instalada_si >= 0.50 {
+            return false;
+        }
+    }
+
     let patrones_fracaso = [
         "se reprogramo",
         "sera reprogramada",
         "se reprograma",
         "reprogramacion",
+        "reprgramacion",
         "solicito reprogramacion",
         "pide reprogramacion",
         "solicita aplazamiento",
+        "apalzamiento",
         "se aplaza",
         "sera aplazada",
         "se suspende",
@@ -582,7 +623,6 @@ fn detectar_patron_fracaso_con_preferencias(
         let senales_realizacion = [
             "se realizo",
             "se efectuo",
-            "se instalo",
             "se llevo a cabo",
             "se emitio sentido de fallo",
             "se dio lectura",
@@ -592,7 +632,7 @@ fn detectar_patron_fracaso_con_preferencias(
             "para continuar",
             "sin novedad",
         ];
-        if !senales_realizacion.iter().any(|s| texto_norm.contains(s)) {
+        if !hubo_instalacion && !senales_realizacion.iter().any(|s| texto_norm.contains(s)) {
             let denom =
                 (pref.se_fija_aplazamiento_alpha + pref.se_fija_aplazamiento_beta).max(1.0);
             let p_aplaza = pref.se_fija_aplazamiento_alpha / denom;
@@ -688,6 +728,17 @@ fn formatear_candidatos_prompt(cands: Option<&CandidatosPrompt>) -> String {
             proc_hab.tipo_habitual
         ));
     }
+    if !c.siglas_resueltas.is_empty() {
+        let pares: Vec<String> = c
+            .siglas_resueltas
+            .iter()
+            .map(|(sigla, juzgado)| format!("{} => {}", sigla.to_uppercase(), juzgado))
+            .collect();
+        bloques.push(format!(
+            "- Siglas habituales de este defensor (Mapa de Conexiones): {}",
+            pares.join(" | ")
+        ));
+    }
     if !c.juzgados_top.is_empty() {
         bloques.push(format!(
             "- Juzgados candidatos más probables (normaliza hacia la forma exacta si coincide, respetando siglas como CTO/MPAL/PCTO): {}",
@@ -769,6 +820,26 @@ fn construir_prompt_con_candidatos_y_catalogo(
     candidatos: Option<&CandidatosPrompt>,
     tipos_usuario: &[String],
 ) -> String {
+    construir_prompt_con_candidatos_y_resumenes(
+        texto_preprocesado,
+        current_year,
+        contexto_aprendizaje,
+        candidatos,
+        tipos_usuario,
+        None,
+        None,
+    )
+}
+
+fn construir_prompt_con_candidatos_y_resumenes(
+    texto_preprocesado: &str,
+    current_year: i32,
+    contexto_aprendizaje: &str,
+    candidatos: Option<&CandidatosPrompt>,
+    tipos_usuario: &[String],
+    resumen_general: Option<&str>,
+    resumen_defensor: Option<&str>,
+) -> String {
     let seccion_candidatos = formatear_candidatos_prompt(candidatos);
     let catalogo_tipos = construir_catalogo_tipos_para_prompt(tipos_usuario);
     let seccion_aprendizaje = if contexto_aprendizaje.trim().is_empty() {
@@ -776,6 +847,19 @@ fn construir_prompt_con_candidatos_y_catalogo(
     } else {
         format!("\n{}\n", contexto_aprendizaje.trim())
     };
+    let mut bloque_resumenes = String::new();
+    if let Some(rg) = resumen_general.map(str::trim).filter(|s| !s.is_empty()) {
+        bloque_resumenes.push_str(&format!(
+            "\nCRITERIOS GENERALES CONSOLIDADOS (TRANSVERSALES):\n{}\n",
+            rg
+        ));
+    }
+    if let Some(rd) = resumen_defensor.map(str::trim).filter(|s| !s.is_empty()) {
+        bloque_resumenes.push_str(&format!(
+            "\nPERFIL SINTÉTICO DEL DEFENSOR (ESPECÍFICO):\n{}\n",
+            rd
+        ));
+    }
 
     format!(
         r#"Eres un asistente jurídico experto en audiencias judiciales en Colombia, optimizado con patrones reales de defensores públicos.
@@ -827,7 +911,7 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
    - Para abreviaciones ambiguas como "CTO" / "Cto" (que puede significar Circuito o Conocimiento), MPAL o PCTO, MANTÉN la abreviación original tal cual ("Juzgado 3 Cto Penal" -> "Juzgado 3 Cto Penal"); no adivines su expansión.
 7. OBSERVACIONES:
    - Incluye fechas de reprogramación, causas secundarias o incidencias técnicas. Si no hay detalles adicionales, deja el campo vacío "".
-{seccion_candidatos}{seccion_aprendizaje}
+{bloque_resumenes}{seccion_candidatos}{seccion_aprendizaje}
 TEXTO A ANALIZAR:
 """
 {texto_preprocesado}
@@ -1042,18 +1126,207 @@ fn parsear_json_limpio(content: &str) -> Result<Value, serde_json::Error> {
     serde_json::from_str(trimmed)
 }
 
+const SYSTEM_PROMPT_EXTRACCION: &str =
+    "Eres un extractor experto de datos de audiencias judiciales colombianas. Responde siempre en JSON válido.";
+const SYSTEM_PROMPT_CONSOLIDACION: &str = "Eres un curador senior de memoria de aprendizaje para un asistente de audiencias judiciales en Colombia. Analiza únicamente la evidencia anonimizada provista (patrones transversales generales '*' y/o específicos de un defensor), nunca inventes datos ni nombres propios ni números sensibles, y devuelve exclusivamente JSON válido ajustado al esquema.";
+
+pub(crate) fn esquema_consolidacion_openai() -> Value {
+    json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "consolidacion_memoria_ia",
+            "strict": true,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "acciones_reglas": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tipo_accion": {
+                                    "type": "string",
+                                    "enum": ["fusionar", "conflicto", "sintetizar"]
+                                },
+                                "ids_origen": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "tipo_error": {
+                                    "type": "string",
+                                    "enum": [
+                                        "abreviacion",
+                                        "fecha",
+                                        "hora",
+                                        "realizacion",
+                                        "motivo",
+                                        "tipo",
+                                        "juzgado",
+                                        "estilo_observaciones",
+                                        "general",
+                                        "otro"
+                                    ]
+                                },
+                                "campo_objetivo": {
+                                    "type": "string",
+                                    "enum": [
+                                        "radicado",
+                                        "tipo",
+                                        "fecha",
+                                        "hora",
+                                        "juzgado",
+                                        "realizada",
+                                        "motivo",
+                                        "observaciones",
+                                        "general"
+                                    ]
+                                },
+                                "regla": { "type": "string" },
+                                "triggers": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "motivo": { "type": "string" },
+                                "confianza": { "type": "number" }
+                            },
+                            "required": [
+                                "tipo_accion",
+                                "ids_origen",
+                                "tipo_error",
+                                "campo_objetivo",
+                                "regla",
+                                "triggers",
+                                "motivo",
+                                "confianza"
+                            ],
+                            "additionalProperties": false
+                        }
+                    },
+                    "resumen_actualizado": { "type": "string" },
+                    "sugerencias_build": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "categoria": { "type": "string" },
+                                "detalle": { "type": "string" },
+                                "evidencia": { "type": "string" }
+                            },
+                            "required": ["categoria", "detalle", "evidencia"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["acciones_reglas", "resumen_actualizado", "sugerencias_build"],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+pub(crate) fn esquema_consolidacion_gemini() -> Value {
+    json!({
+        "type": "OBJECT",
+        "properties": {
+            "acciones_reglas": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "tipo_accion": {
+                            "type": "STRING",
+                            "enum": ["fusionar", "conflicto", "sintetizar"]
+                        },
+                        "ids_origen": {
+                            "type": "ARRAY",
+                            "items": { "type": "STRING" }
+                        },
+                        "tipo_error": {
+                            "type": "STRING",
+                            "enum": [
+                                "abreviacion",
+                                "fecha",
+                                "hora",
+                                "realizacion",
+                                "motivo",
+                                "tipo",
+                                "juzgado",
+                                "estilo_observaciones",
+                                "general",
+                                "otro"
+                            ]
+                        },
+                        "campo_objetivo": {
+                            "type": "STRING",
+                            "enum": [
+                                "radicado",
+                                "tipo",
+                                "fecha",
+                                "hora",
+                                "juzgado",
+                                "realizada",
+                                "motivo",
+                                "observaciones",
+                                "general"
+                            ]
+                        },
+                        "regla": { "type": "STRING" },
+                        "triggers": {
+                            "type": "ARRAY",
+                            "items": { "type": "STRING" }
+                        },
+                        "motivo": { "type": "STRING" },
+                        "confianza": { "type": "NUMBER" }
+                    },
+                    "required": [
+                        "tipo_accion",
+                        "ids_origen",
+                        "tipo_error",
+                        "campo_objetivo",
+                        "regla",
+                        "triggers",
+                        "motivo",
+                        "confianza"
+                    ]
+                }
+            },
+            "resumen_actualizado": { "type": "STRING" },
+            "sugerencias_build": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "categoria": { "type": "STRING" },
+                        "detalle": { "type": "STRING" },
+                        "evidencia": { "type": "STRING" }
+                    },
+                    "required": ["categoria", "detalle", "evidencia"]
+                }
+            }
+        },
+        "required": ["acciones_reglas", "resumen_actualizado", "sugerencias_build"]
+    })
+}
+
 async fn enviar_peticion_openai(
     api_key: &str,
     model: &str,
+    system_prompt: &str,
     prompt: &str,
+    max_tokens: Option<u32>,
     response_format: Value,
 ) -> Result<(reqwest::StatusCode, Value), String> {
+    let sys = if system_prompt.trim().is_empty() {
+        SYSTEM_PROMPT_EXTRACCION
+    } else {
+        system_prompt
+    };
     let mut body = json!({
         "model": model,
         "messages": [
             {
                 "role": "system",
-                "content": "Eres un extractor experto de datos de audiencias judiciales colombianas. Responde siempre en JSON válido."
+                "content": sys
             },
             {
                 "role": "user",
@@ -1062,6 +1335,10 @@ async fn enviar_peticion_openai(
         ],
         "response_format": response_format
     });
+
+    if let Some(mt) = max_tokens {
+        body["max_completion_tokens"] = json!(mt);
+    }
 
     // Modelos clásicos soportan temperature=0.1; modelos de razonamiento (gpt-5*, o1, o3, o4) usan su temperatura por defecto
     if model.starts_with("gpt-4") || model.starts_with("gpt-3.5") {
@@ -1087,14 +1364,23 @@ async fn enviar_peticion_openai(
 async fn llamar_openai(
     api_key: &str,
     model: &str,
+    system_prompt: &str,
     prompt: &str,
+    max_tokens: Option<u32>,
     response_schema: Option<Value>,
 ) -> Result<Value, String> {
     let formato_inicial = response_schema
         .clone()
         .unwrap_or_else(|| json!({ "type": "json_object" }));
-    let (mut status, mut json_resp) =
-        enviar_peticion_openai(api_key, model, prompt, formato_inicial).await?;
+    let (mut status, mut json_resp) = enviar_peticion_openai(
+        api_key,
+        model,
+        system_prompt,
+        prompt,
+        max_tokens,
+        formato_inicial,
+    )
+    .await?;
 
     if !status.is_success() && response_schema.is_some() {
         let msg = json_resp["error"]["message"].as_str().unwrap_or("");
@@ -1102,7 +1388,9 @@ async fn llamar_openai(
             (status, json_resp) = enviar_peticion_openai(
                 api_key,
                 model,
+                system_prompt,
                 prompt,
+                max_tokens,
                 json!({ "type": "json_object" }),
             )
             .await?;
@@ -1127,7 +1415,9 @@ async fn llamar_openai(
 async fn enviar_peticion_gemini(
     api_key: &str,
     model: &str,
+    system_prompt: &str,
     prompt: &str,
+    max_tokens: Option<u32>,
     response_schema: Option<&Value>,
 ) -> Result<(reqwest::StatusCode, Value), String> {
     let modelo_limpio = model.trim().trim_start_matches("models/");
@@ -1140,11 +1430,14 @@ async fn enviar_peticion_gemini(
         "responseMimeType": "application/json",
         "temperature": 0.1
     });
+    if let Some(mt) = max_tokens {
+        generation_config["maxOutputTokens"] = json!(mt);
+    }
     if let Some(schema) = response_schema {
         generation_config["responseSchema"] = schema.clone();
     }
 
-    let body = json!({
+    let mut body = json!({
         "contents": [
             {
                 "parts": [
@@ -1154,6 +1447,13 @@ async fn enviar_peticion_gemini(
         ],
         "generationConfig": generation_config
     });
+    if !system_prompt.trim().is_empty() {
+        body["systemInstruction"] = json!({
+            "parts": [
+                { "text": system_prompt }
+            ]
+        });
+    }
 
     let resp = http_client()
         .post(&url)
@@ -1181,14 +1481,18 @@ fn extraer_modelo_sugerido_gemini(msg: &str) -> Option<String> {
 async fn llamar_gemini(
     api_key: &str,
     model: &str,
+    system_prompt: &str,
     prompt: &str,
+    max_tokens: Option<u32>,
     response_schema: Option<Value>,
-) -> Result<Value, String> {
+) -> Result<(Value, String), String> {
     let mut modelo_activo = model.trim().trim_start_matches("models/").to_string();
     let (mut status, mut json_resp) = enviar_peticion_gemini(
         api_key,
         &modelo_activo,
+        system_prompt,
         prompt,
+        max_tokens,
         response_schema.as_ref(),
     )
     .await?;
@@ -1203,7 +1507,9 @@ async fn llamar_gemini(
             if let Ok((st2, jr2)) = enviar_peticion_gemini(
                 api_key,
                 &reemplazo,
+                system_prompt,
                 prompt,
+                max_tokens,
                 response_schema.as_ref(),
             )
             .await
@@ -1230,11 +1536,18 @@ async fn llamar_gemini(
     if !status.is_success() && response_schema.is_some() {
         let msg = json_resp["error"]["message"].as_str().unwrap_or("");
         if es_error_esquema_no_soportado(status, msg) {
-            (status, json_resp) =
-                enviar_peticion_gemini(api_key, &modelo_activo, prompt, None).await?;
+            (status, json_resp) = enviar_peticion_gemini(
+                api_key,
+                &modelo_activo,
+                system_prompt,
+                prompt,
+                max_tokens,
+                None,
+            )
+            .await?;
             if status.is_success() && modelo_activo != model.trim().trim_start_matches("models/") {
                 let mut cfg = cargar_settings();
-                cfg.gemini_model = modelo_activo;
+                cfg.gemini_model = modelo_activo.clone();
                 let _ = guardar_settings(&cfg);
             }
         }
@@ -1251,8 +1564,48 @@ async fn llamar_gemini(
         .as_str()
         .ok_or_else(|| "Gemini no devolvió texto en la respuesta".to_string())?;
 
-    parsear_json_limpio(content)
-        .map_err(|e| format!("No se pudo interpretar el JSON de Gemini: {}", e))
+    let val = parsear_json_limpio(content)
+        .map_err(|e| format!("No se pudo interpretar el JSON de Gemini: {}", e))?;
+    Ok((val, modelo_activo))
+}
+
+async fn consultar_json_proveedor_con_opciones(
+    prompt: &str,
+    system_prompt: &str,
+    max_tokens: Option<u32>,
+    openai_schema: Option<Value>,
+    gemini_schema: Option<Value>,
+) -> Result<(Value, String), String> {
+    let settings = cargar_settings();
+    if settings.provider == "gemini" {
+        if settings.gemini_api_key.trim().is_empty() {
+            return Err("No has configurado tu API Key de Google Gemini.".to_string());
+        }
+        let (val, modelo_usado) = llamar_gemini(
+            &settings.gemini_api_key,
+            &settings.gemini_model,
+            system_prompt,
+            prompt,
+            max_tokens,
+            gemini_schema,
+        )
+        .await?;
+        Ok((val, format!("gemini:{}", modelo_usado)))
+    } else {
+        if settings.openai_api_key.trim().is_empty() {
+            return Err("No has configurado tu API Key de OpenAI.".to_string());
+        }
+        let val = llamar_openai(
+            &settings.openai_api_key,
+            &settings.openai_model,
+            system_prompt,
+            prompt,
+            max_tokens,
+            openai_schema,
+        )
+        .await?;
+        Ok((val, format!("openai:{}", settings.openai_model.trim())))
+    }
 }
 
 async fn consultar_json_proveedor_con_esquema(
@@ -1260,30 +1613,15 @@ async fn consultar_json_proveedor_con_esquema(
     openai_schema: Option<Value>,
     gemini_schema: Option<Value>,
 ) -> Result<Value, String> {
-    let settings = cargar_settings();
-    if settings.provider == "gemini" {
-        if settings.gemini_api_key.trim().is_empty() {
-            return Err("No has configurado tu API Key de Google Gemini.".to_string());
-        }
-        llamar_gemini(
-            &settings.gemini_api_key,
-            &settings.gemini_model,
-            prompt,
-            gemini_schema,
-        )
-        .await
-    } else {
-        if settings.openai_api_key.trim().is_empty() {
-            return Err("No has configurado tu API Key de OpenAI.".to_string());
-        }
-        llamar_openai(
-            &settings.openai_api_key,
-            &settings.openai_model,
-            prompt,
-            openai_schema,
-        )
-        .await
-    }
+    let (val, _) = consultar_json_proveedor_con_opciones(
+        prompt,
+        SYSTEM_PROMPT_EXTRACCION,
+        None,
+        openai_schema,
+        gemini_schema,
+    )
+    .await?;
+    Ok(val)
 }
 
 async fn consultar_json_proveedor(prompt: &str) -> Result<Value, String> {
@@ -1383,19 +1721,156 @@ Induce UNA sola regla general y reutilizable que capture el patrón común sin s
 Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura:
 
 {{
-  "es_error_de_ia": true,
+  "es_error_de_ia": "true si el patrón corresponde a un error o preferencia repetida de la IA, o false si es dato externo",
   "tipo_error": "abreviacion | fecha | hora | realizacion | motivo | tipo | juzgado | estilo_observaciones | otro",
   "regla": "Instrucción general, breve y reutilizable (máximo 1 oración) aplicable a futuros textos similares",
-  "confianza": 0.9,
-  "necesita_aclaracion": false,
-  "pregunta": "Solo si existe una contradicción real imposible de deducir, pregunta corta y directa"
+  "confianza": "Número entre 0.0 y 1.0 (usa >= 0.75 si el patrón es claro o cuenta con aclaración; < 0.75 si sigue ambiguo)",
+  "necesita_aclaracion": "true si persiste una ambigüedad o contradicción que requiera preguntar al usuario; false si el patrón ya es claro o tiene aclaración",
+  "pregunta": "Solo si necesita_aclaracion es true, pregunta corta y directa; de lo contrario \"\""
 }}
+
+CRITERIOS:
+1. Si todos los cambios agregan datos que no estaban ni podían deducirse del texto original, responde "es_error_de_ia": false y "necesita_aclaracion": false.
+2. Si algún caso incluye Aclaración del usuario que ya explica el criterio, responde "necesita_aclaracion": false.
+3. Si el patrón sigue siendo ambiguo o aparentemente contradictorio con el texto y no hay aclaración, usa "necesita_aclaracion": true y "confianza" < 0.75.
 
 CASOS AGRUPADOS:
 {}"#,
         correcciones.len(),
         casos.join("\n\n")
     )
+}
+
+pub(crate) fn construir_prompt_consolidacion(lote: &LoteConsolidacion) -> String {
+    let max_chars = if lote.ambito == "*" { 320 } else { 380 };
+    let reglas_txt = if lote.reglas_ambito.is_empty() {
+        "(Sin reglas en este ámbito)".to_string()
+    } else {
+        lote.reglas_ambito
+            .iter()
+            .map(|r| {
+                format!(
+                    "- id={} | estado={} | origen={} | alcance={} | campo={} | q10={:.2} | imp={} ok={} fail={} | regla={:?} | triggers={:?}",
+                    r.id,
+                    r.estado,
+                    r.origen,
+                    r.defensor_alcance,
+                    r.campo_objetivo,
+                    r.confianza_q10,
+                    r.impresiones,
+                    r.aciertos_directos,
+                    r.fallos_directos,
+                    r.regla,
+                    r.triggers
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let corrs_txt = if lote.correcciones_recientes.is_empty() {
+        "(Sin correcciones recientes pendientes de consolidar)".to_string()
+    } else {
+        lote.correcciones_recientes
+            .iter()
+            .map(|c| {
+                let cambios: Vec<String> = c
+                    .cambios
+                    .iter()
+                    .map(|fc| format!("{}: {:?}->{:?}", fc.campo, fc.valor_ia, fc.valor_usuario))
+                    .collect();
+                format!(
+                    "- id={} | def={} | campo={} | estado={} | cambios=[{}] | nota={:?} | texto={:?}",
+                    c.id,
+                    c.defensor_clave,
+                    c.campo_principal,
+                    c.estado,
+                    cambios.join("; "),
+                    c.nota_usuario,
+                    c.texto_anonimizado
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let met_txt = if lote.metricas_resumen.is_empty() {
+        "(Sin métricas registradas)".to_string()
+    } else {
+        lote.metricas_resumen
+            .iter()
+            .map(|m| {
+                format!(
+                    "- {}: eval={} ok={} corr={} ewma={:.2} drift={}",
+                    m.campo, m.evaluaciones, m.aciertos, m.correcciones, m.precision_ewma, m.drift_activo
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let pat_txt = if lote.patrones_transversales.is_empty() {
+        "(Sin patrones transversales repetidos)".to_string()
+    } else {
+        lote.patrones_transversales
+            .iter()
+            .map(|p| {
+                format!(
+                    "- {} (campo={}, ocurrencias={}, defensores={}): {:?}",
+                    p.firma, p.campo, p.ocurrencias, p.defensores_distintos, p.ejemplo_anonimizado
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r#"Consolida de forma incremental la memoria de aprendizaje para el ámbito `{}` ({}).
+Resumen sintético previo (v{}): {:?}
+
+MÉTRICAS DEL ÁMBITO:
+{}
+
+PATRONES TRANSVERSALES OBSERVADOS:
+{}
+
+REGLAS ACTUALES DEL ÁMBITO:
+{}
+
+CORRECCIONES ANONIMIZADAS RECIENTES:
+{}
+
+INSTRUCCIONES:
+1. Operaciones delta permitidas en `acciones_reglas`:
+   - `"fusionar"`: agrupa `ids_origen` de reglas locales redundantes en una redacción más clara (nunca toques reglas `base_invariante` / `base-*`).
+   - `"conflicto"`: marca reglas locales obsoletas o contradictorias en `ids_origen` (requiere `confianza >= 0.75`; prohibido sobre `base_invariante`).
+   - `"sintetizar"`: propone como máximo 2 reglas nuevas concisas (que no dupliquen reglas ya presentes) con `triggers` cortos útiles.
+2. `resumen_actualizado`: redacta un perfil sintético consolidado de máximo {} caracteres con los criterios duraderos más útiles de este ámbito para inyectar al prompt de extracción. No incluyas nombres propios ni números de radicado.
+3. `sugerencias_build`: si detectas jerga recurrente o entidades faltantes útiles para futuras versiones del software, inclúyelas de forma anónima; si no hay, devuelve `[]`."#,
+        lote.ambito,
+        lote.nombre_ambito,
+        lote.version_resumen,
+        lote.resumen_actual,
+        met_txt,
+        pat_txt,
+        reglas_txt,
+        corrs_txt,
+        max_chars
+    )
+}
+
+pub async fn consolidar_memoria_ia(
+    lote: &LoteConsolidacion,
+) -> Result<(ResultadoConsolidacionIa, String), String> {
+    let prompt = construir_prompt_consolidacion(lote);
+    let (raw, modelo) = consultar_json_proveedor_con_opciones(
+        &prompt,
+        SYSTEM_PROMPT_CONSOLIDACION,
+        Some(1400),
+        Some(esquema_consolidacion_openai()),
+        Some(esquema_consolidacion_gemini()),
+    )
+    .await?;
+    let resultado: ResultadoConsolidacionIa = serde_json::from_value(raw)
+        .map_err(|e| format!("No se pudo interpretar la consolidación de IA: {}", e))?;
+    Ok((resultado, modelo))
 }
 
 /// Inducción diferida por clústeres (`N >= 2` ejemplos coherentes): deduce una regla general
@@ -1481,6 +1956,7 @@ pub(crate) fn arbitrar_salida_hibrida(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn arbitrar_salida_hibrida_con_catalogos(
     texto: &str,
     raw_json: &Value,
@@ -1492,6 +1968,64 @@ pub(crate) fn arbitrar_salida_hibrida_con_catalogos(
     tipos_usuario: &[String],
     juzgados_usuario: &[String],
 ) -> AiAudienciaOutput {
+    arbitrar_salida_hibrida_con_catalogos_y_defensor(
+        texto,
+        raw_json,
+        memoria_local,
+        priors,
+        reglas_inyectadas,
+        ejemplos_inyectados,
+        motor,
+        tipos_usuario,
+        juzgados_usuario,
+        None,
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn arbitrar_salida_hibrida_con_catalogos_y_defensor(
+    texto: &str,
+    raw_json: &Value,
+    memoria_local: &MemoriaAprendizaje,
+    priors: &IndicePriorsExcel,
+    reglas_inyectadas: Vec<String>,
+    ejemplos_inyectados: Vec<String>,
+    motor: &MotorEstadisticoLocal,
+    tipos_usuario: &[String],
+    juzgados_usuario: &[String],
+    defensor: Option<&str>,
+) -> AiAudienciaOutput {
+    let base_vacia = MemoriaAprendizaje::default();
+    arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
+        texto,
+        raw_json,
+        &base_vacia,
+        memoria_local,
+        priors,
+        reglas_inyectadas,
+        ejemplos_inyectados,
+        motor,
+        tipos_usuario,
+        juzgados_usuario,
+        defensor,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
+    texto: &str,
+    raw_json: &Value,
+    memoria_base: &MemoriaAprendizaje,
+    memoria_local: &MemoriaAprendizaje,
+    priors: &IndicePriorsExcel,
+    reglas_inyectadas: Vec<String>,
+    ejemplos_inyectados: Vec<String>,
+    motor: &MotorEstadisticoLocal,
+    tipos_usuario: &[String],
+    juzgados_usuario: &[String],
+    defensor: Option<&str>,
+) -> AiAudienciaOutput {
     let get_str = |key: &str| -> String {
         raw_json
             .get(key)
@@ -1501,7 +2035,10 @@ pub(crate) fn arbitrar_salida_hibrida_con_catalogos(
             .to_string()
     };
 
-    let motor_pred = motor.predecir(texto, memoria_local, priors);
+    let motor_pred =
+        motor.predecir_con_base_para_defensor(texto, memoria_base, memoria_local, priors, defensor);
+    let pref_efectiva =
+        preferencias_efectivas_con_base_para_defensor(memoria_base, memoria_local, defensor);
 
     let mut radicado = limpiar_valor_opcional_vacio(&get_str("radicado"));
     let mut proc_vinculado = None;
@@ -1524,19 +2061,26 @@ pub(crate) fn arbitrar_salida_hibrida_con_catalogos(
     }
 
     let raw_tipo = limpiar_valor_opcional_vacio(&get_str("tipo_audiencia"));
-    let tipo_resuelto = resolver_alias_exacto_validado(memoria_local, "tipo", &raw_tipo, 0.35)
-        .unwrap_or_else(|| {
-            if raw_tipo.is_empty() {
-                proc_vinculado
-                    .as_ref()
-                    .map(|p| p.tipo_habitual.clone())
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| motor_pred.tipo_sugerido.clone())
-                    .unwrap_or_default()
-            } else {
-                raw_tipo.clone()
-            }
-        });
+    let tipo_resuelto = resolver_alias_exacto_validado_con_base_para_defensor(
+        memoria_base,
+        memoria_local,
+        "tipo",
+        &raw_tipo,
+        0.30,
+        defensor,
+    )
+    .unwrap_or_else(|| {
+        if raw_tipo.is_empty() {
+            proc_vinculado
+                .as_ref()
+                .map(|p| p.tipo_habitual.clone())
+                .filter(|s| !s.is_empty())
+                .or_else(|| motor_pred.tipo_sugerido.clone())
+                .unwrap_or_default()
+        } else {
+            raw_tipo.clone()
+        }
+    });
     let (tipo_audiencia, tipo_otra) =
         mapear_tipo_audiencia_con_usuario(&tipo_resuelto, tipos_usuario);
 
@@ -1547,18 +2091,55 @@ pub(crate) fn arbitrar_salida_hibrida_con_catalogos(
     let (hora, minuto, _) = resolver_hora_con_prior(&hora_norm, &minuto_norm, texto, priors);
 
     let raw_juzgado = limpiar_valor_opcional_vacio(&get_str("juzgado"));
-    // Preserva abreviaciones CTO/MPAL/PCTO por defecto; solo sustituye si existe un alias validado (q10 >= 0.35),
-    // o si coincide insensiblemente a tildes/mayúsculas con un ítem exacto del catálogo.
+    // Preserva abreviaciones CTO/MPAL/PCTO por defecto; sustituye solo si existe un alias validado
+    // (q10 >= 0.30, activable a partir de la 2.ª corrección consistente) o coincidencia exacta del catálogo.
     let juzgado_bruto = if raw_juzgado.is_empty() {
-        proc_vinculado
-            .as_ref()
-            .map(|p| p.juzgado_habitual.clone())
-            .filter(|s| !s.is_empty())
+        let siglas_texto = extraer_siglas_cortas_juzgado(texto);
+        let por_sigla = if siglas_texto.len() == 1 {
+            resolver_alias_exacto_validado_con_base_para_defensor(
+                memoria_base,
+                memoria_local,
+                "juzgado",
+                &siglas_texto[0],
+                0.30,
+                defensor,
+            )
+        } else {
+            None
+        };
+        por_sigla
+            .or_else(|| {
+                proc_vinculado
+                    .as_ref()
+                    .map(|p| p.juzgado_habitual.clone())
+                    .filter(|s| !s.is_empty())
+            })
             .or_else(|| motor_pred.juzgado_sugerido.clone())
             .unwrap_or_default()
     } else {
-        resolver_alias_exacto_validado(memoria_local, "juzgado", &raw_juzgado, 0.35)
-            .unwrap_or(raw_juzgado)
+        resolver_alias_exacto_validado_con_base_para_defensor(
+            memoria_base,
+            memoria_local,
+            "juzgado",
+            &raw_juzgado,
+            0.30,
+            defensor,
+        )
+        .or_else(|| {
+            // Solo expande siglas cortas desnudas ("J4", "J04", "Jdo 4", "Juzgado 4");
+            // nunca sobreescribe calificadores explícitos como "J4 CTO", "J4 MPAL" o "J4 Circuito".
+            es_solo_sigla_corta_juzgado(&raw_juzgado).and_then(|sigla| {
+                resolver_alias_exacto_validado_con_base_para_defensor(
+                    memoria_base,
+                    memoria_local,
+                    "juzgado",
+                    &sigla,
+                    0.30,
+                    defensor,
+                )
+            })
+        })
+        .unwrap_or(raw_juzgado)
     };
     let juzgado = normalizar_juzgado_catalogo(&juzgado_bruto, juzgados_usuario);
 
@@ -1597,10 +2178,7 @@ pub(crate) fn arbitrar_salida_hibrida_con_catalogos(
         // Caso contradictorio de legacy-python: dice "Sí" pero narra que fracasó
         se_realizo = "NO".to_string();
         regla_realizacion_fijada = true;
-    } else if detectar_patron_fracaso_con_preferencias(
-        &texto_norm,
-        &memoria_local.preferencias_estilo,
-    ) {
+    } else if detectar_patron_fracaso_con_preferencias(&texto_norm, &pref_efectiva) {
         se_realizo = "NO".to_string();
         regla_realizacion_fijada = true;
     }
@@ -1683,7 +2261,7 @@ pub(crate) fn arbitrar_salida_hibrida_con_catalogos(
         }
     }
 
-    let pref = &memoria_local.preferencias_estilo;
+    let pref = &pref_efectiva;
     let p_causas_sec = pref.incluir_causas_secundarias_alpha
         / (pref.incluir_causas_secundarias_alpha + pref.incluir_causas_secundarias_beta).max(1.0);
     let p_reprog = pref.incluir_reprogramacion_alpha
@@ -1732,6 +2310,13 @@ pub(crate) fn arbitrar_salida_hibrida_con_catalogos(
 }
 
 pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput, String> {
+    extraer_datos_audiencia_ia_con_defensor(texto, None).await
+}
+
+pub async fn extraer_datos_audiencia_ia_con_defensor(
+    texto: &str,
+    defensor: Option<&str>,
+) -> Result<AiAudienciaOutput, String> {
     if texto.trim().is_empty() {
         return Err("Ingresa el texto de la audiencia para procesar.".to_string());
     }
@@ -1739,21 +2324,39 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
     let current_year = Local::now().year();
     let texto_pre = expandir_abreviaciones_y_compacto(texto, current_year);
     let (contexto_aprendizaje, reglas_inyectadas, ejemplos_inyectados) =
-        obtener_contexto_prompt_con_traza(texto);
+        obtener_contexto_prompt_con_traza_y_defensor(texto, defensor);
 
     let memoria_local = cargar_memoria_local_snapshot();
     let memoria_base = memoria_base_embebida();
     let settings = cargar_settings();
     let priors = cargar_priors_actuales();
-    let candidatos = seleccionar_candidatos_prompt(&texto_pre, &memoria_local, &settings, &priors);
-    let motor = MotorEstadisticoLocal::entrenar_desde_memorias(memoria_base, &memoria_local);
+    let candidatos = seleccionar_candidatos_prompt_con_base_para_defensor(
+        &texto_pre,
+        memoria_base,
+        &memoria_local,
+        &settings,
+        &priors,
+        defensor,
+    );
+    let motor = MotorEstadisticoLocal::entrenar_desde_memorias_para_defensor(
+        memoria_base,
+        &memoria_local,
+        defensor,
+    );
+    let (resumen_general, resumen_defensor) = if settings.usar_resumen_consolidado {
+        obtener_resumenes_consolidados_prompt(memoria_base, &memoria_local, defensor)
+    } else {
+        (None, None)
+    };
 
-    let prompt = construir_prompt_con_candidatos_y_catalogo(
+    let prompt = construir_prompt_con_candidatos_y_resumenes(
         &texto_pre,
         current_year,
         &contexto_aprendizaje,
         Some(&candidatos),
         &settings.tipos_audiencia,
+        resumen_general.as_deref(),
+        resumen_defensor.as_deref(),
     );
     let raw_json = consultar_json_proveedor_con_esquema(
         &prompt,
@@ -1762,9 +2365,10 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
     )
     .await?;
 
-    Ok(arbitrar_salida_hibrida_con_catalogos(
+    Ok(arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
         texto,
         &raw_json,
+        memoria_base,
         &memoria_local,
         &priors,
         reglas_inyectadas,
@@ -1772,6 +2376,7 @@ pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput
         &motor,
         &settings.tipos_audiencia,
         &settings.juzgados,
+        defensor,
     ))
 }
 
@@ -1917,6 +2522,7 @@ mod tests {
                     observaciones: String::new(),
                 },
                 reglas_inyectadas: Vec::new(),
+                defensor_clave: String::new(),
             });
             mem.ejemplos_aciertos.push(EjemploPositivo {
                 id: format!("no-{}", i),
@@ -1935,6 +2541,7 @@ mod tests {
                     observaciones: String::new(),
                 },
                 reglas_inyectadas: Vec::new(),
+                defensor_clave: String::new(),
             });
         }
 
@@ -1948,6 +2555,7 @@ mod tests {
                 juzgado_habitual: "Juzgado 3 Cto Penal".into(),
                 tipo_habitual: "Audiencia de juicio oral".into(),
                 frecuencia: 4,
+                defensor_habitual: String::new(),
             },
         );
 
@@ -2001,6 +2609,8 @@ mod tests {
             alpha: 7.0,
             beta: 1.0,
             ultima_actualizacion: "2025-08-18T10:00:00-05:00".into(),
+            defensor_alcance: "*".into(),
+            defensores_confirmantes: Vec::new(),
         });
 
         let raw_adapt = json!({
@@ -2045,6 +2655,7 @@ mod tests {
             juzgados_top: vec!["Juzgado 3 Cto Penal".into()],
             tipos_top: vec!["Audiencia de juicio oral".into()],
             radicado_vinculado: priors.procesos_por_numero.get("200016001075202599999").cloned(),
+            siglas_resueltas: Vec::new(),
         };
         let prompt = construir_prompt_con_candidatos(texto, 2025, "", Some(&cands));
         assert!(prompt.contains("CANDIDATOS ESTADÍSTICOS LOCALES"));
@@ -2221,6 +2832,7 @@ mod tests {
                 registrada: String::new(),
                 proveedor: "openai".into(),
                 modelo: "gpt-5-mini".into(),
+                defensor_clave: String::new(),
                 texto_anonimizado: "Audiencia de juicio oral instalada normalmente en juzgado penal".into(),
                 salida_anonimizada: AudienciaInput {
                     radicado: "PROC - 202500001".into(),
@@ -2241,6 +2853,7 @@ mod tests {
                 registrada: String::new(),
                 proveedor: "openai".into(),
                 modelo: "gpt-5-mini".into(),
+                defensor_clave: String::new(),
                 texto_anonimizado: "Audiencia aplazada porque la fiscal no asistio a sala".into(),
                 salida_anonimizada: AudienciaInput {
                     radicado: "PROC - 202500002".into(),
@@ -2263,6 +2876,7 @@ mod tests {
                 radicado_completo: "MARIA TORRES - 20001-60-01075-2025-77777".into(),
                 juzgado_habitual: "Juzgado 2 Cto Penal".into(),
                 tipo_habitual: "Audiencia preparatoria".into(),
+                defensor_habitual: String::new(),
                 frecuencia: 2,
             },
         );
@@ -2651,5 +3265,435 @@ mod tests {
             normalizar_juzgado_catalogo("Juzgado Segundo Penal", &[]),
             "Juzgado Segundo Penal"
         );
+    }
+
+    #[test]
+    fn test_typos_reales_hora_irregular_instalada_adaptable_y_sigla_por_defensor() {
+        // 1) Typos frecuentes y puntuación irregular de horas (inspirado en muestras reales)
+        let pre = expandir_abreviaciones_y_compacto(
+            "DESPCHO DE CONOCIEMIENTO VALLEDUPARA. SE INSTLO PREPARATORI PERO SOLCITO REPRGRAMACION DE DILIGNCIA. HORA. 12:00 / HORA; 8:00 / HORA: 2.30",
+            2025,
+        );
+        assert!(pre.contains("Despacho"), "{}", pre);
+        assert!(pre.contains("Conocimiento"), "{}", pre);
+        assert!(pre.contains("Valledupar"), "{}", pre);
+        assert!(pre.contains("Instaló"), "{}", pre);
+        assert!(pre.contains("Preparatoria"), "{}", pre);
+        assert!(pre.contains("Solicitó"), "{}", pre);
+        assert!(pre.contains("Reprogramación"), "{}", pre);
+        assert!(pre.contains("Diligencia"), "{}", pre);
+        assert!(pre.contains("HORA: 12:00"), "{}", pre);
+        assert!(pre.contains("HORA: 8:00"), "{}", pre);
+        assert!(pre.contains("HORA: 2:30"), "{}", pre);
+
+        // 2) "Se instaló pero se suspendió/reprogramó": adaptable por defensor en 2 correcciones,
+        //    aislado de otros defensores, y NUNCA confunde "No se instaló"
+        let mut mem = MemoriaAprendizaje::default();
+        let priors = IndicePriorsExcel::default();
+        let motor = MotorEstadisticoLocal::entrenar_desde_memorias(&MemoriaAprendizaje::default(), &mem);
+
+        let texto_instalada =
+            "Audiencia preparatoria en J10: se instaló la diligencia pero se suspendió y se reprogramó para el 20/08/2025";
+        let raw_si = json!({
+            "radicado": "PROCESADO - 200016001075202500555",
+            "tipo_audiencia": "Audiencia preparatoria",
+            "fecha": "18/08/2025",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "J10",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": "Se instaló y se reprogramó continuación."
+        });
+
+        // Por defecto (antes de aprender): fuerza NO
+        let out_default = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            texto_instalada,
+            &raw_si,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(out_default.se_realizo, "NO");
+
+        // Entrenar 2 correcciones de Ana marcando SI + asociando J10 -> Juzgado 10 Penal Municipal
+        let pred_no = crate::models::AudienciaInput {
+            radicado: "PROCESADO - 200016001075202500555".into(),
+            tipo: "Audiencia preparatoria".into(),
+            fecha: "18/08/2025".into(),
+            hora: "09:00".into(),
+            juzgado: "J10".into(),
+            realizada: "NO".into(),
+            motivo: "Juez".into(),
+            observaciones: String::new(),
+        };
+        let fin_si = crate::models::AudienciaInput {
+            juzgado: "Juzgado 10 Penal Municipal de Valledupar".into(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            ..pred_no.clone()
+        };
+        let campos_corr = crate::aprendizaje::detectar_correcciones(&pred_no, &fin_si);
+        for _ in 0..2 {
+            crate::estadistica_ia::actualizar_alias_y_preferencias_en_memoria_para_defensor(
+                &mut mem,
+                texto_instalada,
+                &pred_no,
+                &fin_si,
+                &campos_corr,
+                "2025-08-18T10:00:00-05:00",
+                Some("Dra. Ana Pérez"),
+            );
+        }
+
+        // Ahora para Ana: respeta SI y resuelve J10 -> Juzgado 10 Penal Municipal de Valledupar
+        let out_ana = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            texto_instalada,
+            &raw_si,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(out_ana.se_realizo, "SI");
+        assert_eq!(out_ana.juzgado, "Juzgado 10 Penal Municipal de Valledupar");
+
+        // Para otro defensor (Luis): sigue marcando NO y NO recibe el alias privado J10 de Ana
+        let out_luis = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            texto_instalada,
+            &raw_si,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            Some("Dr. Luis Mora"),
+        );
+        assert_eq!(out_luis.se_realizo, "NO");
+        assert_eq!(out_luis.juzgado, "J10");
+
+        // Caso límite de negación: "No se instaló...", "no pudo ser instalada", "nunca se instaló"
+        // y "no se instaló y se fija..." SIEMPRE deben marcar NO incluso para Ana
+        for texto_neg in [
+            "Audiencia preparatoria en J10: no se instaló la diligencia y se reprogramó para el 25/08/2025",
+            "Audiencia preparatoria en J10: no pudo ser instalada por ausencia del juez y se reprogramó",
+            "Audiencia preparatoria en J10: nunca se instaló y no quedó instalada, se fija fecha para mayo",
+            "No se instaló la diligencia y se fija para el 10/09/2025",
+            "SE SOLCITO REPRGRAMACION POR AGENDA DEL DESPCHO",
+        ] {
+            let out_neg = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+                texto_neg,
+                &raw_si,
+                &mem,
+                &priors,
+                Vec::new(),
+                Vec::new(),
+                &motor,
+                &[],
+                &[],
+                Some("Dra. Ana Pérez"),
+            );
+            assert_eq!(
+                out_neg.se_realizo, "NO",
+                "caso '{}' jamás debe tratarse como SI",
+                texto_neg
+            );
+        }
+
+        // Invariante CTO/MPAL/Circuito: si el LLM devolvió "J10 CTO" o "J10 Circuito",
+        // NO se sobrescribe con el alias de sigla desnuda J10 -> Municipal
+        let raw_cto = json!({
+            "radicado": "PROCESADO - 200016001075202500555",
+            "tipo_audiencia": "Audiencia preparatoria",
+            "fecha": "18/08/2025",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "J10 CTO",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let out_cto = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            "Audiencia en J10 CTO realizada sin novedad",
+            &raw_cto,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(out_cto.juzgado, "J10 CTO");
+
+        // Aislamiento de alto q10 vía MotorEstadisticoLocal: si LLM devuelve juzgado vacío para Luis,
+        // el alias de alta confianza (>= 0.55) de Ana NO debe filtrarse a Luis
+        for _ in 0..6 {
+            crate::estadistica_ia::actualizar_alias_y_preferencias_en_memoria_para_defensor(
+                &mut mem,
+                "Audiencia en J10 preparatoria",
+                &pred_no,
+                &fin_si,
+                &campos_corr,
+                "2025-08-18T10:00:00-05:00",
+                Some("Dra. Ana Pérez"),
+            );
+        }
+        let raw_juz_vacio = json!({
+            "radicado": "OTRO - 470016001075202500888",
+            "tipo_audiencia": "Audiencia preparatoria",
+            "fecha": "19/08/2025",
+            "hora": "10",
+            "minuto": "00",
+            "juzgado": "",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let motor_luis = MotorEstadisticoLocal::entrenar_desde_memorias_para_defensor(
+            &MemoriaAprendizaje::default(),
+            &mem,
+            Some("Dr. Luis Mora"),
+        );
+        let out_luis_vacio = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            "Audiencia en J10 preparatoria",
+            &raw_juz_vacio,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor_luis,
+            &[],
+            &[],
+            Some("Dr. Luis Mora"),
+        );
+        assert_eq!(
+            out_luis_vacio.juzgado, "",
+            "Alias privado de alta confianza de Ana no debe filtrarse a Luis cuando juzgado viene vacío"
+        );
+
+        // 3) Prompt incluye bloque de siglas resueltas del Mapa de Conexiones
+        let cands = CandidatosPrompt {
+            juzgados_top: vec!["Juzgado 10 Penal Municipal de Valledupar".into()],
+            tipos_top: vec!["Audiencia preparatoria".into()],
+            radicado_vinculado: None,
+            siglas_resueltas: vec![(
+                "j10".into(),
+                "Juzgado 10 Penal Municipal de Valledupar".into(),
+            )],
+        };
+        let prompt = construir_prompt_con_candidatos(texto_instalada, 2025, "", Some(&cands));
+        assert!(prompt.contains("Siglas habituales de este defensor (Mapa de Conexiones)"));
+        assert!(prompt.contains("J10 => Juzgado 10 Penal Municipal de Valledupar"));
+    }
+
+    #[test]
+    fn test_pilar2_esquemas_openai_gemini_consolidacion_resumenes_y_cluster_sin_sesgo() {
+        use crate::aprendizaje::{
+            CampoCorregido, CorreccionLoteConsolidacion, LoteConsolidacion,
+            PatronTransversalExport, PerfilSinteticoDefensor, TelemetriaDisparoConsolidacion,
+        };
+        use crate::models::AudienciaInput;
+
+        // 1) Validación recursiva de esquema OpenAI strict=true y esquema Gemini sin additionalProperties
+        fn validar_openai_strict(v: &Value) {
+            if let Some(obj) = v.as_object() {
+                if obj.get("type").and_then(|t| t.as_str()) == Some("object") {
+                    assert_eq!(
+                        obj.get("additionalProperties"),
+                        Some(&json!(false)),
+                        "Falta additionalProperties: false en {:?}",
+                        obj
+                    );
+                    if let Some(props) = obj.get("properties").and_then(|p| p.as_object()) {
+                        let req = obj
+                            .get("required")
+                            .and_then(|r| r.as_array())
+                            .expect("objeto debe definir required");
+                        for k in props.keys() {
+                            assert!(req.contains(&json!(k)), "Falta '{}' en required", k);
+                        }
+                    }
+                }
+                for val in obj.values() {
+                    validar_openai_strict(val);
+                }
+            } else if let Some(arr) = v.as_array() {
+                for val in arr {
+                    validar_openai_strict(val);
+                }
+            }
+        }
+        fn validar_gemini_sin_additional(v: &Value) {
+            if let Some(obj) = v.as_object() {
+                assert!(
+                    !obj.contains_key("additionalProperties"),
+                    "Gemini no soporta additionalProperties: {:?}",
+                    obj
+                );
+                for val in obj.values() {
+                    validar_gemini_sin_additional(val);
+                }
+            } else if let Some(arr) = v.as_array() {
+                for val in arr {
+                    validar_gemini_sin_additional(val);
+                }
+            }
+        }
+
+        let oa = esquema_consolidacion_openai();
+        assert_eq!(oa["type"], "json_schema");
+        assert_eq!(oa["json_schema"]["strict"], true);
+        validar_openai_strict(&oa["json_schema"]["schema"]);
+
+        let gm = esquema_consolidacion_gemini();
+        assert_eq!(gm["type"], "OBJECT");
+        validar_gemini_sin_additional(&gm);
+
+        // 2) Prompt de consolidación con ámbito real de defensor y patrones transversales
+        let lote = LoteConsolidacion {
+            ambito: "ana perez".into(),
+            nombre_ambito: "Dra. Ana Pérez".into(),
+            resumen_actual: "Ana prefiere conservar CTO".into(),
+            version_resumen: 1,
+            reglas_ambito: Vec::new(),
+            correcciones_recientes: vec![CorreccionLoteConsolidacion {
+                id: "c1".into(),
+                fecha: "2025-08-20".into(),
+                defensor_clave: "ana perez".into(),
+                campo_principal: "juzgado".into(),
+                texto_anonimizado: "Audiencia de [PROCESADO] rad [RADICADO] en Juzgado 3 CTO".into(),
+                cambios: Vec::new(),
+                nota_usuario: "Mantener CTO".into(),
+                estado: "pendiente".into(),
+            }],
+            metricas_resumen: Vec::new(),
+            patrones_transversales: vec![PatronTransversalExport {
+                firma: "motivo:Fiscalía".into(),
+                campo: "motivo".into(),
+                ocurrencias: 3,
+                defensores_distintos: 2,
+                ejemplo_anonimizado: "[PROCESADO] fiscal no vino".into(),
+            }],
+            watermark_ids: vec!["c1".into()],
+            snapshot_extracciones: 6,
+            telemetria_disparo: TelemetriaDisparoConsolidacion::default(),
+        };
+        let prompt_cons = construir_prompt_consolidacion(&lote);
+        assert!(prompt_cons.contains("ana perez"));
+        assert!(prompt_cons.contains("Dra. Ana Pérez"));
+        assert!(prompt_cons.contains("[PROCESADO]"));
+        assert!(prompt_cons.contains("PATRONES TRANSVERSALES"));
+
+        // 3) Prompt de extracción inyecta resúmenes consolidados general + defensor
+        let prompt_ext = construir_prompt_con_candidatos_y_resumenes(
+            "Audiencia preparatoria en J10",
+            2025,
+            "",
+            None,
+            &[],
+            Some("Criterio general consolidado"),
+            Some("Perfil sintético de Ana"),
+        );
+        assert!(prompt_ext.contains("CRITERIOS GENERALES CONSOLIDADOS (TRANSVERSALES)"));
+        assert!(prompt_ext.contains("Criterio general consolidado"));
+        assert!(prompt_ext.contains("PERFIL SINTÉTICO DEL DEFENSOR (ESPECÍFICO)"));
+        assert!(prompt_ext.contains("Perfil sintético de Ana"));
+
+        // 4) Prompt de clúster no pre-sesga literal `"necesita_aclaracion": false`
+        let base_aud = AudienciaInput {
+            radicado: "P - 200016001075202500001".into(),
+            tipo: "Audiencia preparatoria".into(),
+            fecha: "15/08/2025".into(),
+            hora: "09:00".into(),
+            juzgado: "Juzgado 1 Penal".into(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+        let corr_ex = CorreccionIa {
+            id: "c1".into(),
+            registrada: String::new(),
+            proveedor: "openai".into(),
+            modelo: "gpt-5-mini".into(),
+            texto_original: "Texto 1".into(),
+            prediccion: base_aud.clone(),
+            final_usuario: base_aud.clone(),
+            campos: vec![CampoCorregido {
+                campo: "juzgado".into(),
+                valor_ia: "J1".into(),
+                valor_usuario: "J2".into(),
+            }],
+            estado: "pendiente".into(),
+            regla_generada: String::new(),
+            regla_id_asociada: String::new(),
+            pregunta_ia: String::new(),
+            nota_usuario: String::new(),
+            exportada: false,
+            defensor_clave: String::new(),
+        };
+        let prompt_cluster = construir_prompt_analisis_cluster(&[corr_ex.clone(), corr_ex]);
+        assert!(!prompt_cluster.contains("\"necesita_aclaracion\": false,"));
+
+        // 5) Arbitraje con `memoria_base` (Brechas B y H) aplica preferencia sintética heredada desde `base`
+        let mut base = MemoriaAprendizaje::default();
+        let mut pref_ana = PreferenciasEstilo::default();
+        pref_ana.instalada_reprogramada_si_alpha = 6.0;
+        pref_ana.instalada_reprogramada_si_beta = 1.0;
+        base.preferencias_por_defensor.insert("Dra. Ana Pérez".into(), pref_ana);
+        base.perfiles_sinteticos.insert(
+            "ana perez".into(),
+            PerfilSinteticoDefensor {
+                ambito: "ana perez".into(),
+                nombre_mostrar: "Dra. Ana Pérez".into(),
+                resumen: "Instalada luego reprogramada cuenta como SI".into(),
+                version: 1,
+                ultima_actualizacion: String::new(),
+            },
+        );
+        let local = MemoriaAprendizaje::default();
+        let priors = IndicePriorsExcel::default();
+        let motor = MotorEstadisticoLocal::entrenar_desde_memorias_para_defensor(
+            &base,
+            &local,
+            Some("Dra. Ana Pérez"),
+        );
+        let raw_si = json!({
+            "radicado": "PROC - 200016001075202500555",
+            "tipo_audiencia": "Audiencia preparatoria",
+            "fecha": "18/08/2025",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "J10",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let out_b = arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
+            "Se instaló la audiencia preparatoria pero luego se reprogramó",
+            &raw_si,
+            &base,
+            &local,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(out_b.se_realizo, "SI");
     }
 }

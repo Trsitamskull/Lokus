@@ -6,7 +6,11 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::estadistica_ia::juzgados_base;
-use crate::models::{normalizar_clave_catalogo, TIPOS_AUDIENCIA};
+use crate::models::{normalizar_clave_catalogo, normalizar_clave_defensor, TIPOS_AUDIENCIA};
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -20,6 +24,10 @@ pub struct AppSettings {
     pub defensores: Vec<String>,
     pub juzgados: Vec<String>,
     pub tipos_audiencia: Vec<String>,
+    #[serde(default = "default_true")]
+    pub consolidacion_ia_activa: bool,
+    #[serde(default = "default_true")]
+    pub usar_resumen_consolidado: bool,
 }
 
 impl Default for AppSettings {
@@ -34,6 +42,8 @@ impl Default for AppSettings {
             defensores: Vec::new(),
             juzgados: Vec::new(),
             tipos_audiencia: Vec::new(),
+            consolidacion_ia_activa: true,
+            usar_resumen_consolidado: true,
         }
     }
 }
@@ -59,6 +69,10 @@ pub struct ConfigPublica {
     pub defensores: Vec<String>,
     pub juzgados: Vec<String>,
     pub tipos_audiencia: Vec<String>,
+    #[serde(default = "default_true")]
+    pub consolidacion_ia_activa: bool,
+    #[serde(default = "default_true")]
+    pub usar_resumen_consolidado: bool,
     pub status: AiStatusResponse,
 }
 
@@ -75,6 +89,10 @@ pub struct ActualizarConfig {
     pub clear_openai_key: bool,
     #[serde(default)]
     pub clear_gemini_key: bool,
+    #[serde(default)]
+    pub consolidacion_ia_activa: Option<bool>,
+    #[serde(default)]
+    pub usar_resumen_consolidado: Option<bool>,
 }
 
 pub fn mask_key(key: &str) -> String {
@@ -91,19 +109,44 @@ pub fn mask_key(key: &str) -> String {
     }
 }
 
+pub(crate) fn es_nombre_defensor_mas_informativo(candidato: &str, actual: &str) -> bool {
+    let puntaje = |s: &str| -> (bool, usize, bool, bool) {
+        let mixed = s.chars().any(|c| c.is_uppercase()) && s.chars().any(|c| c.is_lowercase());
+        let len = s.chars().count();
+        let tiene_tilde = s
+            .chars()
+            .any(|c| "áéíóúüñÁÉÍÓÚÜÑ".contains(c));
+        let tiene_mayus = s.chars().any(|c| c.is_uppercase());
+        (mixed, len, tiene_tilde, tiene_mayus)
+    };
+    puntaje(candidato) > puntaje(actual)
+}
+
 pub fn normalizar_lista_defensores(lista: Vec<String>) -> Vec<String> {
-    let mut vistos = HashSet::new();
-    let mut salida = Vec::new();
+    let mut mapa: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for item in lista {
         let limpio = item.split_whitespace().collect::<Vec<_>>().join(" ");
         if limpio.is_empty() {
             continue;
         }
-        let clave = limpio.to_lowercase();
-        if vistos.insert(clave) {
-            salida.push(limpio);
+        let clave_norm = normalizar_clave_defensor(&limpio);
+        let clave = if clave_norm.is_empty() {
+            limpio.to_lowercase()
+        } else {
+            clave_norm
+        };
+        match mapa.get_mut(&clave) {
+            Some(existente) => {
+                if es_nombre_defensor_mas_informativo(&limpio, existente) {
+                    *existente = limpio;
+                }
+            }
+            None => {
+                mapa.insert(clave, limpio);
+            }
         }
     }
+    let mut salida: Vec<String> = mapa.into_values().collect();
     salida.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
     salida
 }
@@ -216,6 +259,7 @@ pub fn cargar_settings() -> AppSettings {
     let ruta = obtener_ruta_config();
     if let Ok(contenido) = fs::read_to_string(&ruta) {
         if let Ok(mut settings) = serde_json::from_str::<AppSettings>(&contenido) {
+            let defensores_antes = settings.defensores.clone();
             settings.defensores = normalizar_lista_defensores(settings.defensores);
             let tipos_default = tipos_audiencia_default_strings();
             let juzgados_antes = settings.juzgados.clone();
@@ -228,8 +272,9 @@ pub fn cargar_settings() -> AppSettings {
                 std::mem::take(&mut settings.tipos_audiencia),
                 &tipos_default,
             );
-            let cambio_catalogos =
-                settings.juzgados != juzgados_antes || settings.tipos_audiencia != tipos_antes;
+            let cambio_catalogos = settings.defensores != defensores_antes
+                || settings.juzgados != juzgados_antes
+                || settings.tipos_audiencia != tipos_antes;
             let gemini_norm = normalizar_modelo_gemini(&settings.gemini_model);
             let openai_norm = normalizar_modelo_openai(&settings.openai_model);
             let cambio_modelo =
@@ -295,6 +340,8 @@ pub fn config_publica_desde_settings(s: &AppSettings) -> ConfigPublica {
         defensores: s.defensores.clone(),
         juzgados: s.juzgados.clone(),
         tipos_audiencia: s.tipos_audiencia.clone(),
+        consolidacion_ia_activa: s.consolidacion_ia_activa,
+        usar_resumen_consolidado: s.usar_resumen_consolidado,
         status: estado_desde_settings(s),
     }
 }
@@ -501,6 +548,13 @@ fn aplicar_actualizacion_en_memoria(mut actual: AppSettings, input: ActualizarCo
         }
     }
 
+    if let Some(val) = input.consolidacion_ia_activa {
+        actual.consolidacion_ia_activa = val;
+    }
+    if let Some(val) = input.usar_resumen_consolidado {
+        actual.usar_resumen_consolidado = val;
+    }
+
     actual
 }
 
@@ -537,29 +591,44 @@ fn renombrar_defensor_en_memoria(
     actual_nombre: &str,
     nuevo_nombre: &str,
 ) -> Result<AppSettings, String> {
-    let target = actual_nombre.trim().to_lowercase();
+    let target_lower = actual_nombre.trim().to_lowercase();
+    let target_clave = normalizar_clave_defensor(actual_nombre);
     let nuevo = nuevo_nombre.split_whitespace().collect::<Vec<_>>().join(" ");
     if nuevo.is_empty() {
         return Err("El nuevo nombre del defensor no puede estar vacío.".to_string());
     }
     let nuevo_lower = nuevo.to_lowercase();
-    let existe_otro = actual
+    let nuevo_clave = normalizar_clave_defensor(&nuevo);
+
+    let idx_target = actual
         .defensores
         .iter()
-        .any(|d| d.to_lowercase() == nuevo_lower && d.to_lowercase() != target);
+        .position(|d| d.to_lowercase() == target_lower)
+        .or_else(|| {
+            if target_clave.is_empty() {
+                None
+            } else {
+                actual
+                    .defensores
+                    .iter()
+                    .position(|d| normalizar_clave_defensor(d) == target_clave)
+            }
+        });
+
+    let existe_otro = actual.defensores.iter().enumerate().any(|(idx, d)| {
+        if Some(idx) == idx_target {
+            return false;
+        }
+        d.to_lowercase() == nuevo_lower
+            || (!nuevo_clave.is_empty() && normalizar_clave_defensor(d) == nuevo_clave)
+    });
     if existe_otro {
         return Err(format!("Ya existe otro defensor llamado '{}'.", nuevo));
     }
 
-    let mut encontrado = false;
-    for d in &mut actual.defensores {
-        if d.to_lowercase() == target {
-            *d = nuevo.clone();
-            encontrado = true;
-            break;
-        }
-    }
-    if !encontrado {
+    if let Some(idx) = idx_target {
+        actual.defensores[idx] = nuevo;
+    } else {
         actual.defensores.push(nuevo);
     }
     actual.defensores = normalizar_lista_defensores(actual.defensores);
@@ -567,10 +636,12 @@ fn renombrar_defensor_en_memoria(
 }
 
 fn eliminar_defensor_en_memoria(mut actual: AppSettings, nombre: &str) -> AppSettings {
-    let target = nombre.trim().to_lowercase();
-    actual
-        .defensores
-        .retain(|d| d.to_lowercase() != target);
+    let target_lower = nombre.trim().to_lowercase();
+    let target_clave = normalizar_clave_defensor(nombre);
+    actual.defensores.retain(|d| {
+        d.to_lowercase() != target_lower
+            && (target_clave.is_empty() || normalizar_clave_defensor(d) != target_clave)
+    });
     actual
 }
 
@@ -621,6 +692,8 @@ mod tests {
             defensores: vec!["Ana Pérez".into()],
             juzgados: vec!["Juzgado 1 Penal".into()],
             tipos_audiencia: vec!["Audiencia especial".into()],
+            consolidacion_ia_activa: true,
+            usar_resumen_consolidado: true,
         };
 
         let actualizado = aplicar_actualizacion_en_memoria(
@@ -634,17 +707,28 @@ mod tests {
                 theme: "light".into(),
                 clear_openai_key: false,
                 clear_gemini_key: false,
+                consolidacion_ia_activa: Some(false),
+                usar_resumen_consolidado: None,
             },
         );
 
         assert_eq!(actualizado.openai_api_key, "sk-secret-key-9999");
         assert_eq!(actualizado.gemini_api_key, "AIzaSecretGemini1234");
         assert_eq!(actualizado.defensores, vec!["Ana Pérez".to_string()]);
+        assert!(!actualizado.consolidacion_ia_activa);
+        assert!(actualizado.usar_resumen_consolidado);
 
         let publica = config_publica_desde_settings(&actualizado);
+        assert!(!publica.consolidacion_ia_activa);
+        assert!(publica.usar_resumen_consolidado);
         let json_str = serde_json::to_string(&publica).unwrap();
         assert!(!json_str.contains("sk-secret-key-9999"));
         assert!(!json_str.contains("AIzaSecretGemini1234"));
+
+        // Deserialización de settings legacy sin los nuevos flags debe defaults = true
+        let legacy: AppSettings = serde_json::from_str(r#"{"provider":"openai"}"#).unwrap();
+        assert!(legacy.consolidacion_ia_activa);
+        assert!(legacy.usar_resumen_consolidado);
     }
 
     #[test]
@@ -669,6 +753,26 @@ mod tests {
 
         s = eliminar_defensor_en_memoria(s, "Carlos Mendoza");
         assert_eq!(s.defensores, vec!["Ana María Gómez".to_string()]);
+
+        // Deduplicación por clave sin honoríficos conservando el nombre más informativo
+        let dedup = normalizar_lista_defensores(vec![
+            "JOSE DANIEL".into(),
+            "Dr. José Daniel".into(),
+            "Defensor Público José Daniel".into(),
+        ]);
+        assert_eq!(dedup.len(), 1);
+        assert!(dedup[0].contains("José Daniel"));
+
+        // Renombrar dentro de la misma clave canonizada y con nuevo apellido
+        let mut s_jd = AppSettings::default();
+        s_jd = agregar_defensor_en_memoria(s_jd, "Dr. José Daniel").unwrap();
+        s_jd = renombrar_defensor_en_memoria(s_jd, "Dr. José Daniel", "José Daniel").unwrap();
+        assert_eq!(s_jd.defensores, vec!["José Daniel".to_string()]);
+        s_jd = renombrar_defensor_en_memoria(s_jd, "José Daniel", "José Daniel Martínez").unwrap();
+        assert_eq!(s_jd.defensores, vec!["José Daniel Martínez".to_string()]);
+        // Conflicto entre "Dr. Luis Mora" y "luis mora" contra otro defensor existente
+        s_jd = agregar_defensor_en_memoria(s_jd, "Dra. Ana Pérez").unwrap();
+        assert!(renombrar_defensor_en_memoria(s_jd.clone(), "José Daniel Martínez", "Ana Pérez").is_err());
     }
 
     #[test]

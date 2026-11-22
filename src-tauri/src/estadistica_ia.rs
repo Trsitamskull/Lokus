@@ -16,15 +16,18 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::aprendizaje::{
-    aplicar_decaimiento_beta_en, calcular_bm25, colapsar_espacios, limite_inferior_bayesiano,
-    ngramas_caracteres, normalizar_ess_par, quitar_tildes, tokenizar_judicial, AliasEstadistico,
-    CampoCorregido, MemoriaAprendizaje, PrediccionLocalResumen, MAX_ESS_N, PRIOR_BETA_ALPHA,
-    PRIOR_BETA_BETA,
+    aplicar_decaimiento_beta_con_prior_en, calcular_bm25, colapsar_espacios,
+    limite_inferior_bayesiano, ngramas_caracteres, normalizar_ess_par, quitar_tildes,
+    tokenizar_judicial, AliasEstadistico, CampoCorregido, MemoriaAprendizaje,
+    PrediccionLocalResumen, PreferenciasEstilo, MAX_ESS_N, PRIOR_ALIAS_ALPHA, PRIOR_ALIAS_BETA,
 };
 use crate::config::AppSettings;
 use crate::models::{
-    extraer_numeros_radicado, mapear_motivo_a_indice, normalizar_texto_sin_tildes, AudienciaInput,
-    IndicePriorsExcel, ProcesoHabitual, MOTIVOS_LABELS, TIPOS_AUDIENCIA,
+    coincide_alcance_defensor, es_alcance_general, extraer_numeros_radicado,
+    extraer_prefijo_dane_radicado, extraer_siglas_cortas_juzgado, mapear_motivo_a_indice,
+    normalizar_clave_catalogo, normalizar_clave_defensor, normalizar_texto_sin_tildes,
+    texto_indica_instalacion_efectiva, AudienciaInput, IndicePriorsExcel, ProcesoHabitual,
+    MOTIVOS_LABELS, TIPOS_AUDIENCIA,
 };
 
 const JUZGADOS_BASE_JSON: &str = include_str!("../resources/juzgados_base.json");
@@ -438,6 +441,28 @@ pub fn predecir_knn_bm25(texto: &str, corpus: &[RegistroHistorico], k: usize) ->
 // Tabla estadística de alias, selección de candidatos y vinculación de radicado
 // ---------------------------------------------------------------------------
 
+fn es_sigla_despacho_corta(norm: &str) -> bool {
+    norm.strip_prefix('j')
+        .is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Normaliza la clave de entrada de un alias, unificando ceros a la izquierda en siglas cortas
+/// de juzgado (`"J04"` y `"J4"` -> `"j4"`) para evitar fragmentar el conteo entre variantes.
+pub(crate) fn canonizar_entrada_alias(campo: &str, entrada_raw: &str) -> String {
+    let norm = normalizar_clave_entidad(entrada_raw);
+    if campo == "juzgado" && es_sigla_despacho_corta(&norm) {
+        if let Some(rest) = norm.strip_prefix('j') {
+            if let Ok(n) = rest.parse::<u32>() {
+                if (1..=99).contains(&n) {
+                    return format!("j{}", n);
+                }
+            }
+        }
+    }
+    norm
+}
+
+#[cfg(test)]
 fn actualizar_alias(
     memoria: &mut MemoriaAprendizaje,
     campo: &str,
@@ -446,22 +471,67 @@ fn actualizar_alias(
     positivo: bool,
     ahora: &str,
 ) {
-    let entrada_norm = normalizar_clave_entidad(entrada_raw);
+    actualizar_alias_para_defensor(
+        memoria,
+        campo,
+        entrada_raw,
+        canonico_raw,
+        positivo,
+        ahora,
+        None,
+    );
+}
+
+fn actualizar_alias_para_defensor(
+    memoria: &mut MemoriaAprendizaje,
+    campo: &str,
+    entrada_raw: &str,
+    canonico_raw: &str,
+    positivo: bool,
+    ahora: &str,
+    defensor_clave: Option<&str>,
+) {
+    let entrada_norm = canonizar_entrada_alias(campo, entrada_raw);
     let canonico = colapsar_espacios(canonico_raw);
     let canonico_norm = normalizar_clave_entidad(&canonico);
-    if entrada_norm.len() < 3 || canonico.len() < 3 {
+    let min_len = if campo == "juzgado" && es_sigla_despacho_corta(&entrada_norm) {
+        2
+    } else {
+        3
+    };
+    if entrada_norm.len() < min_len || canonico.len() < 3 {
         return;
     }
+
+    let def_norm = defensor_clave
+        .map(normalizar_clave_defensor)
+        .unwrap_or_default();
+    let alcance_objetivo = if def_norm.is_empty() {
+        "*".to_string()
+    } else {
+        def_norm.clone()
+    };
+
+    let aplica_mismo_ambito = |alcance: &str| -> bool {
+        if alcance_objetivo == "*" {
+            es_alcance_general(alcance)
+        } else {
+            coincide_alcance_defensor(alcance, &alcance_objetivo)
+        }
+    };
 
     if positivo {
         for otro in &mut memoria.tabla_alias {
             if otro.campo == campo
                 && otro.entrada_norm == entrada_norm
+                && aplica_mismo_ambito(&otro.defensor_alcance)
                 && normalizar_clave_entidad(&otro.canonico) != canonico_norm
             {
-                aplicar_decaimiento_beta_en(
+                aplicar_decaimiento_beta_con_prior_en(
                     &mut otro.alpha,
                     &mut otro.beta,
+                    PRIOR_ALIAS_ALPHA,
+                    PRIOR_ALIAS_BETA,
                     &otro.ultima_actualizacion,
                     Some(ahora),
                 );
@@ -472,20 +542,82 @@ fn actualizar_alias(
         }
     }
 
-    if let Some(alias) = memoria.tabla_alias.iter_mut().find(|a| {
-        a.campo == campo
-            && a.entrada_norm == entrada_norm
-            && normalizar_clave_entidad(&a.canonico) == canonico_norm
-    }) {
-        aplicar_decaimiento_beta_en(
+    // Prioridad de búsqueda para evitar duplicados, fugas negativas y falsas promociones:
+    // 1) Coincidencia exacta en el mismo alcance (propio del defensor o "*" si es planilla general).
+    // 2) En positivo con defensor activo: coincidencia ya promovida en Cuaderno General ("*").
+    // 3) En positivo con defensor activo: coincidencia ACTIVA (no retractada: alpha > beta y q10 >= 0.22)
+    //    de otro defensor para promoverla al Cuaderno General ("*"). Un alias retractado de otro defensor
+    //    nunca se reutiliza ni contamina el aprendizaje del defensor activo.
+    let idx_objetivo = if positivo {
+        let mismo_alcance = memoria.tabla_alias.iter().position(|a| {
+            a.campo == campo
+                && a.entrada_norm == entrada_norm
+                && normalizar_clave_entidad(&a.canonico) == canonico_norm
+                && aplica_mismo_ambito(&a.defensor_alcance)
+        });
+        mismo_alcance
+            .or_else(|| {
+                if def_norm.is_empty() {
+                    return None;
+                }
+                memoria.tabla_alias.iter().position(|a| {
+                    a.campo == campo
+                        && a.entrada_norm == entrada_norm
+                        && normalizar_clave_entidad(&a.canonico) == canonico_norm
+                        && es_alcance_general(&a.defensor_alcance)
+                })
+            })
+            .or_else(|| {
+                if def_norm.is_empty() {
+                    return None;
+                }
+                memoria.tabla_alias.iter().position(|a| {
+                    a.campo == campo
+                        && a.entrada_norm == entrada_norm
+                        && normalizar_clave_entidad(&a.canonico) == canonico_norm
+                        && !es_alcance_general(&a.defensor_alcance)
+                        && !coincide_alcance_defensor(&a.defensor_alcance, &def_norm)
+                        && a.alpha > a.beta
+                        && limite_inferior_bayesiano(a.alpha, a.beta) >= 0.22
+                })
+            })
+    } else {
+        memoria.tabla_alias.iter().position(|a| {
+            a.campo == campo
+                && a.entrada_norm == entrada_norm
+                && normalizar_clave_entidad(&a.canonico) == canonico_norm
+                && aplica_mismo_ambito(&a.defensor_alcance)
+        })
+    };
+
+    if let Some(idx) = idx_objetivo {
+        let alias = &mut memoria.tabla_alias[idx];
+        aplicar_decaimiento_beta_con_prior_en(
             &mut alias.alpha,
             &mut alias.beta,
+            PRIOR_ALIAS_ALPHA,
+            PRIOR_ALIAS_BETA,
             &alias.ultima_actualizacion,
             Some(ahora),
         );
         if positivo {
             alias.alpha += 1.0;
             alias.canonico = canonico;
+            // Si 2+ defensores distintos confirman la misma equivalencia, promover al Cuaderno General ("*")
+            if !def_norm.is_empty() {
+                if !es_alcance_general(&alias.defensor_alcance) {
+                    let alc_norm = normalizar_clave_defensor(&alias.defensor_alcance);
+                    if !alc_norm.is_empty() && !alias.defensores_confirmantes.contains(&alc_norm) {
+                        alias.defensores_confirmantes.push(alc_norm);
+                    }
+                }
+                if !alias.defensores_confirmantes.contains(&def_norm) {
+                    alias.defensores_confirmantes.push(def_norm);
+                }
+                if alias.defensores_confirmantes.len() >= 2 {
+                    alias.defensor_alcance = "*".to_string();
+                }
+            }
         } else {
             alias.beta += 1.0;
         }
@@ -514,14 +646,257 @@ fn actualizar_alias(
         }
     }
 
+    let mut confirmantes = Vec::new();
+    if !def_norm.is_empty() {
+        confirmantes.push(def_norm);
+    }
+
     memoria.tabla_alias.push(AliasEstadistico {
         campo: campo.to_string(),
         entrada_norm,
         canonico,
-        alpha: PRIOR_BETA_ALPHA + 1.0,
-        beta: PRIOR_BETA_BETA,
+        alpha: PRIOR_ALIAS_ALPHA + 1.0,
+        beta: PRIOR_ALIAS_BETA,
+        defensor_alcance: alcance_objetivo,
+        defensores_confirmantes: confirmantes,
         ultima_actualizacion: ahora.to_string(),
     });
+}
+
+fn actualizar_preferencias_en_bloque(
+    pref: &mut PreferenciasEstilo,
+    texto: &str,
+    prediccion: &AudienciaInput,
+    final_usuario: &AudienciaInput,
+    peso: f64,
+) {
+    const MAX_ESS_PREF: f64 = 12.0;
+    let pred_obs = prediccion.observaciones.to_lowercase();
+    let fin_obs = final_usuario.observaciones.to_lowercase();
+
+    if pred_obs.contains("causas secundarias:") {
+        if fin_obs.contains("causas secundarias:") {
+            pref.incluir_causas_secundarias_alpha += peso;
+        } else {
+            pref.incluir_causas_secundarias_beta += peso;
+        }
+        normalizar_ess_par(
+            &mut pref.incluir_causas_secundarias_alpha,
+            &mut pref.incluir_causas_secundarias_beta,
+            MAX_ESS_PREF,
+        );
+    } else if fin_obs.contains("causas secundarias:") {
+        pref.incluir_causas_secundarias_alpha += peso;
+        normalizar_ess_par(
+            &mut pref.incluir_causas_secundarias_alpha,
+            &mut pref.incluir_causas_secundarias_beta,
+            MAX_ESS_PREF,
+        );
+    }
+
+    if pred_obs.contains("reprogramada para:") {
+        if fin_obs.contains("reprogramada para:") {
+            pref.incluir_reprogramacion_alpha += peso;
+        } else {
+            pref.incluir_reprogramacion_beta += peso;
+        }
+        normalizar_ess_par(
+            &mut pref.incluir_reprogramacion_alpha,
+            &mut pref.incluir_reprogramacion_beta,
+            MAX_ESS_PREF,
+        );
+    } else if fin_obs.contains("reprogramada para:") {
+        pref.incluir_reprogramacion_alpha += peso;
+        normalizar_ess_par(
+            &mut pref.incluir_reprogramacion_alpha,
+            &mut pref.incluir_reprogramacion_beta,
+            MAX_ESS_PREF,
+        );
+    }
+
+    let texto_lower = quitar_tildes(&texto.to_lowercase());
+    if (texto_lower.contains("se fija") || texto_lower.contains("se fijo"))
+        && !texto_lower.contains("nueva fecha")
+    {
+        if final_usuario.realizada.trim().eq_ignore_ascii_case("NO") {
+            pref.se_fija_aplazamiento_alpha += peso;
+        } else if final_usuario.realizada.trim().eq_ignore_ascii_case("SI") {
+            pref.se_fija_aplazamiento_beta += peso;
+        }
+        normalizar_ess_par(
+            &mut pref.se_fija_aplazamiento_alpha,
+            &mut pref.se_fija_aplazamiento_beta,
+            MAX_ESS_PREF,
+        );
+    }
+
+    // Preferencia adaptable: diligencia instalada (sin negación) que luego se suspende/declara fallida/reprograma
+    let dice_instalada = texto_indica_instalacion_efectiva(&texto_lower);
+    let dice_incidencia = texto_lower.contains("fallida")
+        || texto_lower.contains("reprogram")
+        || texto_lower.contains("reprgram")
+        || texto_lower.contains("suspend")
+        || texto_lower.contains("aplaz")
+        || texto_lower.contains("apalz")
+        || texto_lower.contains("nueva fecha");
+    if dice_instalada && dice_incidencia {
+        if final_usuario.realizada.trim().eq_ignore_ascii_case("SI") {
+            pref.instalada_reprogramada_si_alpha += peso;
+        } else if final_usuario.realizada.trim().eq_ignore_ascii_case("NO") {
+            pref.instalada_reprogramada_si_beta += peso;
+        }
+        normalizar_ess_par(
+            &mut pref.instalada_reprogramada_si_alpha,
+            &mut pref.instalada_reprogramada_si_beta,
+            MAX_ESS_PREF,
+        );
+    }
+}
+
+pub fn actualizar_alias_y_preferencias_en_memoria_para_defensor(
+    memoria: &mut MemoriaAprendizaje,
+    texto: &str,
+    prediccion: &AudienciaInput,
+    final_usuario: &AudienciaInput,
+    campos_corregidos: &[CampoCorregido],
+    ahora: &str,
+    defensor_clave: Option<&str>,
+) {
+    let corregido = |campo: &str| campos_corregidos.iter().any(|c| c.campo == campo);
+    let def_norm = defensor_clave
+        .map(normalizar_clave_defensor)
+        .filter(|s| !s.is_empty());
+    let def_ref = def_norm.as_deref();
+
+    // 1. Tabla de alias para juzgado y tipo (por defensor + promoción automática a General)
+    if !final_usuario.juzgado.trim().is_empty() {
+        if corregido("juzgado") {
+            if !prediccion.juzgado.trim().is_empty() {
+                actualizar_alias_para_defensor(
+                    memoria,
+                    "juzgado",
+                    &prediccion.juzgado,
+                    &prediccion.juzgado,
+                    false,
+                    ahora,
+                    def_ref,
+                );
+                actualizar_alias_para_defensor(
+                    memoria,
+                    "juzgado",
+                    &prediccion.juzgado,
+                    &final_usuario.juzgado,
+                    true,
+                    ahora,
+                    def_ref,
+                );
+            }
+            actualizar_alias_para_defensor(
+                memoria,
+                "juzgado",
+                &final_usuario.juzgado,
+                &final_usuario.juzgado,
+                true,
+                ahora,
+                def_ref,
+            );
+        } else {
+            actualizar_alias_para_defensor(
+                memoria,
+                "juzgado",
+                &final_usuario.juzgado,
+                &final_usuario.juzgado,
+                true,
+                ahora,
+                def_ref,
+            );
+        }
+
+        // Si el texto traía una sigla corta inequívoca (ej. "J10", "J04") y coincide con el número del juzgado guardado,
+        // aprender la asociación directa sigla -> juzgado para este defensor.
+        let siglas_texto = extraer_siglas_cortas_juzgado(texto);
+        let siglas_final = extraer_siglas_cortas_juzgado(&final_usuario.juzgado);
+        if siglas_texto.len() == 1 && siglas_final.contains(&siglas_texto[0]) {
+            actualizar_alias_para_defensor(
+                memoria,
+                "juzgado",
+                &siglas_texto[0],
+                &final_usuario.juzgado,
+                true,
+                ahora,
+                def_ref,
+            );
+        }
+    }
+
+    if !final_usuario.tipo.trim().is_empty() && final_usuario.tipo != "Otra" {
+        if corregido("tipo") {
+            if !prediccion.tipo.trim().is_empty() {
+                actualizar_alias_para_defensor(
+                    memoria,
+                    "tipo",
+                    &prediccion.tipo,
+                    &prediccion.tipo,
+                    false,
+                    ahora,
+                    def_ref,
+                );
+                actualizar_alias_para_defensor(
+                    memoria,
+                    "tipo",
+                    &prediccion.tipo,
+                    &final_usuario.tipo,
+                    true,
+                    ahora,
+                    def_ref,
+                );
+            }
+            actualizar_alias_para_defensor(
+                memoria,
+                "tipo",
+                &final_usuario.tipo,
+                &final_usuario.tipo,
+                true,
+                ahora,
+                def_ref,
+            );
+        } else {
+            actualizar_alias_para_defensor(
+                memoria,
+                "tipo",
+                &final_usuario.tipo,
+                &final_usuario.tipo,
+                true,
+                ahora,
+                def_ref,
+            );
+        }
+    }
+
+    // 2. Preferencias estilísticas adaptables (cuaderno del defensor + aporte suavizado al Cuaderno General)
+    if let Some(ref dk) = def_norm {
+        let base_global = memoria.preferencias_estilo.clone();
+        let entry = memoria
+            .preferencias_por_defensor
+            .entry(dk.clone())
+            .or_insert(base_global);
+        actualizar_preferencias_en_bloque(entry, texto, prediccion, final_usuario, 1.0);
+        actualizar_preferencias_en_bloque(
+            &mut memoria.preferencias_estilo,
+            texto,
+            prediccion,
+            final_usuario,
+            0.35,
+        );
+    } else {
+        actualizar_preferencias_en_bloque(
+            &mut memoria.preferencias_estilo,
+            texto,
+            prediccion,
+            final_usuario,
+            1.0,
+        );
+    }
 }
 
 pub fn actualizar_alias_y_preferencias_en_memoria(
@@ -532,143 +907,15 @@ pub fn actualizar_alias_y_preferencias_en_memoria(
     campos_corregidos: &[CampoCorregido],
     ahora: &str,
 ) {
-    let corregido = |campo: &str| campos_corregidos.iter().any(|c| c.campo == campo);
-
-    // 1. Tabla de alias para juzgado y tipo
-    if !final_usuario.juzgado.trim().is_empty() {
-        if corregido("juzgado") {
-            if !prediccion.juzgado.trim().is_empty() {
-                actualizar_alias(
-                    memoria,
-                    "juzgado",
-                    &prediccion.juzgado,
-                    &prediccion.juzgado,
-                    false,
-                    ahora,
-                );
-                actualizar_alias(
-                    memoria,
-                    "juzgado",
-                    &prediccion.juzgado,
-                    &final_usuario.juzgado,
-                    true,
-                    ahora,
-                );
-            }
-            actualizar_alias(
-                memoria,
-                "juzgado",
-                &final_usuario.juzgado,
-                &final_usuario.juzgado,
-                true,
-                ahora,
-            );
-        } else {
-            actualizar_alias(
-                memoria,
-                "juzgado",
-                &final_usuario.juzgado,
-                &final_usuario.juzgado,
-                true,
-                ahora,
-            );
-        }
-    }
-
-    if !final_usuario.tipo.trim().is_empty() && final_usuario.tipo != "Otra" {
-        if corregido("tipo") {
-            if !prediccion.tipo.trim().is_empty() {
-                actualizar_alias(memoria, "tipo", &prediccion.tipo, &prediccion.tipo, false, ahora);
-                actualizar_alias(
-                    memoria,
-                    "tipo",
-                    &prediccion.tipo,
-                    &final_usuario.tipo,
-                    true,
-                    ahora,
-                );
-            }
-            actualizar_alias(
-                memoria,
-                "tipo",
-                &final_usuario.tipo,
-                &final_usuario.tipo,
-                true,
-                ahora,
-            );
-        } else {
-            actualizar_alias(
-                memoria,
-                "tipo",
-                &final_usuario.tipo,
-                &final_usuario.tipo,
-                true,
-                ahora,
-            );
-        }
-    }
-
-    // 2. Preferencias estilísticas adaptables en observaciones y "se fija"
-    //    Se normaliza el tamaño efectivo de muestra (MAX_ESS_PREF = 12.0) para evitar bloqueo en el tope.
-    const MAX_ESS_PREF: f64 = 12.0;
-    let pred_obs = prediccion.observaciones.to_lowercase();
-    let fin_obs = final_usuario.observaciones.to_lowercase();
-
-    if pred_obs.contains("causas secundarias:") {
-        if fin_obs.contains("causas secundarias:") {
-            memoria.preferencias_estilo.incluir_causas_secundarias_alpha += 1.0;
-        } else {
-            memoria.preferencias_estilo.incluir_causas_secundarias_beta += 1.0;
-        }
-        normalizar_ess_par(
-            &mut memoria.preferencias_estilo.incluir_causas_secundarias_alpha,
-            &mut memoria.preferencias_estilo.incluir_causas_secundarias_beta,
-            MAX_ESS_PREF,
-        );
-    } else if fin_obs.contains("causas secundarias:") {
-        memoria.preferencias_estilo.incluir_causas_secundarias_alpha += 1.0;
-        normalizar_ess_par(
-            &mut memoria.preferencias_estilo.incluir_causas_secundarias_alpha,
-            &mut memoria.preferencias_estilo.incluir_causas_secundarias_beta,
-            MAX_ESS_PREF,
-        );
-    }
-
-    if pred_obs.contains("reprogramada para:") {
-        if fin_obs.contains("reprogramada para:") {
-            memoria.preferencias_estilo.incluir_reprogramacion_alpha += 1.0;
-        } else {
-            memoria.preferencias_estilo.incluir_reprogramacion_beta += 1.0;
-        }
-        normalizar_ess_par(
-            &mut memoria.preferencias_estilo.incluir_reprogramacion_alpha,
-            &mut memoria.preferencias_estilo.incluir_reprogramacion_beta,
-            MAX_ESS_PREF,
-        );
-    } else if fin_obs.contains("reprogramada para:") {
-        memoria.preferencias_estilo.incluir_reprogramacion_alpha += 1.0;
-        normalizar_ess_par(
-            &mut memoria.preferencias_estilo.incluir_reprogramacion_alpha,
-            &mut memoria.preferencias_estilo.incluir_reprogramacion_beta,
-            MAX_ESS_PREF,
-        );
-    }
-
-    let texto_lower = quitar_tildes(&texto.to_lowercase());
-    if (texto_lower.contains("se fija") || texto_lower.contains("se fijo"))
-        && !texto_lower.contains("nueva fecha")
-    {
-        if final_usuario.realizada.trim().eq_ignore_ascii_case("NO") {
-            memoria.preferencias_estilo.se_fija_aplazamiento_alpha += 1.0;
-        } else if final_usuario.realizada.trim().eq_ignore_ascii_case("SI") {
-            memoria.preferencias_estilo.se_fija_aplazamiento_beta += 1.0;
-        }
-        normalizar_ess_par(
-            &mut memoria.preferencias_estilo.se_fija_aplazamiento_alpha,
-            &mut memoria.preferencias_estilo.se_fija_aplazamiento_beta,
-            MAX_ESS_PREF,
-        );
-    }
+    actualizar_alias_y_preferencias_en_memoria_para_defensor(
+        memoria,
+        texto,
+        prediccion,
+        final_usuario,
+        campos_corregidos,
+        ahora,
+        None,
+    );
 }
 
 #[derive(Debug, Clone, Default)]
@@ -676,6 +923,7 @@ pub struct CandidatosPrompt {
     pub juzgados_top: Vec<String>,
     pub tipos_top: Vec<String>,
     pub radicado_vinculado: Option<ProcesoHabitual>,
+    pub siglas_resueltas: Vec<(String, String)>,
 }
 
 fn puntuar_candidato_entidad(query_tokens: &BTreeSet<String>, cand: &str, freq_prior: u32, bonus: f64) -> f64 {
@@ -692,91 +940,224 @@ fn puntuar_candidato_entidad(query_tokens: &BTreeSet<String>, cand: &str, freq_p
     jaccard * 3.0 + comunes * 0.45 + prior_log + bonus
 }
 
-pub fn seleccionar_candidatos_prompt(
+fn detectar_tipos_mencionados_en_texto(texto: &str) -> Vec<String> {
+    let norm = normalizar_texto_sin_tildes(texto);
+    let mut tipos = Vec::new();
+    let pistas: &[(&str, &str)] = &[
+        ("control de garantias", "Audiencia de control de legalidad"),
+        ("control de legalidad", "Audiencia de control de legalidad"),
+        ("juicio oral", "Audiencia de juicio oral"),
+        ("preparatoria", "Audiencia preparatoria"),
+        ("acusacion", "Audiencia de acusación"),
+        ("preclusion", "Audiencia de preclusión"),
+        ("imputacion", "Audiencia de imputación"),
+        ("concentrada", "Audiencia concentrada"),
+        ("preliminar", "Audiencia preliminar"),
+        ("medida de aseguramiento", "Audiencia de medidas de aseguramiento"),
+        ("medidas de aseguramiento", "Audiencia de medidas de aseguramiento"),
+        ("alegatos de conclusion", "Alegatos de conclusión"),
+        ("conciliacion", "Audiencia de conciliación"),
+        ("individualizacion de pena", "Audiencia de individualización de pena"),
+        ("reparacion integral", "Audiencia de incidente de reparación integral"),
+        ("nulidad", "Audiencia de nulidad"),
+        ("prorroga", "Audiencia de prórroga"),
+        ("revision de medida", "Audiencia de revisión de medida"),
+        ("verificacion de cumplimiento", "Audiencia de verificación de cumplimiento"),
+    ];
+    for (clave, oficial) in pistas {
+        if norm.contains(clave) {
+            let k = normalizar_clave_catalogo(oficial);
+            if !tipos.contains(&k) {
+                tipos.push(k);
+            }
+        }
+    }
+    tipos
+}
+
+pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
     texto: &str,
-    memoria: &MemoriaAprendizaje,
+    base: &MemoriaAprendizaje,
+    local: &MemoriaAprendizaje,
     settings: &AppSettings,
     priors: &IndicePriorsExcel,
+    defensor: Option<&str>,
 ) -> CandidatosPrompt {
     let query_tokens: BTreeSet<String> = tokenizar_judicial(texto).into_iter().collect();
+    let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
+    let siglas_texto = extraer_siglas_cortas_juzgado(texto);
+    let prefijo_dane = extraer_prefijo_dane_radicado(texto);
+    let tipos_detectados = detectar_tipos_mencionados_en_texto(texto);
 
-    // 1. Candidatos de juzgado (alias validados + settings + priors .xlsx + JUZGADOS_BASE)
+    // 1. Candidatos de juzgado combinando: Mapa de Conexiones (GrafoAsociaciones) + alias + settings + priors + JUZGADOS_BASE
     let mut mapa_juz: BTreeMap<String, (String, f64)> = BTreeMap::new();
-    let mut insertar_juz = |nombre: &str, freq: u32, bonus: f64| {
+    let mut sumar_juz = |nombre: &str, extra_score: f64| {
         let limpio = colapsar_espacios(nombre);
         if limpio.is_empty() {
             return;
         }
         let clave = normalizar_clave_entidad(&limpio);
-        let score = puntuar_candidato_entidad(&query_tokens, &limpio, freq, bonus);
-        if score <= 0.05 {
-            return;
-        }
+        let freq = *priors.juzgados_freq.get(&limpio).unwrap_or(&0);
+        let base_score = puntuar_candidato_entidad(&query_tokens, &limpio, freq, 0.0);
         match mapa_juz.get_mut(&clave) {
-            Some(existente) if score > existente.1 => *existente = (limpio, score),
-            None => {
-                mapa_juz.insert(clave, (limpio, score));
+            Some(existente) => {
+                existente.1 += extra_score;
+                if limpio.len() > existente.0.len() {
+                    existente.0 = limpio;
+                }
             }
-            _ => {}
+            None => {
+                let total = base_score + extra_score;
+                if total > 0.05 {
+                    mapa_juz.insert(clave, (limpio, total));
+                }
+            }
         }
     };
 
-    for a in &memoria.tabla_alias {
-        if a.campo == "juzgado" {
-            let lb = limite_inferior_bayesiano(a.alpha, a.beta);
-            if lb >= 0.30 {
-                let freq = *priors.juzgados_freq.get(&a.canonico).unwrap_or(&0);
-                insertar_juz(&a.canonico, freq, lb * 1.8);
+    // 1a. Alias validados y candidatos recientes (>= 0.22 ya sugiere en prompt; prioriza defensor activo)
+    for a in combinar_alias_local_sobre_base(base, local) {
+        if a.campo != "juzgado" {
+            continue;
+        }
+        let es_gen = es_alcance_general(&a.defensor_alcance);
+        let es_def = !es_gen && coincide_alcance_defensor(&a.defensor_alcance, &def_clave);
+        if !es_gen && !es_def {
+            continue;
+        }
+        let lb = limite_inferior_bayesiano(a.alpha, a.beta);
+        if lb >= 0.22 {
+            let mult_def = if es_def { 1.35 } else { 1.0 };
+            sumar_juz(&a.canonico, lb * 1.8 * mult_def);
+        }
+    }
+
+    // 1b. Aristas del Mapa de Conexiones ligero (GrafoAsociaciones)
+    if !def_clave.is_empty() {
+        if let Some(juz_def) = priors.grafo.defensor_a_juzgados.get(&def_clave) {
+            for (j, &freq) in juz_def {
+                sumar_juz(j, (1.0 + freq as f64).ln() * 0.55);
+            }
+        }
+        if let Some(siglas_def) = priors.grafo.defensor_sigla_a_juzgado.get(&def_clave) {
+            for sigla in &siglas_texto {
+                if let Some(destinos) = siglas_def.get(sigla) {
+                    for (j, &freq) in destinos {
+                        let peso = 1.6 + (1.0 + freq as f64).ln() * 0.85;
+                        sumar_juz(j, peso);
+                    }
+                }
             }
         }
     }
-    for j in &settings.juzgados {
-        let freq = *priors.juzgados_freq.get(j).unwrap_or(&0);
-        insertar_juz(j, freq, 0.35);
+    if let Some(ref prefijo) = prefijo_dane {
+        if let Some(juz_mun) = priors.grafo.prefijo_radicado_a_juzgados.get(prefijo) {
+            for (j, &freq) in juz_mun {
+                sumar_juz(j, 0.90 + (1.0 + freq as f64).ln() * 0.50);
+            }
+        }
     }
-    for (j, &freq) in &priors.juzgados_freq {
-        insertar_juz(j, freq, 0.25);
+    for tipo_k in &tipos_detectados {
+        if let Some(juz_tipo) = priors.grafo.tipo_a_juzgados.get(tipo_k) {
+            for (j, &freq) in juz_tipo {
+                sumar_juz(j, 0.55 + (1.0 + freq as f64).ln() * 0.35);
+            }
+        }
+    }
+
+    // 1c. Catálogos de usuario, priors globales y JUZGADOS_BASE
+    for j in &settings.juzgados {
+        sumar_juz(j, 0.35);
+    }
+    for j in priors.juzgados_freq.keys() {
+        sumar_juz(j, 0.25);
     }
     for j in juzgados_base() {
-        let freq = *priors.juzgados_freq.get(j).unwrap_or(&0);
-        insertar_juz(j, freq, 0.0);
+        sumar_juz(j, 0.0);
+    }
+
+    // 1d. Resolución final de siglas cortas detectadas en el texto:
+    //     prioriza alias validado del defensor > alias general "*" > mejor juzgado del grafo
+    //     ya cruzado con prefijo DANE del radicado y tipo de audiencia.
+    let mut siglas_resueltas: Vec<(String, String)> = Vec::new();
+    for sigla in &siglas_texto {
+        if let Some(res_alias) = resolver_alias_exacto_validado_con_base_para_defensor(
+            base, local, "juzgado", sigla, 0.30, defensor,
+        ) {
+            siglas_resueltas.push((sigla.clone(), res_alias));
+            continue;
+        }
+        if !def_clave.is_empty() {
+            if let Some(destinos) = priors
+                .grafo
+                .defensor_sigla_a_juzgado
+                .get(&def_clave)
+                .and_then(|m| m.get(sigla))
+            {
+                let mut mejor_grafo: Option<(&String, f64, u32)> = None;
+                for (j, &freq) in destinos {
+                    if freq == 0 {
+                        continue;
+                    }
+                    let clave = normalizar_clave_entidad(&colapsar_espacios(j));
+                    let score_comb = mapa_juz.get(&clave).map(|(_, s)| *s).unwrap_or(0.0);
+                    let supera = match mejor_grafo {
+                        None => true,
+                        Some((_, bs, bf)) => {
+                            score_comb > bs + 1e-6 || ((score_comb - bs).abs() <= 1e-6 && freq > bf)
+                        }
+                    };
+                    if supera {
+                        mejor_grafo = Some((j, score_comb, freq));
+                    }
+                }
+                if let Some((j_top, _, _)) = mejor_grafo {
+                    siglas_resueltas.push((sigla.clone(), j_top.clone()));
+                }
+            }
+        }
     }
 
     let mut juzgados_vec: Vec<(String, f64)> = mapa_juz.into_values().collect();
     juzgados_vec.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let juzgados_top: Vec<String> = juzgados_vec.into_iter().take(5).map(|(n, _)| n).collect();
 
-    // 2. Candidatos de tipo de audiencia
+    // 2. Candidatos de tipo de audiencia (cruzando defensor_a_tipos del grafo + settings + priors + TIPOS_AUDIENCIA)
     let mut mapa_tipo: BTreeMap<String, (String, f64)> = BTreeMap::new();
-    let mut insertar_tipo = |nombre: &str, freq: u32, bonus: f64| {
+    let mut sumar_tipo = |nombre: &str, extra_score: f64| {
         let limpio = colapsar_espacios(nombre);
         if limpio.is_empty() || limpio == "Otra" {
             return;
         }
         let clave = normalizar_clave_entidad(&limpio);
-        let score = puntuar_candidato_entidad(&query_tokens, &limpio, freq, bonus);
-        if score <= 0.05 {
-            return;
-        }
+        let freq = *priors.tipos_freq.get(&limpio).unwrap_or(&0);
+        let base_score = puntuar_candidato_entidad(&query_tokens, &limpio, freq, 0.0);
         match mapa_tipo.get_mut(&clave) {
-            Some(existente) if score > existente.1 => *existente = (limpio, score),
+            Some(existente) => existente.1 += extra_score,
             None => {
-                mapa_tipo.insert(clave, (limpio, score));
+                let total = base_score + extra_score;
+                if total > 0.05 {
+                    mapa_tipo.insert(clave, (limpio, total));
+                }
             }
-            _ => {}
         }
     };
 
-    for t in &settings.tipos_audiencia {
-        let freq = *priors.tipos_freq.get(t).unwrap_or(&0);
-        insertar_tipo(t, freq, 0.35);
+    if !def_clave.is_empty() {
+        if let Some(tipos_def) = priors.grafo.defensor_a_tipos.get(&def_clave) {
+            for (t, &freq) in tipos_def {
+                sumar_tipo(t, (1.0 + freq as f64).ln() * 0.45);
+            }
+        }
     }
-    for (t, &freq) in &priors.tipos_freq {
-        insertar_tipo(t, freq, 0.25);
+    for t in &settings.tipos_audiencia {
+        sumar_tipo(t, 0.35);
+    }
+    for t in priors.tipos_freq.keys() {
+        sumar_tipo(t, 0.25);
     }
     for &t in &TIPOS_AUDIENCIA {
-        let freq = *priors.tipos_freq.get(t).unwrap_or(&0);
-        insertar_tipo(t, freq, 0.0);
+        sumar_tipo(t, 0.0);
     }
 
     let mut tipos_vec: Vec<(String, f64)> = mapa_tipo.into_values().collect();
@@ -796,7 +1177,30 @@ pub fn seleccionar_candidatos_prompt(
         juzgados_top,
         tipos_top,
         radicado_vinculado,
+        siglas_resueltas,
     }
+}
+
+pub fn seleccionar_candidatos_prompt_para_defensor(
+    texto: &str,
+    memoria: &MemoriaAprendizaje,
+    settings: &AppSettings,
+    priors: &IndicePriorsExcel,
+    defensor: Option<&str>,
+) -> CandidatosPrompt {
+    let base = MemoriaAprendizaje::default();
+    seleccionar_candidatos_prompt_con_base_para_defensor(
+        texto, &base, memoria, settings, priors, defensor,
+    )
+}
+
+pub fn seleccionar_candidatos_prompt(
+    texto: &str,
+    memoria: &MemoriaAprendizaje,
+    settings: &AppSettings,
+    priors: &IndicePriorsExcel,
+) -> CandidatosPrompt {
+    seleccionar_candidatos_prompt_para_defensor(texto, memoria, settings, priors, None)
 }
 
 fn re_am_explicito() -> Option<&'static Regex> {
@@ -886,34 +1290,59 @@ impl MotorEstadisticoLocal {
         base: &MemoriaAprendizaje,
         local: &MemoriaAprendizaje,
     ) -> Self {
+        Self::entrenar_desde_memorias_para_defensor(base, local, None)
+    }
+
+    pub fn entrenar_desde_memorias_para_defensor(
+        base: &MemoriaAprendizaje,
+        local: &MemoriaAprendizaje,
+        defensor: Option<&str>,
+    ) -> Self {
         let mut clf_realizada = ClasificadorBinarioLogRegL2::default();
         let mut clf_motivo = ClasificadorMotivoLogRegL2::default();
         let mut corpus_knn: Vec<RegistroHistorico> = Vec::new();
         let mut conteo_realizada = [0usize; 2];
         let mut conteo_motivo = [0usize; 8];
+        let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
 
-        // Reunir observaciones balanceadas (aciertos confirmados + correcciones con ground truth final_usuario)
+        // Reunir observaciones balanceadas aisladas por defensor (base + Cuaderno General + defensor activo)
         let mut muestras_realizada: Vec<(Vec<(String, f64)>, bool, f64)> = Vec::new();
         let mut muestras_motivo: Vec<(Vec<(String, f64)>, usize, f64)> = Vec::new();
 
-        for ac in base
+        let local_ac_ids: BTreeSet<&str> = local
             .ejemplos_aciertos
             .iter()
-            .chain(local.ejemplos_aciertos.iter())
-        {
+            .filter(|e| !e.id.trim().is_empty())
+            .map(|e| e.id.as_str())
+            .collect();
+        for ac in local.ejemplos_aciertos.iter().chain(
+            base.ejemplos_aciertos
+                .iter()
+                .filter(|e| e.id.trim().is_empty() || !local_ac_ids.contains(e.id.as_str())),
+        ) {
             if ac.texto_anonimizado.trim().is_empty() {
                 continue;
             }
+            if !es_alcance_general(&ac.defensor_clave)
+                && !coincide_alcance_defensor(&ac.defensor_clave, &def_clave)
+            {
+                continue;
+            }
+            let peso_def = if coincide_alcance_defensor(&ac.defensor_clave, &def_clave) {
+                1.2
+            } else {
+                1.0
+            };
             let feats = extraer_features_texto(&ac.texto_anonimizado);
             let real_up = ac.salida_anonimizada.realizada.trim().to_uppercase();
             if real_up == "SI" || real_up == "NO" {
                 let es_si = real_up == "SI";
                 conteo_realizada[if es_si { 0 } else { 1 }] += 1;
-                muestras_realizada.push((feats.clone(), es_si, 1.0));
+                muestras_realizada.push((feats.clone(), es_si, peso_def));
                 if !es_si {
                     if let Some(idx) = mapear_motivo_a_indice(&ac.salida_anonimizada.motivo) {
                         conteo_motivo[idx] += 1;
-                        muestras_motivo.push((feats, idx, 1.0));
+                        muestras_motivo.push((feats, idx, peso_def));
                     }
                 }
             }
@@ -924,20 +1353,40 @@ impl MotorEstadisticoLocal {
             });
         }
 
-        for c in base.correcciones.iter().chain(local.correcciones.iter()) {
+        let local_corr_ids: BTreeSet<&str> = local
+            .correcciones
+            .iter()
+            .filter(|c| !c.id.trim().is_empty())
+            .map(|c| c.id.as_str())
+            .collect();
+        for c in local.correcciones.iter().chain(
+            base.correcciones
+                .iter()
+                .filter(|c| c.id.trim().is_empty() || !local_corr_ids.contains(c.id.as_str())),
+        ) {
             if c.estado == "descartada" || c.texto_original.trim().is_empty() {
                 continue;
             }
+            if !es_alcance_general(&c.defensor_clave)
+                && !coincide_alcance_defensor(&c.defensor_clave, &def_clave)
+            {
+                continue;
+            }
+            let peso_def = if coincide_alcance_defensor(&c.defensor_clave, &def_clave) {
+                1.3
+            } else {
+                1.1
+            };
             let feats = extraer_features_texto(&c.texto_original);
             let real_up = c.final_usuario.realizada.trim().to_uppercase();
             if real_up == "SI" || real_up == "NO" {
                 let es_si = real_up == "SI";
                 conteo_realizada[if es_si { 0 } else { 1 }] += 1;
-                muestras_realizada.push((feats.clone(), es_si, 1.1));
+                muestras_realizada.push((feats.clone(), es_si, peso_def));
                 if !es_si {
                     if let Some(idx) = mapear_motivo_a_indice(&c.final_usuario.motivo) {
                         conteo_motivo[idx] += 1;
-                        muestras_motivo.push((feats, idx, 1.1));
+                        muestras_motivo.push((feats, idx, peso_def));
                     }
                 }
             }
@@ -973,6 +1422,28 @@ impl MotorEstadisticoLocal {
         texto: &str,
         memoria: &MemoriaAprendizaje,
         priors: &IndicePriorsExcel,
+    ) -> PrediccionLocalResumen {
+        self.predecir_para_defensor(texto, memoria, priors, None)
+    }
+
+    pub fn predecir_para_defensor(
+        &self,
+        texto: &str,
+        memoria: &MemoriaAprendizaje,
+        priors: &IndicePriorsExcel,
+        defensor: Option<&str>,
+    ) -> PrediccionLocalResumen {
+        let base = MemoriaAprendizaje::default();
+        self.predecir_con_base_para_defensor(texto, &base, memoria, priors, defensor)
+    }
+
+    pub fn predecir_con_base_para_defensor(
+        &self,
+        texto: &str,
+        base: &MemoriaAprendizaje,
+        local: &MemoriaAprendizaje,
+        priors: &IndicePriorsExcel,
+        defensor: Option<&str>,
     ) -> PrediccionLocalResumen {
         let feats = extraer_features_texto(texto);
         let knn = predecir_knn_bm25(texto, &self.corpus_knn, 5);
@@ -1051,10 +1522,12 @@ impl MotorEstadisticoLocal {
             .map(|i| self.conteo_motivo[i])
             .unwrap_or(0);
 
-        let juzgado_sugerido = resolver_alias_validado(memoria, "juzgado", texto, 0.55)
-            .or_else(|| knn.juzgado.filter(|(_, c)| *c >= 0.70).map(|(j, _)| j));
-        let tipo_sugerido = resolver_alias_validado(memoria, "tipo", texto, 0.55)
-            .or_else(|| knn.tipo.filter(|(_, c)| *c >= 0.70).map(|(t, _)| t));
+        let juzgado_sugerido =
+            resolver_alias_validado_con_base_para_defensor(base, local, "juzgado", texto, 0.55, defensor)
+                .or_else(|| knn.juzgado.filter(|(_, c)| *c >= 0.70).map(|(j, _)| j));
+        let tipo_sugerido =
+            resolver_alias_validado_con_base_para_defensor(base, local, "tipo", texto, 0.55, defensor)
+                .or_else(|| knn.tipo.filter(|(_, c)| *c >= 0.70).map(|(t, _)| t));
 
         let mut radicado_sugerido = None;
         for num in extraer_numeros_radicado(texto) {
@@ -1064,13 +1537,15 @@ impl MotorEstadisticoLocal {
             }
         }
 
-        let drift_realizada = memoria
+        let drift_realizada = local
             .page_hinkley_campos
             .get("realizada")
+            .or_else(|| base.page_hinkley_campos.get("realizada"))
             .is_some_and(|p| p.drift_detectado);
-        let drift_motivo = memoria
+        let drift_motivo = local
             .page_hinkley_campos
             .get("motivo")
+            .or_else(|| base.page_hinkley_campos.get("motivo"))
             .is_some_and(|p| p.drift_detectado);
 
         PrediccionLocalResumen {
@@ -1094,33 +1569,97 @@ impl MotorEstadisticoLocal {
     }
 }
 
-pub fn resolver_alias_exacto_validado(
-    memoria: &MemoriaAprendizaje,
+fn clave_dedup_alias(a: &AliasEstadistico) -> (String, String, String, String) {
+    let alc = if es_alcance_general(&a.defensor_alcance) {
+        "*".to_string()
+    } else {
+        normalizar_clave_defensor(&a.defensor_alcance)
+    };
+    (
+        a.campo.clone(),
+        canonizar_entrada_alias(&a.campo, &a.entrada_norm),
+        normalizar_clave_entidad(&a.canonico),
+        alc,
+    )
+}
+
+fn combinar_alias_local_sobre_base<'a>(
+    base: &'a MemoriaAprendizaje,
+    local: &'a MemoriaAprendizaje,
+) -> Vec<&'a AliasEstadistico> {
+    let mut vistos: BTreeSet<(String, String, String, String)> = BTreeSet::new();
+    let mut out = Vec::with_capacity(local.tabla_alias.len() + base.tabla_alias.len());
+    for a in &local.tabla_alias {
+        vistos.insert(clave_dedup_alias(a));
+        out.push(a);
+    }
+    for a in &base.tabla_alias {
+        if vistos.insert(clave_dedup_alias(a)) {
+            out.push(a);
+        }
+    }
+    out
+}
+
+pub fn resolver_alias_exacto_validado_con_base_para_defensor(
+    base: &MemoriaAprendizaje,
+    local: &MemoriaAprendizaje,
     campo: &str,
     entrada: &str,
     umbral_q10: f64,
+    defensor: Option<&str>,
 ) -> Option<String> {
-    let clave = normalizar_clave_entidad(entrada);
+    let clave = canonizar_entrada_alias(campo, entrada);
     if clave.is_empty() {
         return None;
     }
-    let mut mejor: Option<(String, f64)> = None;
-    for a in &memoria.tabla_alias {
-        if a.campo != campo || a.entrada_norm != clave {
+    let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
+    let mut mejor_def: Option<(String, f64)> = None;
+    let mut mejor_gen: Option<(String, f64)> = None;
+    for a in combinar_alias_local_sobre_base(base, local) {
+        if a.campo != campo || canonizar_entrada_alias(campo, &a.entrada_norm) != clave {
             continue;
         }
         let lb = limite_inferior_bayesiano(a.alpha, a.beta);
         if lb < umbral_q10 {
             continue;
         }
-        if mejor.as_ref().is_none_or(|(_, s)| lb > *s) {
-            mejor = Some((a.canonico.clone(), lb));
+        if es_alcance_general(&a.defensor_alcance) {
+            if mejor_gen.as_ref().is_none_or(|(_, s)| lb > *s) {
+                mejor_gen = Some((a.canonico.clone(), lb));
+            }
+        } else if coincide_alcance_defensor(&a.defensor_alcance, &def_clave) {
+            if mejor_def.as_ref().is_none_or(|(_, s)| lb > *s) {
+                mejor_def = Some((a.canonico.clone(), lb));
+            }
         }
     }
-    mejor.map(|(c, _)| c)
+    mejor_def.or(mejor_gen).map(|(c, _)| c)
 }
 
-fn contiene_secuencia_tokens(texto_tokens: &[&str], patron_tokens: &[&str]) -> bool {
+pub fn resolver_alias_exacto_validado_para_defensor(
+    memoria: &MemoriaAprendizaje,
+    campo: &str,
+    entrada: &str,
+    umbral_q10: f64,
+    defensor: Option<&str>,
+) -> Option<String> {
+    let base = MemoriaAprendizaje::default();
+    resolver_alias_exacto_validado_con_base_para_defensor(
+        &base, memoria, campo, entrada, umbral_q10, defensor,
+    )
+}
+
+pub fn resolver_alias_exacto_validado(
+    memoria: &MemoriaAprendizaje,
+    campo: &str,
+    entrada: &str,
+    umbral_q10: f64,
+) -> Option<String> {
+    resolver_alias_exacto_validado_para_defensor(memoria, campo, entrada, umbral_q10, None)
+}
+
+fn contiene_secuencia_tokens(texto_tokens: &[String], patron_tokens: &[String]) -> bool {
     if patron_tokens.is_empty() || patron_tokens.len() > texto_tokens.len() {
         return false;
     }
@@ -1129,40 +1668,80 @@ fn contiene_secuencia_tokens(texto_tokens: &[&str], patron_tokens: &[&str]) -> b
         .any(|w| w == patron_tokens)
 }
 
-pub fn resolver_alias_validado(
-    memoria: &MemoriaAprendizaje,
+pub fn resolver_alias_validado_con_base_para_defensor(
+    base: &MemoriaAprendizaje,
+    local: &MemoriaAprendizaje,
     campo: &str,
     entrada: &str,
     umbral_q10: f64,
+    defensor: Option<&str>,
 ) -> Option<String> {
-    let clave = normalizar_clave_entidad(entrada);
+    let clave = canonizar_entrada_alias(campo, entrada);
     if clave.is_empty() {
         return None;
     }
-    let clave_tokens: Vec<&str> = clave.split_whitespace().collect();
-    let mut mejor: Option<(String, (u8, usize, u32))> = None;
-    for a in &memoria.tabla_alias {
+    let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
+    let canon_tok = |t: &str| -> String {
+        if campo == "juzgado" {
+            canonizar_entrada_alias(campo, t)
+        } else {
+            t.to_string()
+        }
+    };
+    let clave_tokens: Vec<String> = clave.split_whitespace().map(canon_tok).collect();
+    let mut mejor_def: Option<(String, (u8, usize, u32))> = None;
+    let mut mejor_gen: Option<(String, (u8, usize, u32))> = None;
+    for a in combinar_alias_local_sobre_base(base, local) {
         if a.campo != campo {
+            continue;
+        }
+        let es_gen = es_alcance_general(&a.defensor_alcance);
+        let es_def = !es_gen && coincide_alcance_defensor(&a.defensor_alcance, &def_clave);
+        if !es_def && !es_gen {
             continue;
         }
         let lb = limite_inferior_bayesiano(a.alpha, a.beta);
         if lb < umbral_q10 {
             continue;
         }
-        let patron_tokens: Vec<&str> = a.entrada_norm.split_whitespace().collect();
-        let es_exacto = a.entrada_norm == clave;
+        let patron_norm = canonizar_entrada_alias(campo, &a.entrada_norm);
+        let patron_tokens: Vec<String> = patron_norm.split_whitespace().map(canon_tok).collect();
+        let es_exacto = patron_norm == clave;
         if es_exacto || contiene_secuencia_tokens(&clave_tokens, &patron_tokens) {
             let clave_orden = (
                 if es_exacto { 1u8 } else { 0u8 },
                 patron_tokens.len(),
                 (lb * 10_000.0).round() as u32,
             );
-            if mejor.as_ref().is_none_or(|(_, sc)| clave_orden > *sc) {
-                mejor = Some((a.canonico.clone(), clave_orden));
+            let destino = if es_def { &mut mejor_def } else { &mut mejor_gen };
+            if destino.as_ref().is_none_or(|(_, sc)| clave_orden > *sc) {
+                *destino = Some((a.canonico.clone(), clave_orden));
             }
         }
     }
-    mejor.map(|(c, _)| c)
+    mejor_def.or(mejor_gen).map(|(c, _)| c)
+}
+
+pub fn resolver_alias_validado_para_defensor(
+    memoria: &MemoriaAprendizaje,
+    campo: &str,
+    entrada: &str,
+    umbral_q10: f64,
+    defensor: Option<&str>,
+) -> Option<String> {
+    let base = MemoriaAprendizaje::default();
+    resolver_alias_validado_con_base_para_defensor(
+        &base, memoria, campo, entrada, umbral_q10, defensor,
+    )
+}
+
+pub fn resolver_alias_validado(
+    memoria: &MemoriaAprendizaje,
+    campo: &str,
+    entrada: &str,
+    umbral_q10: f64,
+) -> Option<String> {
+    resolver_alias_validado_para_defensor(memoria, campo, entrada, umbral_q10, None)
 }
 
 #[cfg(test)]
@@ -1188,6 +1767,7 @@ mod tests {
                 observaciones: String::new(),
             },
             reglas_inyectadas: Vec::new(),
+            defensor_clave: String::new(),
         }
     }
 
@@ -1378,6 +1958,7 @@ mod tests {
                 juzgado_habitual: "Juzgado 3 Cto Penal".into(),
                 tipo_habitual: "Audiencia concentrada".into(),
                 frecuencia: 3,
+                defensor_habitual: String::new(),
             },
         );
 
@@ -1488,5 +2069,586 @@ mod tests {
         assert!(cands.radicado_vinculado.is_some());
         assert!(!cands.juzgados_top.is_empty());
         assert!(juzgados_base().len() >= 50);
+    }
+
+    #[test]
+    fn test_alias_converge_en_2_correcciones_aislamiento_defensores_y_promocion_general() {
+        let mut mem = MemoriaAprendizaje::default();
+        let ahora = "2025-08-20T10:00:00-05:00";
+
+        // 1) 1.ª corrección de Defensor A: NO sobrescribe aún (q10 < 0.30), pero sí entra como candidato en prompt (>= 0.22)
+        actualizar_alias_para_defensor(
+            &mut mem,
+            "juzgado",
+            "j4",
+            "Juzgado 4 Penal Municipal de Valledupar",
+            true,
+            ahora,
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(
+                &mem,
+                "juzgado",
+                "j4",
+                0.30,
+                Some("Dra. Ana Pérez"),
+            ),
+            None,
+            "1 sola corrección no debe auto-aplicar alias todavía"
+        );
+        let cands_1 = seleccionar_candidatos_prompt_para_defensor(
+            "J04 audiencia preliminar",
+            &mem,
+            &AppSettings::default(),
+            &IndicePriorsExcel::default(),
+            Some("Dra. Ana Pérez"),
+        );
+        assert!(
+            cands_1
+                .juzgados_top
+                .iter()
+                .any(|j| j == "Juzgado 4 Penal Municipal de Valledupar"),
+            "Tras 1 corrección ya debe aparecer como candidato en prompt: {:?}",
+            cands_1.juzgados_top
+        );
+
+        // 2) 2.ª corrección consistente de Defensor A: YA se valida y aplica automáticamente (q10 >= 0.30)
+        actualizar_alias_para_defensor(
+            &mut mem,
+            "juzgado",
+            "j4",
+            "Juzgado 4 Penal Municipal de Valledupar",
+            true,
+            ahora,
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(
+                &mem,
+                "juzgado",
+                "j4",
+                0.30,
+                Some("Dra. Ana Pérez"),
+            )
+            .as_deref(),
+            Some("Juzgado 4 Penal Municipal de Valledupar")
+        );
+        // Aislamiento: ni Defensor B ni el Cuaderno General (None) ven el alias privado de Defensor A
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(
+                &mem,
+                "juzgado",
+                "j4",
+                0.30,
+                Some("Dr. Luis Mora"),
+            ),
+            None
+        );
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(&mem, "juzgado", "j4", 0.30, None),
+            None
+        );
+
+        // 3) Defensor B entrena significado opuesto para j4 (y una corrección negativa de B no corrompe a A)
+        for _ in 0..2 {
+            actualizar_alias_para_defensor(
+                &mut mem,
+                "juzgado",
+                "j4",
+                "Juzgado 4 Penal del Circuito de Santa Marta",
+                true,
+                ahora,
+                Some("Dr. Luis Mora"),
+            );
+        }
+        actualizar_alias_para_defensor(
+            &mut mem,
+            "juzgado",
+            "j4",
+            "Juzgado 4 Penal Municipal de Valledupar",
+            false,
+            ahora,
+            Some("Dr. Luis Mora"),
+        );
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(
+                &mem,
+                "juzgado",
+                "j4",
+                0.30,
+                Some("Dra. Ana Pérez"),
+            )
+            .as_deref(),
+            Some("Juzgado 4 Penal Municipal de Valledupar")
+        );
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(
+                &mem,
+                "juzgado",
+                "j4",
+                0.30,
+                Some("Dr. Luis Mora"),
+            )
+            .as_deref(),
+            Some("Juzgado 4 Penal del Circuito de Santa Marta")
+        );
+
+        // 4) Si Defensor A contradice su propio alias, baja q10 y deja de sobrescribir
+        actualizar_alias_para_defensor(
+            &mut mem,
+            "juzgado",
+            "j4",
+            "Juzgado 4 Penal Municipal de Valledupar",
+            false,
+            ahora,
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(
+                &mem,
+                "juzgado",
+                "j4",
+                0.30,
+                Some("Dra. Ana Pérez"),
+            ),
+            None
+        );
+
+        // 5) Promoción automática al Cuaderno General ("*") cuando 2 defensores distintos confirman la misma equivalencia
+        actualizar_alias_para_defensor(
+            &mut mem,
+            "juzgado",
+            "j10",
+            "Juzgado 10 Penal Municipal de Valledupar",
+            true,
+            ahora,
+            Some("Dra. Ana Pérez"),
+        );
+        actualizar_alias_para_defensor(
+            &mut mem,
+            "juzgado",
+            "j10",
+            "Juzgado 10 Penal Municipal de Valledupar",
+            true,
+            ahora,
+            Some("Dr. Luis Mora"),
+        );
+        let alias_j10 = mem
+            .tabla_alias
+            .iter()
+            .find(|a| a.entrada_norm == "j10")
+            .expect("debe existir alias j10");
+        assert_eq!(alias_j10.defensor_alcance, "*");
+        assert_eq!(alias_j10.defensores_confirmantes.len(), 2);
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(
+                &mem,
+                "juzgado",
+                "j10",
+                0.30,
+                Some("Dra. Sofía Nueva"),
+            )
+            .as_deref(),
+            Some("Juzgado 10 Penal Municipal de Valledupar")
+        );
+    }
+
+    #[test]
+    fn test_mapa_conexiones_desambigua_sigla_con_defensor_dane_y_tipo() {
+        let mut priors = IndicePriorsExcel::default();
+        let juz_val = "Juzgado 4 Penal Municipal de Valledupar".to_string();
+        let juz_sm = "Juzgado 4 Penal del Circuito de Santa Marta".to_string();
+
+        priors.juzgados_freq.insert(juz_val.clone(), 4);
+        priors.juzgados_freq.insert(juz_sm.clone(), 4);
+        priors
+            .grafo
+            .defensor_a_juzgados
+            .entry("ana perez".into())
+            .or_default()
+            .insert(juz_val.clone(), 4);
+        priors
+            .grafo
+            .defensor_sigla_a_juzgado
+            .entry("ana perez".into())
+            .or_default()
+            .entry("j4".into())
+            .or_default()
+            .insert(juz_val.clone(), 4);
+        priors
+            .grafo
+            .prefijo_radicado_a_juzgados
+            .entry("20001".into())
+            .or_default()
+            .insert(juz_val.clone(), 4);
+        priors
+            .grafo
+            .tipo_a_juzgados
+            .entry("audiencia de control de legalidad".into())
+            .or_default()
+            .insert(juz_val.clone(), 4);
+
+        priors
+            .grafo
+            .defensor_a_juzgados
+            .entry("luis mora".into())
+            .or_default()
+            .insert(juz_sm.clone(), 4);
+        priors
+            .grafo
+            .defensor_sigla_a_juzgado
+            .entry("luis mora".into())
+            .or_default()
+            .entry("j4".into())
+            .or_default()
+            .insert(juz_sm.clone(), 4);
+        priors
+            .grafo
+            .prefijo_radicado_a_juzgados
+            .entry("47001".into())
+            .or_default()
+            .insert(juz_sm.clone(), 4);
+        priors
+            .grafo
+            .tipo_a_juzgados
+            .entry("audiencia de juicio oral".into())
+            .or_default()
+            .insert(juz_sm.clone(), 4);
+
+        let cands_a = seleccionar_candidatos_prompt_para_defensor(
+            "J04 rad 200016001075202500111 control de garantias",
+            &MemoriaAprendizaje::default(),
+            &AppSettings::default(),
+            &priors,
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(cands_a.juzgados_top.first().map(String::as_str), Some(juz_val.as_str()));
+        assert!(cands_a
+            .siglas_resueltas
+            .iter()
+            .any(|(s, j)| s == "j4" && j == &juz_val));
+
+        let cands_b = seleccionar_candidatos_prompt_para_defensor(
+            "J04 rad 470016001075202500222 juicio oral",
+            &MemoriaAprendizaje::default(),
+            &AppSettings::default(),
+            &priors,
+            Some("Dr. Luis Mora"),
+        );
+        assert_eq!(cands_b.juzgados_top.first().map(String::as_str), Some(juz_sm.as_str()));
+        assert!(cands_b
+            .siglas_resueltas
+            .iter()
+            .any(|(s, j)| s == "j4" && j == &juz_sm));
+
+        // Mismo defensor con dos juzgados para la misma sigla J4 (Valledupar freq=5 > Santa Marta freq=3):
+        // al aparecer radicado 47001 + juicio oral, el cruce de aristas DANE+tipo desambigua siglas_resueltas hacia Santa Marta.
+        priors
+            .grafo
+            .defensor_sigla_a_juzgado
+            .entry("ana perez".into())
+            .or_default()
+            .entry("j4".into())
+            .or_default()
+            .insert(juz_val.clone(), 5);
+        priors
+            .grafo
+            .defensor_sigla_a_juzgado
+            .entry("ana perez".into())
+            .or_default()
+            .entry("j4".into())
+            .or_default()
+            .insert(juz_sm.clone(), 3);
+        let cands_cruce = seleccionar_candidatos_prompt_para_defensor(
+            "J04 rad 470016001075202500222 juicio oral",
+            &MemoriaAprendizaje::default(),
+            &AppSettings::default(),
+            &priors,
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(
+            cands_cruce.siglas_resueltas.first().map(|(_, j)| j.as_str()),
+            Some(juz_sm.as_str()),
+            "El cruce DANE+tipo debe resolver siglas_resueltas hacia Santa Marta: {:?}",
+            cands_cruce.siglas_resueltas
+        );
+    }
+
+    #[test]
+    fn test_aislamiento_motor_local_alias_retractado_ceros_y_override_privado() {
+        let mut mem = MemoriaAprendizaje::default();
+        let ahora = "2025-08-22T10:00:00-05:00";
+
+        // 1) "J04" y "J4" deben converger juntos a "j4" en 2 correcciones
+        actualizar_alias_para_defensor(
+            &mut mem,
+            "juzgado",
+            "J04",
+            "Juzgado 4 Penal Municipal de Valledupar",
+            true,
+            ahora,
+            Some("Dra. Ana Pérez"),
+        );
+        actualizar_alias_para_defensor(
+            &mut mem,
+            "juzgado",
+            "J4",
+            "Juzgado 4 Penal Municipal de Valledupar",
+            true,
+            ahora,
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(
+                &mem,
+                "juzgado",
+                "J04",
+                0.30,
+                Some("Dra. Ana Pérez"),
+            )
+            .as_deref(),
+            Some("Juzgado 4 Penal Municipal de Valledupar")
+        );
+
+        // 2) Alias de alta confianza (q10 >= 0.55) y ejemplos k-NN privados de Ana NO se filtran a Luis vía MotorEstadisticoLocal
+        for _ in 0..6 {
+            actualizar_alias_para_defensor(
+                &mut mem,
+                "juzgado",
+                "j4",
+                "Juzgado 4 Penal Municipal de Valledupar",
+                true,
+                ahora,
+                Some("Dra. Ana Pérez"),
+            );
+        }
+        for i in 0..4 {
+            let mut ej = caso_aud("J4 audiencia preparatoria de control", "SI", "");
+            ej.id = format!("ana-{}", i);
+            ej.defensor_clave = "ana perez".into();
+            ej.salida_anonimizada.juzgado = "Juzgado 4 Penal Municipal de Valledupar".into();
+            mem.ejemplos_aciertos.push(ej);
+        }
+
+        let motor_ana = MotorEstadisticoLocal::entrenar_desde_memorias_para_defensor(
+            &MemoriaAprendizaje::default(),
+            &mem,
+            Some("Dra. Ana Pérez"),
+        );
+        let pred_ana = motor_ana.predecir_para_defensor(
+            "J04 audiencia preparatoria de control",
+            &mem,
+            &IndicePriorsExcel::default(),
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(
+            pred_ana.juzgado_sugerido.as_deref(),
+            Some("Juzgado 4 Penal Municipal de Valledupar")
+        );
+
+        let motor_luis = MotorEstadisticoLocal::entrenar_desde_memorias_para_defensor(
+            &MemoriaAprendizaje::default(),
+            &mem,
+            Some("Dr. Luis Mora"),
+        );
+        let pred_luis = motor_luis.predecir_para_defensor(
+            "J04 audiencia preparatoria de control",
+            &mem,
+            &IndicePriorsExcel::default(),
+            Some("Dr. Luis Mora"),
+        );
+        assert_eq!(
+            pred_luis.juzgado_sugerido, None,
+            "MotorEstadisticoLocal nunca debe filtrar alias ni k-NN privados de Ana a Luis"
+        );
+
+        // 3) Alias retractado de Ana no debe envenenar ni promover falsamente a "*" cuando Luis lo entrena
+        let mut mem_ret = MemoriaAprendizaje::default();
+        actualizar_alias_para_defensor(
+            &mut mem_ret,
+            "juzgado",
+            "j7",
+            "Juzgado 7 Penal Municipal",
+            true,
+            ahora,
+            Some("Dra. Ana Pérez"),
+        );
+        for _ in 0..3 {
+            actualizar_alias_para_defensor(
+                &mut mem_ret,
+                "juzgado",
+                "j7",
+                "Juzgado 7 Penal Municipal",
+                false,
+                ahora,
+                Some("Dra. Ana Pérez"),
+            );
+        }
+        for _ in 0..2 {
+            actualizar_alias_para_defensor(
+                &mut mem_ret,
+                "juzgado",
+                "j7",
+                "Juzgado 7 Penal Municipal",
+                true,
+                ahora,
+                Some("Dr. Luis Mora"),
+            );
+        }
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(
+                &mem_ret,
+                "juzgado",
+                "j7",
+                0.30,
+                Some("Dr. Luis Mora"),
+            )
+            .as_deref(),
+            Some("Juzgado 7 Penal Municipal"),
+            "Luis debe activar j7 en 2 correcciones sin quedar bloqueado por el alias retractado de Ana"
+        );
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(&mem_ret, "juzgado", "j7", 0.30, None),
+            None,
+            "Un alias retractado por Ana no debe contar como confirmación para promover a '*'"
+        );
+
+        // 4) Override privado del defensor debe ganar sobre "*" en siglas_resueltas incluso si "*" aparece antes
+        let mut mem_ov = MemoriaAprendizaje::default();
+        for _ in 0..3 {
+            actualizar_alias_para_defensor(
+                &mut mem_ov,
+                "juzgado",
+                "j4",
+                "Juzgado 4 Penal Municipal de Valledupar",
+                true,
+                ahora,
+                None,
+            );
+        }
+        for _ in 0..2 {
+            actualizar_alias_para_defensor(
+                &mut mem_ov,
+                "juzgado",
+                "j4",
+                "Juzgado 4 Penal del Circuito de Santa Marta",
+                true,
+                ahora,
+                Some("Dr. Carlos Override"),
+            );
+        }
+        let cands_ov = seleccionar_candidatos_prompt_para_defensor(
+            "J04 audiencia preparatoria",
+            &mem_ov,
+            &AppSettings::default(),
+            &IndicePriorsExcel::default(),
+            Some("Dr. Carlos Override"),
+        );
+        assert_eq!(
+            cands_ov.siglas_resueltas,
+            vec![(
+                "j4".to_string(),
+                "Juzgado 4 Penal del Circuito de Santa Marta".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn test_brechas_b_h_con_base_para_defensor_y_aislamiento_en_base() {
+        use crate::aprendizaje::AliasEstadistico;
+        let mut base = MemoriaAprendizaje::default();
+        let mut local = MemoriaAprendizaje::default();
+
+        // Base tiene 6 ejemplos privados de Luis marcando NO / Juez y 2 ejemplos privados de Ana
+        for i in 0..6 {
+            let mut ej = caso_aud("Juzgado 9 audiencia suspendida caso base", "NO", "Juez");
+            ej.id = format!("base-luis-{}", i);
+            ej.defensor_clave = "Dr. Luis Mora".into();
+            base.ejemplos_aciertos.push(ej);
+        }
+        for i in 0..4 {
+            let mut ej = caso_aud("Juzgado 9 audiencia realizada normalmente caso ana", "SI", "");
+            ej.id = format!("base-ana-{}", i);
+            ej.defensor_clave = "Dra. Ana Pérez".into();
+            base.ejemplos_aciertos.push(ej);
+        }
+
+        // Alias heredado en base y override en local (con precedencia local)
+        base.tabla_alias.push(AliasEstadistico {
+            campo: "juzgado".into(),
+            entrada_norm: "j9".into(),
+            canonico: "Juzgado 9 Penal Base".into(),
+            alpha: 5.0,
+            beta: 1.2,
+            defensor_alcance: "Dra. Ana Pérez".into(),
+            defensores_confirmantes: vec!["ana perez".into()],
+            ultima_actualizacion: "2025-08-01T10:00:00-05:00".into(),
+        });
+        base.tabla_alias.push(AliasEstadistico {
+            campo: "juzgado".into(),
+            entrada_norm: "j12".into(),
+            canonico: "Juzgado 12 Penal Base".into(),
+            alpha: 5.0,
+            beta: 1.2,
+            defensor_alcance: "*".into(),
+            defensores_confirmantes: Vec::new(),
+            ultima_actualizacion: "2025-08-01T10:00:00-05:00".into(),
+        });
+        local.tabla_alias.push(AliasEstadistico {
+            campo: "juzgado".into(),
+            entrada_norm: "j9".into(),
+            canonico: "Juzgado 9 Penal Local Override".into(),
+            alpha: 5.0,
+            beta: 1.2,
+            defensor_alcance: "ana perez".into(),
+            defensores_confirmantes: vec!["ana perez".into()],
+            ultima_actualizacion: "2025-08-10T10:00:00-05:00".into(),
+        });
+
+        let motor_ana = MotorEstadisticoLocal::entrenar_desde_memorias_para_defensor(
+            &base,
+            &local,
+            Some("Dra. Ana Pérez"),
+        );
+        // Los 6 ejemplos de Luis en `base` no deben entrenar el motor de Ana
+        assert_eq!(motor_ana.muestras_entrenamiento, 4);
+
+        let priors = IndicePriorsExcel::default();
+        let pred_ana = motor_ana.predecir_con_base_para_defensor(
+            "J9 audiencia realizada normalmente",
+            &base,
+            &local,
+            &priors,
+            Some("Dra. Ana Pérez"),
+        );
+        assert_eq!(
+            pred_ana.juzgado_sugerido.as_deref(),
+            Some("Juzgado 9 Penal Local Override")
+        );
+        assert_eq!(
+            resolver_alias_exacto_validado_con_base_para_defensor(
+                &base,
+                &local,
+                "juzgado",
+                "j12",
+                0.30,
+                Some("Dra. Ana Pérez")
+            )
+            .as_deref(),
+            Some("Juzgado 12 Penal Base")
+        );
+        let cands = seleccionar_candidatos_prompt_con_base_para_defensor(
+            "J12 audiencia concentrada",
+            &base,
+            &local,
+            &AppSettings::default(),
+            &priors,
+            Some("Dra. Ana Pérez"),
+        );
+        assert!(cands
+            .siglas_resueltas
+            .iter()
+            .any(|(s, j)| s == "j12" && j == "Juzgado 12 Penal Base"));
     }
 }
