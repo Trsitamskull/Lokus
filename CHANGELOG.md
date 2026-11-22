@@ -1,5 +1,15 @@
 # Historial de Versiones (Lokus)
 
+## [5.0.0] - 2026-11-22
+
+### Novedades principales
+- **Generalización inteligente para cualquier tipo de abreviación (`patrones_abreviacion.rs`):** El sistema de autoaprendizaje ahora deduce patrones parametrizados a partir de las abreviaciones previas de cada defensor sin limitarse a un formato fijo:
+  - **Patrones numéricos y ordinales (`{N}`) en cualquier posición:** prefijos (`J10`/`J9` → `J4`, `JPM10`/`J.P.M. 03` → `JPM4`, `EPMS 1`/`EPMS-2` → `EPMS 3`), infijos (`J1M`/`J2 M` → `J4M`), sufijos (`1 MPAL`/`2MPAL` → `4 MPAL`), ordinales en español (`P1`/`P2` → `P4` = *Juzgado Cuarto...*, `1ro`/`2do` → `4to`, `1º`/`2°` → `4º`) y transformaciones de estilo (`Juzgado N Circuito Penal` → `Juzgado N Cto Penal`).
+  - **Patrones por municipio o tipo de audiencia (`{X}`):** si el defensor usa `JPM Bosconia` y `JPM Curumaní`, deduce `JPM Chimichagua` o `JPM La Jagua de Ibirico`; si usa `AUD ACUSACION` y `AUD IMPUTACION`, deduce `AUD NULIDAD` o `AUD DE PRORROGA` respetando las tildes oficiales del catálogo.
+  - **Siglas fijas cortas (desde 2 letras, con o sin puntos):** aprende equivalencias directas como `JO` / `J.O.` → *Audiencia de juicio oral* o `CG` → *Control de garantías* tanto en juzgados como en tipos de audiencia.
+- **Candados de seguridad jurídica y por defensor:** Aislamiento estricto por defensor con herencia desde el Cuaderno General (`*`) solo si no hay contradicciones; exigencia de alta consistencia (no adivina si un defensor mezcla despachos contradictorios bajo la misma sigla); prioridad absoluta a cualquier corrección específica sobre el patrón general; protección de calificadores explícitos (`CTO`, `del Circuito`, `de Garantías`, `Especializado`, `Promiscuo`) y barreras frente a fechas, horas (`4pm`, `15/08/2025`), códigos de fiscalía (`F10`) y radicados.
+- **Diagnóstico técnico y exportación enriquecida:** Contador de `Patrones inferidos` en *Configurar IA → Diagnóstico técnico* e inclusión de `patrones_abreviacion` anonimizados en el JSON exportado.
+
 ## [4.3.0] - 2026-11-22
 
 ### Novedades principales
