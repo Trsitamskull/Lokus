@@ -1,5 +1,12 @@
 # Historial de Versiones (Lokus)
 
+## [4.3.0] - 2026-11-22
+
+### Novedades principales
+- **Exportación JSON hasta ~960× más rápida con miles de audiencias:** Rediseño completo del motor de anonimización en pasada lineal (`IndiceRadicados`, `TrieFrases`, `EscudosDefensores` y caché temporal `CacheCatalogoAnon` durante la exportación), reduciendo la exportación con 4.500 audiencias de ~18,3 s a ~19 ms (y ~32 ms con 9.000 audiencias), sin añadir dependencias externas.
+- **Privacidad y escudos de defensores reforzados:** Protección mejorada para nombres reales de defensores con iniciales (`Dr. J. Pérez`, `Dra. M.A. Gómez`), honoríficos `Licenciado`/`Licenciada`, nombres compuestos (`Juan-Carlos`, `O'Connor`) y cláusulas con comas; mejor detección de radicados pegados a texto o espaciados sin alterar fechas, teléfonos ni prefijos DANE (`20001`), ni confundir años (`2025`) con nombres de procesados.
+- **Validación de alto volumen y 4 nuevas baterías de pruebas:** Cobertura de bordes NFC/NFD, escudos, puntuación y 250 iteraciones de pruebas de propiedades/idempotencia (82/82 tests en Rust).
+
 ## [4.2.0] - 2026-11-22
 
 ### Novedades principales
