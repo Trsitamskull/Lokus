@@ -26,6 +26,9 @@ use crate::models::{
     texto_indica_instalacion_efectiva, texto_indica_no_instalacion, IndicePriorsExcel,
     MOTIVOS_LABELS, TIPOS_AUDIENCIA,
 };
+use crate::patrones_abreviacion::{
+    resolver_abreviacion_exacta_unica_en_texto, sigla_desnuda_sin_calificador_en_texto,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AiAudienciaOutput {
@@ -736,6 +739,27 @@ fn formatear_candidatos_prompt(cands: Option<&CandidatosPrompt>) -> String {
             .collect();
         bloques.push(format!(
             "- Siglas habituales de este defensor (Mapa de Conexiones): {}",
+            pares.join(" | ")
+        ));
+    }
+    if !c.patrones_inferidos.is_empty() {
+        let pares: Vec<String> = c
+            .patrones_inferidos
+            .iter()
+            .map(|p| {
+                format!(
+                    "{} => {} (patrón '{}' [{}/{}], campo={})",
+                    p.abreviacion_detectada,
+                    p.expansion_sugerida,
+                    p.patron_entrada,
+                    p.ejemplos_distintos,
+                    p.total_instancias,
+                    p.campo
+                )
+            })
+            .collect();
+        bloques.push(format!(
+            "- Abreviaciones inferidas por patrón consistente del defensor (sugerencia suave; úsala solo si el texto no contradice ciudad/contexto ni añade calificadores explícitos como CTO/Circuito/Conocimiento/Especializado/Promiscuo): {}",
             pares.join(" | ")
         ));
     }
@@ -2071,12 +2095,21 @@ pub(crate) fn arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
     )
     .unwrap_or_else(|| {
         if raw_tipo.is_empty() {
-            proc_vinculado
-                .as_ref()
-                .map(|p| p.tipo_habitual.clone())
-                .filter(|s| !s.is_empty())
-                .or_else(|| motor_pred.tipo_sugerido.clone())
-                .unwrap_or_default()
+            resolver_abreviacion_exacta_unica_en_texto(
+                "tipo",
+                texto,
+                memoria_base,
+                memoria_local,
+                defensor,
+            )
+            .or_else(|| {
+                proc_vinculado
+                    .as_ref()
+                    .map(|p| p.tipo_habitual.clone())
+                    .filter(|s| !s.is_empty())
+            })
+            .or_else(|| motor_pred.tipo_sugerido.clone())
+            .unwrap_or_default()
         } else {
             raw_tipo.clone()
         }
@@ -2094,19 +2127,30 @@ pub(crate) fn arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
     // Preserva abreviaciones CTO/MPAL/PCTO por defecto; sustituye solo si existe un alias validado
     // (q10 >= 0.30, activable a partir de la 2.ª corrección consistente) o coincidencia exacta del catálogo.
     let juzgado_bruto = if raw_juzgado.is_empty() {
-        let siglas_texto = extraer_siglas_cortas_juzgado(texto);
-        let por_sigla = if siglas_texto.len() == 1 {
-            resolver_alias_exacto_validado_con_base_para_defensor(
-                memoria_base,
-                memoria_local,
-                "juzgado",
-                &siglas_texto[0],
-                0.30,
-                defensor,
-            )
-        } else {
-            None
-        };
+        let por_abrev_exacta = resolver_abreviacion_exacta_unica_en_texto(
+            "juzgado",
+            texto,
+            memoria_base,
+            memoria_local,
+            defensor,
+        );
+        let por_sigla = por_abrev_exacta.or_else(|| {
+            let siglas_texto = extraer_siglas_cortas_juzgado(texto);
+            if siglas_texto.len() == 1
+                && sigla_desnuda_sin_calificador_en_texto(texto, &siglas_texto[0])
+            {
+                resolver_alias_exacto_validado_con_base_para_defensor(
+                    memoria_base,
+                    memoria_local,
+                    "juzgado",
+                    &siglas_texto[0],
+                    0.30,
+                    defensor,
+                )
+            } else {
+                None
+            }
+        });
         por_sigla
             .or_else(|| {
                 proc_vinculado
@@ -2656,6 +2700,7 @@ mod tests {
             tipos_top: vec!["Audiencia de juicio oral".into()],
             radicado_vinculado: priors.procesos_por_numero.get("200016001075202599999").cloned(),
             siglas_resueltas: Vec::new(),
+            patrones_inferidos: Vec::new(),
         };
         let prompt = construir_prompt_con_candidatos(texto, 2025, "", Some(&cands));
         assert!(prompt.contains("CANDIDATOS ESTADÍSTICOS LOCALES"));
@@ -3493,6 +3538,7 @@ mod tests {
                 "j10".into(),
                 "Juzgado 10 Penal Municipal de Valledupar".into(),
             )],
+            patrones_inferidos: Vec::new(),
         };
         let prompt = construir_prompt_con_candidatos(texto_instalada, 2025, "", Some(&cands));
         assert!(prompt.contains("Siglas habituales de este defensor (Mapa de Conexiones)"));
@@ -3695,5 +3741,200 @@ mod tests {
             Some("Dra. Ana Pérez"),
         );
         assert_eq!(out_b.se_realizo, "SI");
+    }
+
+    #[test]
+    fn test_prompt_y_arbitraje_patrones_generales_sugerencia_suave_sin_imponer() {
+        use crate::aprendizaje::CampoCorregido;
+        use crate::config::AppSettings;
+        use crate::estadistica_ia::{
+            actualizar_alias_y_preferencias_en_memoria_para_defensor,
+            seleccionar_candidatos_prompt_para_defensor,
+        };
+        use crate::models::AudienciaInput;
+
+        let mut mem = MemoriaAprendizaje::default();
+        let def = Some("Dra. Ana Pérez");
+        let base_aud = AudienciaInput {
+            radicado: "PROC - 200016001075202500555".into(),
+            tipo: "Audiencia preparatoria".into(),
+            fecha: "18/08/2025".into(),
+            hora: "09:00".into(),
+            juzgado: String::new(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+
+        // Entrenar J10, J9, J3 -> Municipal (1 vez c/u) y JPM1, JPM2 -> Promiscuo Aguachica
+        for (ab, full) in [
+            ("J10", "Juzgado 10 Penal Municipal"),
+            ("J9", "Juzgado 9 Penal Municipal"),
+            ("J3", "Juzgado 3 Penal Municipal"),
+            ("JPM1", "Juzgado 1 Promiscuo Municipal de Aguachica"),
+            ("JPM2", "Juzgado 2 Promiscuo Municipal de Aguachica"),
+        ] {
+            let mut pred = base_aud.clone();
+            pred.juzgado = ab.into();
+            let mut fin = base_aud.clone();
+            fin.juzgado = full.into();
+            actualizar_alias_y_preferencias_en_memoria_para_defensor(
+                &mut mem,
+                &format!("{} audiencia preparatoria", ab),
+                &pred,
+                &fin,
+                &[CampoCorregido {
+                    campo: "juzgado".into(),
+                    valor_ia: pred.juzgado.clone(),
+                    valor_usuario: fin.juzgado.clone(),
+                }],
+                "2025-08-18T10:00:00-05:00",
+                def,
+            );
+        }
+
+        // Entrenar abreviación exacta validada (2 veces): JO -> Audiencia de juicio oral y EPMS2 -> Juzgado 2 EPMS
+        for _ in 0..2 {
+            let mut pred = base_aud.clone();
+            pred.tipo = "JO".into();
+            pred.juzgado = "EPMS 02".into();
+            let mut fin = base_aud.clone();
+            fin.tipo = "Audiencia de juicio oral".into();
+            fin.juzgado = "Juzgado 2 de Ejecución de Penas y Medidas de Seguridad de Valledupar".into();
+            actualizar_alias_y_preferencias_en_memoria_para_defensor(
+                &mut mem,
+                "JO en EPMS 02 realizada sin novedad",
+                &pred,
+                &fin,
+                &[
+                    CampoCorregido {
+                        campo: "tipo".into(),
+                        valor_ia: pred.tipo.clone(),
+                        valor_usuario: fin.tipo.clone(),
+                    },
+                    CampoCorregido {
+                        campo: "juzgado".into(),
+                        valor_ia: pred.juzgado.clone(),
+                        valor_usuario: fin.juzgado.clone(),
+                    },
+                ],
+                "2025-08-19T10:00:00-05:00",
+                def,
+            );
+        }
+
+        let priors = IndicePriorsExcel::default();
+        let settings = AppSettings::default();
+
+        // 1) Prompt recibe sugerencia suave para J4 y JPM4 nunca vistos
+        let cands_j4 = seleccionar_candidatos_prompt_para_defensor(
+            "J4 audiencia preparatoria",
+            &mem,
+            &settings,
+            &priors,
+            def,
+        );
+        let prompt_j4 = construir_prompt_con_candidatos(
+            "J4 audiencia preparatoria",
+            2025,
+            "",
+            Some(&cands_j4),
+        );
+        assert!(prompt_j4.contains("Abreviaciones inferidas por patrón consistente del defensor"));
+        assert!(prompt_j4.contains("J4 => Juzgado 4 Penal Municipal"));
+        assert!(prompt_j4.contains("sugerencia suave"));
+
+        let cands_jpm4 = seleccionar_candidatos_prompt_para_defensor(
+            "JPM-04 audiencia preliminar",
+            &mem,
+            &settings,
+            &priors,
+            def,
+        );
+        let prompt_jpm4 = construir_prompt_con_candidatos(
+            "JPM-04 audiencia preliminar",
+            2025,
+            "",
+            Some(&cands_jpm4),
+        );
+        assert!(prompt_jpm4.contains("Juzgado 4 Promiscuo Municipal de Aguachica"));
+
+        // 2) Prompt NO inyecta pista de J4 si el texto trae calificador explícito CTO o del Circuito
+        for texto_calif in ["J4 CTO audiencia preparatoria", "J4 del Circuito audiencia"] {
+            let cands_cal = seleccionar_candidatos_prompt_para_defensor(
+                texto_calif,
+                &mem,
+                &settings,
+                &priors,
+                def,
+            );
+            assert!(cands_cal.patrones_inferidos.is_empty(), "{}: {:?}", texto_calif, cands_cal.patrones_inferidos);
+            assert!(cands_cal.siglas_resueltas.is_empty(), "{}: {:?}", texto_calif, cands_cal.siglas_resueltas);
+        }
+
+        // 3) Arbitraje NO impone a ciegas el patrón inferido sobre J4 ni sobre J4 CTO
+        let motor = MotorEstadisticoLocal::entrenar_desde_memorias_para_defensor(
+            &MemoriaAprendizaje::default(),
+            &mem,
+            def,
+        );
+        let raw_j4_crudo = json!({
+            "radicado": "PROC - 200016001075202500555",
+            "tipo_audiencia": "Audiencia preparatoria",
+            "fecha": "18/08/2025",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "J4",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let out_j4_no_imponer = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            "J4 audiencia preparatoria",
+            &raw_j4_crudo,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            def,
+        );
+        assert_eq!(
+            out_j4_no_imponer.juzgado, "J4",
+            "El patrón inferido es sugerencia suave al LLM y no debe imponerse a ciegas en arbitraje"
+        );
+
+        // 4) Arbitraje SÍ resuelve abreviaciones exactas validadas (q10 >= 0.30) de cualquier formato,
+        //    incluso cuando el LLM dejó el campo vacío (JO y EPMS2)
+        let raw_vacios = json!({
+            "radicado": "PROC - 200016001075202500555",
+            "tipo_audiencia": "",
+            "fecha": "18/08/2025",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let out_exactas = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            "J.O. en EPMS2 realizada sin novedad",
+            &raw_vacios,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            def,
+        );
+        assert_eq!(out_exactas.tipo_audiencia, "Audiencia de juicio oral");
+        assert_eq!(
+            out_exactas.juzgado,
+            "Juzgado 2 de Ejecución de Penas y Medidas de Seguridad de Valledupar"
+        );
     }
 }

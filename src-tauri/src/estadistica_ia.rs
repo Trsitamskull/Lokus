@@ -29,6 +29,12 @@ use crate::models::{
     texto_indica_instalacion_efectiva, AudienciaInput, IndicePriorsExcel, ProcesoHabitual,
     MOTIVOS_LABELS, TIPOS_AUDIENCIA,
 };
+use crate::patrones_abreviacion::{
+    canonizar_entrada_alias_general, clave_estructural_alias, es_calificador_juzgado,
+    es_calificador_terminal_juzgado, es_clave_alias_valida,
+    extraer_abreviacion_numerica_unica_para_juzgado, resolver_abreviaciones_y_patrones_en_texto,
+    sigla_desnuda_sin_calificador_en_texto, ResolucionPatronInferido,
+};
 
 const JUZGADOS_BASE_JSON: &str = include_str!("../resources/juzgados_base.json");
 const MAX_ALIAS: usize = 180;
@@ -441,25 +447,12 @@ pub fn predecir_knn_bm25(texto: &str, corpus: &[RegistroHistorico], k: usize) ->
 // Tabla estadística de alias, selección de candidatos y vinculación de radicado
 // ---------------------------------------------------------------------------
 
-fn es_sigla_despacho_corta(norm: &str) -> bool {
-    norm.strip_prefix('j')
-        .is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()))
-}
-
-/// Normaliza la clave de entrada de un alias, unificando ceros a la izquierda en siglas cortas
-/// de juzgado (`"J04"` y `"J4"` -> `"j4"`) para evitar fragmentar el conteo entre variantes.
-pub(crate) fn canonizar_entrada_alias(campo: &str, entrada_raw: &str) -> String {
-    let norm = normalizar_clave_entidad(entrada_raw);
-    if campo == "juzgado" && es_sigla_despacho_corta(&norm) {
-        if let Some(rest) = norm.strip_prefix('j') {
-            if let Ok(n) = rest.parse::<u32>() {
-                if (1..=99).contains(&n) {
-                    return format!("j{}", n);
-                }
-            }
-        }
-    }
-    norm
+/// Normaliza la clave de entrada de un alias para cualquier tipo de abreviación:
+/// colapsa siglas con puntos (`"J.O."` -> `"jo"`, `"J.P.M. 04"` -> `"jpm 4"`), unifica ceros a la
+/// izquierda (`"J04"` -> `"j4"`, `"JPM04"` -> `"jpm4"`, `"J04M"` -> `"j4m"`) y preserva letras
+/// calificadoras aisladas (`"J4 M"` != `"J4 C"` != `"J4"`).
+pub(crate) fn canonizar_entrada_alias(_campo: &str, entrada_raw: &str) -> String {
+    canonizar_entrada_alias_general(entrada_raw)
 }
 
 #[cfg(test)]
@@ -492,14 +485,10 @@ fn actualizar_alias_para_defensor(
     defensor_clave: Option<&str>,
 ) {
     let entrada_norm = canonizar_entrada_alias(campo, entrada_raw);
+    let entrada_segs = clave_estructural_alias(&entrada_norm);
     let canonico = colapsar_espacios(canonico_raw);
     let canonico_norm = normalizar_clave_entidad(&canonico);
-    let min_len = if campo == "juzgado" && es_sigla_despacho_corta(&entrada_norm) {
-        2
-    } else {
-        3
-    };
-    if entrada_norm.len() < min_len || canonico.len() < 3 {
+    if !es_clave_alias_valida(&entrada_norm) || entrada_segs.is_empty() || canonico.len() < 3 {
         return;
     }
 
@@ -520,10 +509,15 @@ fn actualizar_alias_para_defensor(
         }
     };
 
+    let misma_entrada = |existente: &str| -> bool {
+        let ex_norm = canonizar_entrada_alias(campo, existente);
+        ex_norm == entrada_norm || clave_estructural_alias(&ex_norm) == entrada_segs
+    };
+
     if positivo {
         for otro in &mut memoria.tabla_alias {
             if otro.campo == campo
-                && otro.entrada_norm == entrada_norm
+                && misma_entrada(&otro.entrada_norm)
                 && aplica_mismo_ambito(&otro.defensor_alcance)
                 && normalizar_clave_entidad(&otro.canonico) != canonico_norm
             {
@@ -551,7 +545,7 @@ fn actualizar_alias_para_defensor(
     let idx_objetivo = if positivo {
         let mismo_alcance = memoria.tabla_alias.iter().position(|a| {
             a.campo == campo
-                && a.entrada_norm == entrada_norm
+                && misma_entrada(&a.entrada_norm)
                 && normalizar_clave_entidad(&a.canonico) == canonico_norm
                 && aplica_mismo_ambito(&a.defensor_alcance)
         });
@@ -562,7 +556,7 @@ fn actualizar_alias_para_defensor(
                 }
                 memoria.tabla_alias.iter().position(|a| {
                     a.campo == campo
-                        && a.entrada_norm == entrada_norm
+                        && misma_entrada(&a.entrada_norm)
                         && normalizar_clave_entidad(&a.canonico) == canonico_norm
                         && es_alcance_general(&a.defensor_alcance)
                 })
@@ -573,7 +567,7 @@ fn actualizar_alias_para_defensor(
                 }
                 memoria.tabla_alias.iter().position(|a| {
                     a.campo == campo
-                        && a.entrada_norm == entrada_norm
+                        && misma_entrada(&a.entrada_norm)
                         && normalizar_clave_entidad(&a.canonico) == canonico_norm
                         && !es_alcance_general(&a.defensor_alcance)
                         && !coincide_alcance_defensor(&a.defensor_alcance, &def_norm)
@@ -584,7 +578,7 @@ fn actualizar_alias_para_defensor(
     } else {
         memoria.tabla_alias.iter().position(|a| {
             a.campo == campo
-                && a.entrada_norm == entrada_norm
+                && misma_entrada(&a.entrada_norm)
                 && normalizar_clave_entidad(&a.canonico) == canonico_norm
                 && aplica_mismo_ambito(&a.defensor_alcance)
         })
@@ -768,8 +762,24 @@ pub fn actualizar_alias_y_preferencias_en_memoria_para_defensor(
         .filter(|s| !s.is_empty());
     let def_ref = def_norm.as_deref();
 
+    // Detectar patrones inferidos vigentes ANTES de mutar memoria para poder confirmar o corregir
+    // abreviaciones no numéricas (ej. "JPM Chimichagua", "AUD NULIDAD") cuando el usuario guarda.
+    let patrones_previos = resolver_abreviaciones_y_patrones_en_texto(
+        texto,
+        &MemoriaAprendizaje::default(),
+        memoria,
+        &AppSettings::default(),
+        &IndicePriorsExcel::default(),
+        def_ref,
+    );
+
     // 1. Tabla de alias para juzgado y tipo (por defensor + promoción automática a General)
     if !final_usuario.juzgado.trim().is_empty() {
+        let clave_pred_juz = if corregido("juzgado") && !prediccion.juzgado.trim().is_empty() {
+            Some(clave_estructural_alias(&prediccion.juzgado))
+        } else {
+            None
+        };
         if corregido("juzgado") {
             if !prediccion.juzgado.trim().is_empty() {
                 actualizar_alias_para_defensor(
@@ -812,24 +822,61 @@ pub fn actualizar_alias_y_preferencias_en_memoria_para_defensor(
             );
         }
 
-        // Si el texto traía una sigla corta inequívoca (ej. "J10", "J04") y coincide con el número del juzgado guardado,
-        // aprender la asociación directa sigla -> juzgado para este defensor.
-        let siglas_texto = extraer_siglas_cortas_juzgado(texto);
-        let siglas_final = extraer_siglas_cortas_juzgado(&final_usuario.juzgado);
-        if siglas_texto.len() == 1 && siglas_final.contains(&siglas_texto[0]) {
-            actualizar_alias_para_defensor(
-                memoria,
-                "juzgado",
-                &siglas_texto[0],
-                &final_usuario.juzgado,
-                true,
-                ahora,
-                def_ref,
-            );
+        // Cosecha general: si el texto traía una abreviación numérica inequívoca (J10, JPM10, J10M,
+        // EPMS 2, 10 MPAL, J10 CTO, P4, etc.) con el mismo número del juzgado guardado, aprender
+        // la asociación directa sin duplicar conteo si `prediccion.juzgado` ya la registró.
+        let mut clave_cosechada_juz = None;
+        if let Some(abrev_num) =
+            extraer_abreviacion_numerica_unica_para_juzgado(texto, &final_usuario.juzgado)
+        {
+            let segs_abrev = clave_estructural_alias(&abrev_num);
+            if clave_pred_juz.as_ref() != Some(&segs_abrev) {
+                actualizar_alias_para_defensor(
+                    memoria,
+                    "juzgado",
+                    &abrev_num,
+                    &final_usuario.juzgado,
+                    true,
+                    ahora,
+                    def_ref,
+                );
+            }
+            clave_cosechada_juz = Some(segs_abrev);
+        }
+
+        // Confirmación o corrección de patrones parametrizados (ej. slot léxico "JPM Chimichagua")
+        let inf_juz: Vec<_> = patrones_previos
+            .inferidas
+            .iter()
+            .filter(|p| p.campo == "juzgado")
+            .collect();
+        if inf_juz.len() == 1 {
+            let p = inf_juz[0];
+            let segs_inf = clave_estructural_alias(&p.abreviacion_detectada);
+            if clave_pred_juz.as_ref() != Some(&segs_inf)
+                && clave_cosechada_juz.as_ref() != Some(&segs_inf)
+                && normalizar_clave_entidad(&p.abreviacion_detectada)
+                    != normalizar_clave_entidad(&final_usuario.juzgado)
+            {
+                actualizar_alias_para_defensor(
+                    memoria,
+                    "juzgado",
+                    &p.abreviacion_detectada,
+                    &final_usuario.juzgado,
+                    true,
+                    ahora,
+                    def_ref,
+                );
+            }
         }
     }
 
     if !final_usuario.tipo.trim().is_empty() && final_usuario.tipo != "Otra" {
+        let clave_pred_tipo = if corregido("tipo") && !prediccion.tipo.trim().is_empty() {
+            Some(clave_estructural_alias(&prediccion.tipo))
+        } else {
+            None
+        };
         if corregido("tipo") {
             if !prediccion.tipo.trim().is_empty() {
                 actualizar_alias_para_defensor(
@@ -870,6 +917,30 @@ pub fn actualizar_alias_y_preferencias_en_memoria_para_defensor(
                 ahora,
                 def_ref,
             );
+        }
+
+        let inf_tipo: Vec<_> = patrones_previos
+            .inferidas
+            .iter()
+            .filter(|p| p.campo == "tipo")
+            .collect();
+        if inf_tipo.len() == 1 {
+            let p = inf_tipo[0];
+            let segs_inf = clave_estructural_alias(&p.abreviacion_detectada);
+            if clave_pred_tipo.as_ref() != Some(&segs_inf)
+                && normalizar_clave_entidad(&p.abreviacion_detectada)
+                    != normalizar_clave_entidad(&final_usuario.tipo)
+            {
+                actualizar_alias_para_defensor(
+                    memoria,
+                    "tipo",
+                    &p.abreviacion_detectada,
+                    &final_usuario.tipo,
+                    true,
+                    ahora,
+                    def_ref,
+                );
+            }
         }
     }
 
@@ -924,6 +995,7 @@ pub struct CandidatosPrompt {
     pub tipos_top: Vec<String>,
     pub radicado_vinculado: Option<ProcesoHabitual>,
     pub siglas_resueltas: Vec<(String, String)>,
+    pub patrones_inferidos: Vec<ResolucionPatronInferido>,
 }
 
 fn puntuar_candidato_entidad(query_tokens: &BTreeSet<String>, cand: &str, freq_prior: u32, bonus: f64) -> f64 {
@@ -991,7 +1063,7 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
 
     // 1. Candidatos de juzgado combinando: Mapa de Conexiones (GrafoAsociaciones) + alias + settings + priors + JUZGADOS_BASE
     let mut mapa_juz: BTreeMap<String, (String, f64)> = BTreeMap::new();
-    let mut sumar_juz = |nombre: &str, extra_score: f64| {
+    let sumar_juz = |mapa: &mut BTreeMap<String, (String, f64)>, nombre: &str, extra_score: f64| {
         let limpio = colapsar_espacios(nombre);
         if limpio.is_empty() {
             return;
@@ -999,7 +1071,7 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
         let clave = normalizar_clave_entidad(&limpio);
         let freq = *priors.juzgados_freq.get(&limpio).unwrap_or(&0);
         let base_score = puntuar_candidato_entidad(&query_tokens, &limpio, freq, 0.0);
-        match mapa_juz.get_mut(&clave) {
+        match mapa.get_mut(&clave) {
             Some(existente) => {
                 existente.1 += extra_score;
                 if limpio.len() > existente.0.len() {
@@ -1009,7 +1081,7 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
             None => {
                 let total = base_score + extra_score;
                 if total > 0.05 {
-                    mapa_juz.insert(clave, (limpio, total));
+                    mapa.insert(clave, (limpio, total));
                 }
             }
         }
@@ -1028,7 +1100,7 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
         let lb = limite_inferior_bayesiano(a.alpha, a.beta);
         if lb >= 0.22 {
             let mult_def = if es_def { 1.35 } else { 1.0 };
-            sumar_juz(&a.canonico, lb * 1.8 * mult_def);
+            sumar_juz(&mut mapa_juz, &a.canonico, lb * 1.8 * mult_def);
         }
     }
 
@@ -1036,7 +1108,7 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
     if !def_clave.is_empty() {
         if let Some(juz_def) = priors.grafo.defensor_a_juzgados.get(&def_clave) {
             for (j, &freq) in juz_def {
-                sumar_juz(j, (1.0 + freq as f64).ln() * 0.55);
+                sumar_juz(&mut mapa_juz, j, (1.0 + freq as f64).ln() * 0.55);
             }
         }
         if let Some(siglas_def) = priors.grafo.defensor_sigla_a_juzgado.get(&def_clave) {
@@ -1044,7 +1116,7 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
                 if let Some(destinos) = siglas_def.get(sigla) {
                     for (j, &freq) in destinos {
                         let peso = 1.6 + (1.0 + freq as f64).ln() * 0.85;
-                        sumar_juz(j, peso);
+                        sumar_juz(&mut mapa_juz, j, peso);
                     }
                 }
             }
@@ -1053,38 +1125,61 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
     if let Some(ref prefijo) = prefijo_dane {
         if let Some(juz_mun) = priors.grafo.prefijo_radicado_a_juzgados.get(prefijo) {
             for (j, &freq) in juz_mun {
-                sumar_juz(j, 0.90 + (1.0 + freq as f64).ln() * 0.50);
+                sumar_juz(&mut mapa_juz, j, 0.90 + (1.0 + freq as f64).ln() * 0.50);
             }
         }
     }
     for tipo_k in &tipos_detectados {
         if let Some(juz_tipo) = priors.grafo.tipo_a_juzgados.get(tipo_k) {
             for (j, &freq) in juz_tipo {
-                sumar_juz(j, 0.55 + (1.0 + freq as f64).ln() * 0.35);
+                sumar_juz(&mut mapa_juz, j, 0.55 + (1.0 + freq as f64).ln() * 0.35);
             }
         }
     }
 
     // 1c. Catálogos de usuario, priors globales y JUZGADOS_BASE
     for j in &settings.juzgados {
-        sumar_juz(j, 0.35);
+        sumar_juz(&mut mapa_juz, j, 0.35);
     }
     for j in priors.juzgados_freq.keys() {
-        sumar_juz(j, 0.25);
+        sumar_juz(&mut mapa_juz, j, 0.25);
     }
     for j in juzgados_base() {
-        sumar_juz(j, 0.0);
+        sumar_juz(&mut mapa_juz, j, 0.0);
     }
 
-    // 1d. Resolución final de siglas cortas detectadas en el texto:
-    //     prioriza alias validado del defensor > alias general "*" > mejor juzgado del grafo
-    //     ya cruzado con prefijo DANE del radicado y tipo de audiencia.
+    // 1d. Resolución general de abreviaciones exactas validadas (juzgado y tipo, sin limitarse a J#)
+    //     y patrones parametrizados inferidos ({N} y {X}) con candados de seguridad.
+    let res_abrevs = resolver_abreviaciones_y_patrones_en_texto(
+        texto, base, local, settings, priors, defensor,
+    );
+
     let mut siglas_resueltas: Vec<(String, String)> = Vec::new();
+    let mut claves_siglas_vistas: BTreeSet<String> = BTreeSet::new();
+
+    for (campo_abrev, abrev_norm, canonico) in &res_abrevs.exactas {
+        if campo_abrev == "juzgado" {
+            sumar_juz(&mut mapa_juz, canonico, 2.2);
+        }
+        if claves_siglas_vistas.insert(abrev_norm.clone()) {
+            siglas_resueltas.push((abrev_norm.clone(), canonico.clone()));
+        }
+    }
+
+    // Respaldo del Mapa de Conexiones (GrafoAsociaciones) para siglas `j#` presentes en Excel
+    // cuando no fueron cubiertas por un alias exacto y aparecen desnudas (sin CTO/Circuito/MPAL/M).
     for sigla in &siglas_texto {
+        if claves_siglas_vistas.contains(sigla)
+            || !sigla_desnuda_sin_calificador_en_texto(texto, sigla)
+        {
+            continue;
+        }
         if let Some(res_alias) = resolver_alias_exacto_validado_con_base_para_defensor(
             base, local, "juzgado", sigla, 0.30, defensor,
         ) {
-            siglas_resueltas.push((sigla.clone(), res_alias));
+            if claves_siglas_vistas.insert(sigla.clone()) {
+                siglas_resueltas.push((sigla.clone(), res_alias));
+            }
             continue;
         }
         if !def_clave.is_empty() {
@@ -1112,9 +1207,27 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
                     }
                 }
                 if let Some((j_top, _, _)) = mejor_grafo {
-                    siglas_resueltas.push((sigla.clone(), j_top.clone()));
+                    if claves_siglas_vistas.insert(sigla.clone()) {
+                        siglas_resueltas.push((sigla.clone(), j_top.clone()));
+                    }
                 }
             }
+        }
+    }
+
+    // Filtrar patrones inferidos cuya abreviación ya fue resuelta de forma exacta (incluyendo grafo)
+    let patrones_inferidos: Vec<ResolucionPatronInferido> = res_abrevs
+        .inferidas
+        .into_iter()
+        .filter(|p| {
+            let k = canonizar_entrada_alias(&p.campo, &p.abreviacion_detectada);
+            !claves_siglas_vistas.contains(&k)
+        })
+        .collect();
+
+    for p in &patrones_inferidos {
+        if p.campo == "juzgado" {
+            sumar_juz(&mut mapa_juz, &p.expansion_sugerida, 1.35 + p.confianza_q10 * 0.9);
         }
     }
 
@@ -1122,7 +1235,7 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
     juzgados_vec.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let juzgados_top: Vec<String> = juzgados_vec.into_iter().take(5).map(|(n, _)| n).collect();
 
-    // 2. Candidatos de tipo de audiencia (cruzando defensor_a_tipos del grafo + settings + priors + TIPOS_AUDIENCIA)
+    // 2. Candidatos de tipo de audiencia (cruzando alias + patrones + defensor_a_tipos del grafo + settings + priors + TIPOS_AUDIENCIA)
     let mut mapa_tipo: BTreeMap<String, (String, f64)> = BTreeMap::new();
     let mut sumar_tipo = |nombre: &str, extra_score: f64| {
         let limpio = colapsar_espacios(nombre);
@@ -1143,6 +1256,16 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
         }
     };
 
+    for (campo_abrev, _, canonico) in &res_abrevs.exactas {
+        if campo_abrev == "tipo" {
+            sumar_tipo(canonico, 2.2);
+        }
+    }
+    for p in &patrones_inferidos {
+        if p.campo == "tipo" {
+            sumar_tipo(&p.expansion_sugerida, 1.35 + p.confianza_q10 * 0.9);
+        }
+    }
     if !def_clave.is_empty() {
         if let Some(tipos_def) = priors.grafo.defensor_a_tipos.get(&def_clave) {
             for (t, &freq) in tipos_def {
@@ -1178,6 +1301,7 @@ pub fn seleccionar_candidatos_prompt_con_base_para_defensor(
         tipos_top,
         radicado_vinculado,
         siglas_resueltas,
+        patrones_inferidos,
     }
 }
 
@@ -1610,14 +1734,19 @@ pub fn resolver_alias_exacto_validado_con_base_para_defensor(
     defensor: Option<&str>,
 ) -> Option<String> {
     let clave = canonizar_entrada_alias(campo, entrada);
-    if clave.is_empty() {
+    let clave_segs = clave_estructural_alias(&clave);
+    if clave.is_empty() || clave_segs.is_empty() {
         return None;
     }
     let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
     let mut mejor_def: Option<(String, f64)> = None;
     let mut mejor_gen: Option<(String, f64)> = None;
     for a in combinar_alias_local_sobre_base(base, local) {
-        if a.campo != campo || canonizar_entrada_alias(campo, &a.entrada_norm) != clave {
+        if a.campo != campo {
+            continue;
+        }
+        let a_norm = canonizar_entrada_alias(campo, &a.entrada_norm);
+        if a_norm != clave && clave_estructural_alias(&a_norm) != clave_segs {
             continue;
         }
         let lb = limite_inferior_bayesiano(a.alpha, a.beta);
@@ -1659,13 +1788,32 @@ pub fn resolver_alias_exacto_validado(
     resolver_alias_exacto_validado_para_defensor(memoria, campo, entrada, umbral_q10, None)
 }
 
-fn contiene_secuencia_tokens(texto_tokens: &[String], patron_tokens: &[String]) -> bool {
+fn contiene_secuencia_tokens_segura(
+    campo: &str,
+    texto_tokens: &[String],
+    patron_tokens: &[String],
+) -> bool {
     if patron_tokens.is_empty() || patron_tokens.len() > texto_tokens.len() {
         return false;
     }
-    texto_tokens
-        .windows(patron_tokens.len())
-        .any(|w| w == patron_tokens)
+    let patron_calificado = campo == "juzgado"
+        && patron_tokens
+            .last()
+            .is_some_and(|t| es_calificador_terminal_juzgado(t));
+    for (idx, w) in texto_tokens.windows(patron_tokens.len()).enumerate() {
+        if w != patron_tokens {
+            continue;
+        }
+        if campo == "juzgado" && !patron_calificado {
+            if let Some(nxt) = texto_tokens.get(idx + patron_tokens.len()) {
+                if es_calificador_juzgado(nxt) {
+                    continue;
+                }
+            }
+        }
+        return true;
+    }
+    false
 }
 
 pub fn resolver_alias_validado_con_base_para_defensor(
@@ -1707,7 +1855,7 @@ pub fn resolver_alias_validado_con_base_para_defensor(
         let patron_norm = canonizar_entrada_alias(campo, &a.entrada_norm);
         let patron_tokens: Vec<String> = patron_norm.split_whitespace().map(canon_tok).collect();
         let es_exacto = patron_norm == clave;
-        if es_exacto || contiene_secuencia_tokens(&clave_tokens, &patron_tokens) {
+        if es_exacto || contiene_secuencia_tokens_segura(campo, &clave_tokens, &patron_tokens) {
             let clave_orden = (
                 if es_exacto { 1u8 } else { 0u8 },
                 patron_tokens.len(),
@@ -2650,5 +2798,217 @@ mod tests {
             .siglas_resueltas
             .iter()
             .any(|(s, j)| s == "j12" && j == "Juzgado 12 Penal Base"));
+    }
+
+    #[test]
+    fn test_flujo_completo_feedback_generalizacion_patrones_y_override_especifico() {
+        let mut mem = MemoriaAprendizaje::default();
+        let def = Some("Dra. Ana Pérez");
+        let base_aud = AudienciaInput {
+            radicado: "PROCESADO - 200016001075202500111".into(),
+            tipo: "Audiencia preparatoria".into(),
+            fecha: "15/08/2025".into(),
+            hora: "09:00".into(),
+            juzgado: String::new(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+
+        // 1) El LLM NO conservó la abreviación ("JPM10", "JPM9", "JPM3") en `prediccion.juzgado`,
+        //    pero el texto sí la traía; la cosecha general debe aprenderla y generalizar hacia "JPM4".
+        for (i, n) in [10u32, 9, 3].into_iter().enumerate() {
+            let mut pred = base_aud.clone();
+            pred.juzgado = format!("Juzgado {} Penal", n);
+            let mut fin = base_aud.clone();
+            fin.juzgado = format!("Juzgado {} Penal Municipal", n);
+            actualizar_alias_y_preferencias_en_memoria_para_defensor(
+                &mut mem,
+                &format!("JPM{} audiencia preparatoria, se realizó sin novedad", n),
+                &pred,
+                &fin,
+                &[CampoCorregido {
+                    campo: "juzgado".into(),
+                    valor_ia: pred.juzgado.clone(),
+                    valor_usuario: fin.juzgado.clone(),
+                }],
+                &format!("2025-08-1{}T10:00:00-05:00", i),
+                def,
+            );
+        }
+
+        let cands_jpm4 = seleccionar_candidatos_prompt_para_defensor(
+            "JPM4 audiencia preparatoria",
+            &mem,
+            &AppSettings::default(),
+            &IndicePriorsExcel::default(),
+            def,
+        );
+        assert!(
+            cands_jpm4
+                .patrones_inferidos
+                .iter()
+                .any(|p| p.expansion_sugerida == "Juzgado 4 Penal Municipal"),
+            "Debe inferir JPM4 desde JPM10/JPM9/JPM3: {:?}",
+            cands_jpm4.patrones_inferidos
+        );
+        assert!(
+            cands_jpm4
+                .juzgados_top
+                .iter()
+                .any(|j| j == "Juzgado 4 Penal Municipal"),
+            "Debe impulsar Juzgado 4 Penal Municipal en juzgados_top: {:?}",
+            cands_jpm4.juzgados_top
+        );
+
+        // 2) Si el usuario corrige JPM4 a Circuito, se registra el override específico para JPM4
+        //    y la consistencia del patrón cae (3/4 = 75% < 85%)
+        let mut pred4 = base_aud.clone();
+        pred4.juzgado = "Juzgado 4 Penal Municipal".into();
+        let mut fin4 = base_aud.clone();
+        fin4.juzgado = "Juzgado 4 Penal del Circuito".into();
+        actualizar_alias_y_preferencias_en_memoria_para_defensor(
+            &mut mem,
+            "JPM4 audiencia preparatoria",
+            &pred4,
+            &fin4,
+            &[CampoCorregido {
+                campo: "juzgado".into(),
+                valor_ia: pred4.juzgado.clone(),
+                valor_usuario: fin4.juzgado.clone(),
+            }],
+            "2025-08-19T10:00:00-05:00",
+            def,
+        );
+        let cands_jpm4_tras_corr = seleccionar_candidatos_prompt_para_defensor(
+            "JPM4 audiencia preparatoria",
+            &mem,
+            &AppSettings::default(),
+            &IndicePriorsExcel::default(),
+            def,
+        );
+        assert!(
+            cands_jpm4_tras_corr.patrones_inferidos.is_empty(),
+            "Tras contradicción en JPM4 el patrón debe pausarse: {:?}",
+            cands_jpm4_tras_corr.patrones_inferidos
+        );
+
+        // 3) Flujo {X}: JPM Bosconia + JPM Curumaní -> JPM Chimichagua aceptado se promueve a tabla_alias
+        let mut mem_x = MemoriaAprendizaje::default();
+        for (ab, full) in [
+            ("JPM Bosconia", "Juzgado Promiscuo Municipal de Bosconia"),
+            ("JPM Curumaní", "Juzgado Promiscuo Municipal de Curumaní"),
+        ] {
+            let mut pred = base_aud.clone();
+            pred.juzgado = ab.into();
+            let mut fin = base_aud.clone();
+            fin.juzgado = full.into();
+            actualizar_alias_y_preferencias_en_memoria_para_defensor(
+                &mut mem_x,
+                &format!("{} audiencia preliminar", ab),
+                &pred,
+                &fin,
+                &[CampoCorregido {
+                    campo: "juzgado".into(),
+                    valor_ia: pred.juzgado.clone(),
+                    valor_usuario: fin.juzgado.clone(),
+                }],
+                "2025-08-20T10:00:00-05:00",
+                def,
+            );
+        }
+        // Usuario acepta sin editar la sugerencia de JPM Chimichagua
+        let mut ok_ch = base_aud.clone();
+        ok_ch.juzgado = "Juzgado Promiscuo Municipal de Chimichagua".into();
+        actualizar_alias_y_preferencias_en_memoria_para_defensor(
+            &mut mem_x,
+            "JPM Chimichagua audiencia preliminar",
+            &ok_ch,
+            &ok_ch,
+            &[],
+            "2025-08-21T10:00:00-05:00",
+            def,
+        );
+        assert!(
+            mem_x
+                .tabla_alias
+                .iter()
+                .any(|a| a.entrada_norm == "jpm chimichagua"
+                    && a.canonico == "Juzgado Promiscuo Municipal de Chimichagua"),
+            "Confirmar un patrón {{X}} debe consolidar el alias concreto: {:?}",
+            mem_x.tabla_alias
+        );
+
+        // 4) Abreviación de tipo de 2 letras ("JO" / "J.O.") converge en 2 correcciones y entra a siglas_resueltas
+        let mut mem_tipo = MemoriaAprendizaje::default();
+        for ab in ["JO", "J.O."] {
+            let mut pred = base_aud.clone();
+            pred.tipo = ab.into();
+            let mut fin = base_aud.clone();
+            fin.tipo = "Audiencia de juicio oral".into();
+            actualizar_alias_y_preferencias_en_memoria_para_defensor(
+                &mut mem_tipo,
+                &format!("{} en J4 sin novedad", ab),
+                &pred,
+                &fin,
+                &[CampoCorregido {
+                    campo: "tipo".into(),
+                    valor_ia: pred.tipo.clone(),
+                    valor_usuario: fin.tipo.clone(),
+                }],
+                "2025-08-22T10:00:00-05:00",
+                def,
+            );
+        }
+        assert_eq!(
+            resolver_alias_exacto_validado_para_defensor(&mem_tipo, "tipo", "J.O.", 0.30, def)
+                .as_deref(),
+            Some("Audiencia de juicio oral")
+        );
+        let cands_jo = seleccionar_candidatos_prompt_para_defensor(
+            "JO en Juzgado 1 sin novedad",
+            &mem_tipo,
+            &AppSettings::default(),
+            &IndicePriorsExcel::default(),
+            def,
+        );
+        assert!(
+            cands_jo
+                .siglas_resueltas
+                .iter()
+                .any(|(s, t)| s == "jo" && t == "Audiencia de juicio oral"),
+            "{:?}",
+            cands_jo.siglas_resueltas
+        );
+
+        // 5) Guard de calificador en resolver_alias_validado (MotorEstadisticoLocal):
+        //    alias de alta confianza `j4 -> Municipal` NO debe capturar "Audiencia en J4 CTO"
+        let mut mem_hi = MemoriaAprendizaje::default();
+        for _ in 0..6 {
+            actualizar_alias_para_defensor(
+                &mut mem_hi,
+                "juzgado",
+                "J4",
+                "Juzgado 4 Penal Municipal de Valledupar",
+                true,
+                "2025-08-22T10:00:00-05:00",
+                def,
+            );
+        }
+        assert_eq!(
+            resolver_alias_validado_para_defensor(&mem_hi, "juzgado", "Audiencia en J4 CTO", 0.55, def),
+            None
+        );
+        assert_eq!(
+            resolver_alias_validado_para_defensor(
+                &mem_hi,
+                "juzgado",
+                "Audiencia en J4 preparatoria",
+                0.55,
+                def
+            )
+            .as_deref(),
+            Some("Juzgado 4 Penal Municipal de Valledupar")
+        );
     }
 }

@@ -1317,6 +1317,9 @@
                     <span class="ia-diag-pill">
                       Alias validados: {diagnosticoIa.alias_validados?.length ?? 0}
                     </span>
+                    <span class="ia-diag-pill">
+                      Patrones inferidos: {diagnosticoIa.patrones_abreviacion?.length ?? 0}
+                    </span>
                   </div>
                 </div>
               {/if}

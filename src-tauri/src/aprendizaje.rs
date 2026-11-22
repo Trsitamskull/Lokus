@@ -822,6 +822,20 @@ pub struct AliasDiagnostico {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct PatronAbreviacionDiagnostico {
+    pub campo: String,
+    pub tipo_slot: String,
+    pub patron_entrada: String,
+    pub patron_canonico: String,
+    #[serde(default = "alcance_todos")]
+    pub defensor_alcance: String,
+    pub ejemplos_distintos: usize,
+    pub total_instancias: usize,
+    pub consistencia: f64,
+    pub confianza_q10: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct PreferenciasEstiloResumen {
     pub incluir_causas_secundarias_prob: f64,
     pub incluir_reprogramacion_prob: f64,
@@ -849,6 +863,8 @@ pub struct DiagnosticoAprendizaje {
     pub metricas_por_modelo: Vec<ModeloDiagnostico>,
     pub preferencias_estilo: PreferenciasEstiloResumen,
     pub alias_validados: Vec<AliasDiagnostico>,
+    #[serde(default)]
+    pub patrones_abreviacion: Vec<PatronAbreviacionDiagnostico>,
     pub reglas_destacadas: Vec<ReglaDiagnostico>,
     #[serde(default)]
     pub consolidaciones_totales: u32,
@@ -891,6 +907,7 @@ struct PaqueteExportacion {
     perfiles_sinteticos: Vec<PerfilSinteticoDefensor>,
     consolidaciones_ia: Vec<RegistroConsolidacionIa>,
     alias_validados: Vec<AliasDiagnostico>,
+    patrones_abreviacion: Vec<PatronAbreviacionDiagnostico>,
     juzgados_agregados_usuario: Vec<String>,
     tipos_audiencia_agregados_usuario: Vec<String>,
     uso_catalogos: ReporteUsoCatalogos,
@@ -1522,11 +1539,12 @@ fn normalizar_y_fusionar_defensores(memoria: &mut MemoriaAprendizaje, fusionar_c
         let mut alias_fusionados: Vec<AliasEstadistico> =
             Vec::with_capacity(memoria.tabla_alias.len());
         for a in std::mem::take(&mut memoria.tabla_alias) {
-            let ent_norm = normalizar_texto_sin_tildes(&a.entrada_norm);
+            let ent_norm = crate::estadistica_ia::canonizar_entrada_alias(&a.campo, &a.entrada_norm);
             let can_norm = normalizar_texto_sin_tildes(&a.canonico);
             if let Some(dest) = alias_fusionados.iter_mut().find(|x| {
                 x.campo == a.campo
-                    && normalizar_texto_sin_tildes(&x.entrada_norm) == ent_norm
+                    && crate::estadistica_ia::canonizar_entrada_alias(&x.campo, &x.entrada_norm)
+                        == ent_norm
                     && normalizar_texto_sin_tildes(&x.canonico) == can_norm
                     && x.defensor_alcance == a.defensor_alcance
             }) {
@@ -5441,6 +5459,7 @@ pub(crate) fn decidir_aclaracion_local(
             || usr_up.contains("MPAL")
             || usr_up.contains("PCTO")
             || es_solo_sigla_corta_juzgado(&campo_obj.valor_ia).is_some()
+            || crate::patrones_abreviacion::es_abreviacion_corta_juzgado(&campo_obj.valor_ia)
             || !extraer_siglas_cortas_juzgado(&corr.texto_original).is_empty());
 
     if tokenizar_judicial(&corr.texto_original).len() < 3 && !tiene_sigla_juz {
@@ -7553,6 +7572,26 @@ fn construir_metricas_diagnostico(
     (campos_diag, modelos_diag, alias_diag, drift_campos_activos)
 }
 
+fn construir_patrones_diagnostico(
+    memoria: &MemoriaAprendizaje,
+    cache_cat: &CacheCatalogoAnon<'_>,
+) -> Vec<PatronAbreviacionDiagnostico> {
+    crate::patrones_abreviacion::inducir_patrones_todos_ambitos(memoria)
+        .into_iter()
+        .map(|p| PatronAbreviacionDiagnostico {
+            campo: p.campo,
+            tipo_slot: p.tipo_slot.as_str().to_string(),
+            patron_entrada: cache_cat.anonimizar(&p.patron_entrada),
+            patron_canonico: cache_cat.anonimizar(&p.patron_canonico),
+            defensor_alcance: alcance_canonico(&p.defensor_alcance),
+            ejemplos_distintos: p.ejemplos_distintos,
+            total_instancias: p.total_instancias,
+            consistencia: p.consistencia,
+            confianza_q10: p.confianza_q10,
+        })
+        .collect()
+}
+
 fn construir_diagnostico_desde_memoria(
     memoria: &MemoriaAprendizaje,
     priors: Option<&IndicePriorsExcel>,
@@ -7565,6 +7604,7 @@ fn construir_diagnostico_desde_memoria(
 
     let (metricas_por_campo, metricas_por_modelo, alias_validados, drift_campos_activos) =
         construir_metricas_diagnostico(memoria, &cache_cat);
+    let patrones_abreviacion = construir_patrones_diagnostico(memoria, &cache_cat);
 
     let mut reglas_por_estado: BTreeMap<String, usize> = BTreeMap::new();
     for r in &memoria.reglas {
@@ -7725,6 +7765,7 @@ fn construir_diagnostico_desde_memoria(
         metricas_por_modelo,
         preferencias_estilo: construir_preferencias_resumen(&memoria.preferencias_estilo),
         alias_validados: alias_validados.into_iter().take(12).collect(),
+        patrones_abreviacion: patrones_abreviacion.into_iter().take(12).collect(),
         reglas_destacadas,
         consolidaciones_totales: memoria.llamadas_consolidacion_total,
         presion_consolidacion_global,
@@ -7878,6 +7919,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
 
         let (metricas_por_campo, metricas_por_modelo, alias_validados, _) =
             construir_metricas_diagnostico(&memoria, &cache_cat);
+        let patrones_abreviacion = construir_patrones_diagnostico(&memoria, &cache_cat);
         let preferencias_estilo = construir_preferencias_resumen(&memoria.preferencias_estilo);
         let preferencias_por_defensor: BTreeMap<String, PreferenciasEstiloResumen> = memoria
             .preferencias_por_defensor
@@ -8028,6 +8070,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             perfiles_sinteticos,
             consolidaciones_ia,
             alias_validados,
+            patrones_abreviacion,
             juzgados_agregados_usuario: juzgados_anon,
             tipos_audiencia_agregados_usuario: tipos_anon,
             uso_catalogos: reporte_uso,
@@ -11591,5 +11634,122 @@ mod tests {
             // Idempotencia estricta
             assert_eq!(anon.aplicar(&out), out, "No idempotente: {}", out);
         }
+    }
+
+    #[test]
+    fn test_diagnostico_y_exportacion_patrones_abreviacion_anonimizados_y_renombrado() {
+        let dir = std::env::temp_dir().join(format!(
+            "lokus_test_patrones_exp_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("ia_aprendizaje.json");
+        let destino = dir.join("export");
+        fs::create_dir_all(&destino).unwrap();
+
+        let mut mem = MemoriaAprendizaje::default();
+        // Registrar procesado real para comprobar que se anonimiza si apareciera en un alias
+        mem.correcciones.push(CorreccionIa {
+            id: "c-pii".into(),
+            registrada: "2025-09-01T10:00:00-05:00".into(),
+            proveedor: "openai".into(),
+            modelo: "gpt-5-mini".into(),
+            texto_original: "JPM1 audiencia de CARLOS MENDOZA".into(),
+            prediccion: AudienciaInput {
+                radicado: "CARLOS MENDOZA - 200016001075202500999".into(),
+                tipo: "Audiencia preliminar".into(),
+                fecha: "01/09/2025".into(),
+                hora: "08:00".into(),
+                juzgado: "JPM1".into(),
+                realizada: "SI".into(),
+                motivo: String::new(),
+                observaciones: String::new(),
+            },
+            final_usuario: AudienciaInput {
+                radicado: "CARLOS MENDOZA - 200016001075202500999".into(),
+                tipo: "Audiencia preliminar".into(),
+                fecha: "01/09/2025".into(),
+                hora: "08:00".into(),
+                juzgado: "Juzgado 1 de Carlos Mendoza".into(),
+                realizada: "SI".into(),
+                motivo: String::new(),
+                observaciones: String::new(),
+            },
+            campos: vec![CampoCorregido {
+                campo: "juzgado".into(),
+                valor_ia: "JPM1".into(),
+                valor_usuario: "Juzgado 1 de Carlos Mendoza".into(),
+            }],
+            estado: "analizada".into(),
+            regla_generada: String::new(),
+            regla_id_asociada: String::new(),
+            pregunta_ia: String::new(),
+            nota_usuario: String::new(),
+            exportada: false,
+            defensor_clave: "jose daniel".into(),
+        });
+        for n in [1u32, 2, 3] {
+            mem.tabla_alias.push(AliasEstadistico {
+                campo: "juzgado".into(),
+                entrada_norm: format!("jpm{}", n),
+                canonico: format!("Juzgado {} de Carlos Mendoza", n),
+                alpha: 3.0,
+                beta: 1.2,
+                defensor_alcance: "jose daniel".into(),
+                defensores_confirmantes: vec!["jose daniel".into()],
+                ultima_actualizacion: "2025-09-01T10:00:00-05:00".into(),
+            });
+        }
+        guardar_memoria_en(&ruta, &mem).unwrap();
+
+        // 1) Diagnóstico incluye patrones inferidos anonimizados conservando `{N}`
+        let diag = obtener_diagnostico_aprendizaje_en(&ruta);
+        assert_eq!(diag.patrones_abreviacion.len(), 1, "{:?}", diag.patrones_abreviacion);
+        let pat_diag = &diag.patrones_abreviacion[0];
+        assert_eq!(pat_diag.patron_entrada, "jpm {N}");
+        assert_eq!(pat_diag.defensor_alcance, "jose daniel");
+        assert!(pat_diag.patron_canonico.contains("{N}"));
+        assert!(
+            !pat_diag.patron_canonico.to_lowercase().contains("mendoza"),
+            "No debe fugarse PII en patrones del diagnóstico: {}",
+            pat_diag.patron_canonico
+        );
+
+        // 2) Exportación JSON incluye `patrones_abreviacion` anonimizados
+        let archivo = exportar_aprendizaje_completo_con_priors_en(
+            &ruta,
+            None,
+            None,
+            None,
+            &destino,
+            &[],
+            &[],
+            &["Dr. José Daniel".to_string()],
+        )
+        .unwrap();
+        let contenido = fs::read_to_string(&archivo).unwrap();
+        assert!(contenido.contains("\"patrones_abreviacion\""));
+        assert!(contenido.contains("jpm {N}"));
+        assert!(
+            !contenido.to_lowercase().contains("mendoza"),
+            "No debe fugarse PII en la exportación"
+        );
+
+        // 3) Renombrar defensor migra sus patrones inferidos al nuevo identificador
+        migrar_defensor_en_memoria_en(&ruta, "Dr. José Daniel", "José Daniel Martínez").unwrap();
+        let diag_ren = obtener_diagnostico_aprendizaje_en(&ruta);
+        assert!(
+            diag_ren
+                .patrones_abreviacion
+                .iter()
+                .any(|p| p.defensor_alcance == "jose daniel martinez" && p.patron_entrada == "jpm {N}"),
+            "El patrón debe migrar al renombrar defensor: {:?}",
+            diag_ren.patrones_abreviacion
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

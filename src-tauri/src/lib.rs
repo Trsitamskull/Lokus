@@ -5,6 +5,7 @@ pub mod estadistica_ia;
 pub mod excel;
 pub mod models;
 pub mod paquete;
+pub mod patrones_abreviacion;
 pub mod uso_catalogos;
 
 use ai::{
