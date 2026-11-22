@@ -29,6 +29,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -51,6 +53,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      - name: Generar notas del release desde CHANGELOG.md
+        id: release_notes
+        shell: bash
+        run: node scripts/extract-release-notes.mjs --output-file release_notes.md --github-output "$GITHUB_OUTPUT"
+
       - name: Build Tauri Desktop App & Publish to GitHub Releases
         uses: tauri-apps/tauri-action@v0.6.1
         env:
@@ -58,19 +65,20 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Lokus v__VERSION__"
-          releaseBody: "Descarga directa de Lokus para Windows (Lokus.exe portable y Lokus-setup.exe con WebView2 incluido) y Linux (.AppImage, .deb, .rpm)."
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           retryAttempts: "3"
           args: ${{ matrix.args }}
 
-      - name: Adjuntar Lokus.exe portable a GitHub Releases
+      - name: Adjuntar Lokus.exe portable y actualizar notas en GitHub Releases
         if: matrix.platform == 'windows-latest'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ver = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           gh release upload "v$ver" src-tauri/target/release/Lokus.exe --clobber
+          gh release edit "v$ver" --notes-file release_notes.md
 
       - name: Upload Windows .exe (portable + setup con WebView2)
         if: matrix.platform == 'windows-latest'
