@@ -11,7 +11,9 @@
 //!    base embebida `resources/aprendizaje_base.json` con la memoria local del usuario).
 //! 6. El usuario puede exportar todo el aprendizaje (anonimizado) a su carpeta de Descargas.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -3296,20 +3298,98 @@ pub fn formatear_contexto_prompt(
 // Anonimización para exportar
 // ---------------------------------------------------------------------------
 
-/// Patrón regex de una palabra que ignora tildes (se combina con la bandera `(?i)`).
-fn patron_sin_tildes(palabra: &str) -> String {
-    palabra
-        .chars()
-        .map(|c| match c.to_lowercase().next().unwrap_or(c) {
-            'a' | 'á' => "[aá]".to_string(),
-            'e' | 'é' => "[eé]".to_string(),
-            'i' | 'í' => "[ií]".to_string(),
-            'o' | 'ó' => "[oó]".to_string(),
-            'u' | 'ú' | 'ü' => "[uúü]".to_string(),
-            'n' | 'ñ' => "[nñ]".to_string(),
-            otro => regex::escape(&otro.to_string()),
-        })
-        .collect()
+#[inline]
+fn es_marca_combinante(c: char) -> bool {
+    ('\u{0300}'..='\u{036f}').contains(&c)
+}
+
+#[inline]
+fn es_inicio_palabra_anon(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+#[inline]
+fn es_char_palabra_anon(c: char) -> bool {
+    es_inicio_palabra_anon(c) || es_marca_combinante(c)
+}
+
+#[inline]
+fn contar_digitos_ascii_hasta(texto: &str, limite: usize) -> usize {
+    let mut n = 0usize;
+    for &b in texto.as_bytes() {
+        if b.is_ascii_digit() {
+            n += 1;
+            if n >= limite {
+                return n;
+            }
+        }
+    }
+    n
+}
+
+fn plegar_char_anon(c: char, out: &mut String) {
+    if es_marca_combinante(c) {
+        return;
+    }
+    for lc in c.to_lowercase() {
+        if es_marca_combinante(lc) {
+            continue;
+        }
+        let mapped = match lc {
+            'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ñ' => 'n',
+            otro => otro,
+        };
+        out.push(mapped);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TokenSpan {
+    orig_start: usize,
+    orig_end: usize,
+    fold_start: usize,
+    fold_end: usize,
+}
+
+fn tokenizar_con_spans(texto: &str) -> (Vec<TokenSpan>, String) {
+    let mut tokens = Vec::new();
+    let mut fold_buf = String::with_capacity(texto.len());
+    let mut iter = texto.char_indices().peekable();
+
+    while let Some((start_idx, ch)) = iter.next() {
+        if !es_inicio_palabra_anon(ch) {
+            continue;
+        }
+        let fold_start = fold_buf.len();
+        plegar_char_anon(ch, &mut fold_buf);
+        let mut orig_end = start_idx + ch.len_utf8();
+
+        while let Some(&(next_idx, next_ch)) = iter.peek() {
+            if es_char_palabra_anon(next_ch) {
+                iter.next();
+                plegar_char_anon(next_ch, &mut fold_buf);
+                orig_end = next_idx + next_ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let fold_end = fold_buf.len();
+        if fold_end > fold_start {
+            tokens.push(TokenSpan {
+                orig_start: start_idx,
+                orig_end,
+                fold_start,
+                fold_end,
+            });
+        }
+    }
+
+    (tokens, fold_buf)
 }
 
 fn re_numeros_largos() -> Option<&'static Regex> {
@@ -3344,42 +3424,68 @@ fn re_radicado_espaciado() -> Option<&'static Regex> {
 
 /// Reemplaza secuencias numéricas de 6 o más dígitos (radicados, teléfonos y cédulas) por
 /// `[RADICADO]`, `[TELEFONO]` o `[NUMERO]`, conservando fechas y horas.
-fn enmascarar_numeros_largos(texto: &str) -> String {
-    let mut paso = texto.to_string();
-    if let Some(re_rad) = re_radicado_espaciado() {
-        paso = re_rad.replace_all(&paso, "[RADICADO]").into_owned();
+fn enmascarar_numeros_largos<'a>(texto: &'a str) -> Cow<'a, str> {
+    let digitos = contar_digitos_ascii_hasta(texto, 18);
+    if digitos < 6 {
+        return Cow::Borrowed(texto);
     }
-    if let Some(re_tel) = re_telefono_espaciado() {
-        paso = re_tel.replace_all(&paso, "[TELEFONO]").into_owned();
+    let mut paso: Cow<'a, str> = Cow::Borrowed(texto);
+    if digitos >= 18 {
+        if let Some(re_rad) = re_radicado_espaciado() {
+            if let Cow::Owned(s) = re_rad.replace_all(&paso, "[RADICADO]") {
+                paso = Cow::Owned(s);
+            }
+        }
+    }
+    if digitos >= 10 {
+        if let Some(re_tel) = re_telefono_espaciado() {
+            if let Cow::Owned(s) = re_tel.replace_all(&paso, "[TELEFONO]") {
+                paso = Cow::Owned(s);
+            }
+        }
     }
     let Some(re) = re_numeros_largos() else {
         return paso;
     };
-    re.replace_all(&paso, |caps: &regex::Captures| {
+    let mut hubo_reemplazo = false;
+    let res = re.replace_all(&paso, |caps: &regex::Captures| {
         let m = &caps[0];
-        let solo_digitos: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
-        let digitos = solo_digitos.len();
+        let mut n_dig = 0usize;
+        let mut pref = [0u8; 3];
+        for &b in m.as_bytes() {
+            if b.is_ascii_digit() {
+                if n_dig < 3 {
+                    pref[n_dig] = b;
+                }
+                n_dig += 1;
+            }
+        }
         let es_fecha = re_fecha_con_guiones().is_some_and(|rf| rf.is_match(m));
-        if es_fecha || digitos < 6 {
+        if es_fecha || n_dig < 6 {
             m.to_string()
-        } else if (digitos == 10
-            && (solo_digitos.starts_with('3') || solo_digitos.starts_with("60")))
-            || (digitos == 12 && solo_digitos.starts_with("573"))
+        } else if (n_dig == 10 && (pref[0] == b'3' || (pref[0] == b'6' && pref[1] == b'0')))
+            || (n_dig == 12 && pref == *b"573")
         {
+            hubo_reemplazo = true;
             "[TELEFONO]".to_string()
-        } else if digitos >= 15 {
+        } else if n_dig >= 15 {
+            hubo_reemplazo = true;
             "[RADICADO]".to_string()
         } else {
+            hubo_reemplazo = true;
             "[NUMERO]".to_string()
         }
-    })
-    .into_owned()
+    });
+    if hubo_reemplazo {
+        Cow::Owned(res.into_owned())
+    } else {
+        paso
+    }
 }
 
-fn es_termino_estructural_judicial(token: &str) -> bool {
-    let norm = normalizar_texto_sin_tildes(token);
+fn es_termino_estructural_judicial(tok_fold: &str) -> bool {
     matches!(
-        norm.as_str(),
+        tok_fold,
         "juzgado"
             | "juez"
             | "audiencia"
@@ -3455,140 +3561,300 @@ fn es_termino_estructural_judicial(token: &str) -> bool {
     )
 }
 
-fn es_token_anonimizacion_valido(token: &str) -> bool {
-    let lower = token.to_lowercase();
-    token.chars().count() >= 3
-        && !PALABRAS_VACIAS_NOMBRE.contains(&lower.as_str())
-        && !es_termino_estructural_judicial(token)
+fn es_token_anonimizacion_valido(tok_fold: &str) -> bool {
+    tok_fold.chars().count() >= 3
+        && tok_fold.chars().any(char::is_alphabetic)
+        && !PALABRAS_VACIAS_NOMBRE.contains(&tok_fold)
+        && !es_termino_estructural_judicial(tok_fold)
 }
 
-/// Reemplaza únicamente el nombre del procesado, números de radicado, cédulas y teléfonos
-/// por marcadores (`[PROCESADO]`, `[RADICADO]`, `[TELEFONO]`, `[NUMERO]`), preservando los
-/// nombres reales de defensores públicos incluso si comparten un apellido con algún procesado.
-pub(crate) struct Anonimizador {
-    escudos_defensores: Vec<Regex>,
-    completos: Vec<(Regex, &'static str)>,
-    palabras: Vec<(Regex, &'static str)>,
+const FLAG_TRIE_FINAL: u8 = 1;
+const FLAG_TRIE_PERMITE_COMA: u8 = 2;
+const FLAG_TRIE_FINAL_PUNT: u8 = 4;
+
+#[derive(Default)]
+struct TrieFrases {
+    transiciones: HashMap<(u32, u32), u32>,
+    flags: Vec<u8>,
 }
 
-impl Anonimizador {
-    fn desde_radicados(radicados: &[&str]) -> Self {
-        let mut completos = Vec::new();
-        let mut palabras = Vec::new();
-
-        for radicado in radicados {
-            let partes: Vec<String> = match re_separador_radicado() {
-                Some(re) => re.split(radicado).map(colapsar_espacios).collect(),
-                None => vec![colapsar_espacios(radicado)],
-            };
-
-            for parte in partes.into_iter().filter(|p| !p.is_empty()) {
-                let digitos = parte.chars().filter(|c| c.is_ascii_digit()).count();
-                if digitos >= 5 {
-                    let mut solo_alfa = String::new();
-                    let mut num_runs: Vec<String> = Vec::new();
-                    let mut curr_num = String::new();
-                    for ch in parte.chars() {
-                        if ch.is_ascii_digit() || (matches!(ch, '-' | '.' | '/') && !curr_num.is_empty()) {
-                            curr_num.push(ch);
-                        } else {
-                            if curr_num.chars().filter(|c| c.is_ascii_digit()).count() >= 5 {
-                                let trimmed = curr_num.trim_end_matches(|c| matches!(c, '-' | '.' | '/')).to_string();
-                                if !trimmed.is_empty() {
-                                    num_runs.push(trimmed);
-                                }
-                            }
-                            curr_num.clear();
-                            if ch.is_alphabetic() || ch.is_whitespace() {
-                                solo_alfa.push(ch);
-                            } else {
-                                solo_alfa.push(' ');
-                            }
-                        }
-                    }
-                    if curr_num.chars().filter(|c| c.is_ascii_digit()).count() >= 5 {
-                        let trimmed = curr_num.trim_end_matches(|c| matches!(c, '-' | '.' | '/')).to_string();
-                        if !trimmed.is_empty() {
-                            num_runs.push(trimmed);
-                        }
-                    }
-
-                    let alfa_limpio = colapsar_espacios(&solo_alfa);
-                    if alfa_limpio.is_empty() {
-                        if let Ok(re) = Regex::new(&format!("(?i){}", regex::escape(&parte))) {
-                            completos.push((re, "[RADICADO]"));
-                        }
-                    } else {
-                        for nr in num_runs {
-                            if let Ok(re) = Regex::new(&format!("(?i){}", regex::escape(&nr))) {
-                                completos.push((re, "[RADICADO]"));
-                            }
-                        }
-                        let tokens_alfa: Vec<&str> = alfa_limpio
-                            .split_whitespace()
-                            .filter(|t| {
-                                let lw = t.to_lowercase();
-                                !matches!(lw.as_str(), "rad" | "radicado" | "nro" | "num" | "proc" | "procesado")
-                            })
-                            .collect();
-                        if tokens_alfa.iter().any(|t| es_token_anonimizacion_valido(t)) {
-                            let pat_full = tokens_alfa
-                                .iter()
-                                .map(|t| patron_sin_tildes(t))
-                                .collect::<Vec<_>>()
-                                .join(r"\s+");
-                            if let Ok(re) = Regex::new(&format!(r"(?i)\b{}\b", pat_full)) {
-                                completos.push((re, "[PROCESADO]"));
-                            }
-                            for token in tokens_alfa {
-                                if !es_token_anonimizacion_valido(token) {
-                                    continue;
-                                }
-                                if let Ok(re) = Regex::new(&format!(r"(?i)\b{}\b", patron_sin_tildes(token))) {
-                                    palabras.push((re, "[PROCESADO]"));
-                                }
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                let tokens: Vec<&str> = parte.split_whitespace().collect();
-                if tokens.iter().any(|t| es_token_anonimizacion_valido(t)) {
-                    let patron_completo = tokens
-                        .iter()
-                        .map(|t| patron_sin_tildes(t))
-                        .collect::<Vec<_>>()
-                        .join(r"\s+");
-                    if let Ok(re) = Regex::new(&format!(r"(?i)\b{}\b", patron_completo)) {
-                        completos.push((re, "[PROCESADO]"));
-                    }
-
-                    for token in tokens {
-                        if !es_token_anonimizacion_valido(token) {
-                            continue;
-                        }
-                        if let Ok(re) = Regex::new(&format!(r"(?i)\b{}\b", patron_sin_tildes(token))) {
-                            palabras.push((re, "[PROCESADO]"));
-                        }
-                    }
-                }
-            }
-        }
-
+impl TrieFrases {
+    fn new() -> Self {
         Self {
-            escudos_defensores: Vec::new(),
-            completos,
-            palabras,
+            transiciones: HashMap::new(),
+            flags: vec![0],
         }
     }
 
-    fn con_escudos_defensores(mut self, claves_y_nombres: &[String]) -> Self {
-        const PREFIJO_HON: &str = r"(?:(?:defensor(?:a)?\s+p[uú]blic[oa]|dr|dra|doctor|doctora|abg|abogado|abogada|defensor|defensora|lic)\.?\s+)";
-        let mut patrones_vistos: BTreeSet<String> = BTreeSet::new();
+    fn esta_vacio(&self) -> bool {
+        self.transiciones.is_empty()
+    }
+
+    fn insertar_con_flags(&mut self, ids: &[u32], flags_extra: u8) {
+        if ids.is_empty() {
+            return;
+        }
+        if self.flags.is_empty() {
+            self.flags.push(0);
+        }
+        let mut nodo = 0u32;
+        for &wid in ids {
+            if let Some(&sig) = self.transiciones.get(&(nodo, wid)) {
+                nodo = sig;
+            } else {
+                let nuevo = self.flags.len() as u32;
+                self.flags.push(0);
+                self.transiciones.insert((nodo, wid), nuevo);
+                nodo = nuevo;
+            }
+        }
+        self.flags[nodo as usize] |= flags_extra;
+    }
+
+    fn insertar(&mut self, ids: &[u32], permite_coma: bool) {
+        let mut fl = FLAG_TRIE_FINAL;
+        if permite_coma {
+            fl |= FLAG_TRIE_PERMITE_COMA;
+        }
+        self.insertar_con_flags(ids, fl);
+    }
+
+    #[inline]
+    fn siguiente(&self, nodo: u32, wid: u32) -> Option<u32> {
+        self.transiciones.get(&(nodo, wid)).copied()
+    }
+
+    #[inline]
+    fn flags_nodo(&self, nodo: u32) -> u8 {
+        self.flags.get(nodo as usize).copied().unwrap_or(0)
+    }
+}
+
+/// Índice de búsqueda lineal para radicados conocidos (exactos o pegados a texto sin espacio),
+/// evitando compilar miles de expresiones regulares individuales.
+struct IndiceRadicados {
+    patrones: HashSet<Box<[u8]>>,
+    primer_byte: [bool; 256],
+    longitudes_por_prefijo5: HashMap<[u8; 5], Vec<usize>>,
+}
+
+impl Default for IndiceRadicados {
+    fn default() -> Self {
+        Self {
+            patrones: HashSet::new(),
+            primer_byte: [false; 256],
+            longitudes_por_prefijo5: HashMap::new(),
+        }
+    }
+}
+
+impl IndiceRadicados {
+    fn insertar(&mut self, patron: &str) {
+        let bytes = patron.as_bytes();
+        if bytes.len() < 5 {
+            return;
+        }
+        if !self.patrones.insert(bytes.to_vec().into_boxed_slice()) {
+            return;
+        }
+        self.primer_byte[bytes[0] as usize] = true;
+        let pref5: [u8; 5] = [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]];
+        let longs = self.longitudes_por_prefijo5.entry(pref5).or_default();
+        if !longs.contains(&bytes.len()) {
+            longs.push(bytes.len());
+            longs.sort_unstable_by(|a, b| b.cmp(a));
+        }
+    }
+
+    fn esta_vacio(&self) -> bool {
+        self.patrones.is_empty()
+    }
+
+    fn reemplazar<'a>(&self, texto: &'a str) -> Cow<'a, str> {
+        if self.esta_vacio() || texto.len() < 5 || contar_digitos_ascii_hasta(texto, 5) < 5 {
+            return Cow::Borrowed(texto);
+        }
+        let bytes = texto.as_bytes();
+        let len = bytes.len();
+        let mut out: Option<String> = None;
+        let mut ultimo = 0usize;
+        let mut i = 0usize;
+
+        while i + 5 <= len {
+            if self.primer_byte[bytes[i] as usize] {
+                let pref5: [u8; 5] = [
+                    bytes[i],
+                    bytes[i + 1],
+                    bytes[i + 2],
+                    bytes[i + 3],
+                    bytes[i + 4],
+                ];
+                if let Some(longs) = self.longitudes_por_prefijo5.get(&pref5) {
+                    let mut match_len = 0usize;
+                    for &l in longs {
+                        if i + l <= len && self.patrones.contains(&bytes[i..i + l]) {
+                            // Evitar cortar por la mitad una secuencia numérica continua más larga
+                            // (`[0-9.-]+`, p. ej. un teléfono `3001234567`/`300-123-4567`, una fecha
+                            // `15-08-2025` o un radicado más largo) porque `enmascarar_numeros_largos`
+                            // la cubrirá completa; si el patrón contiene `/` o espacios, se reemplaza
+                            // directamente para no dejar colas.
+                            let es_num_continuo = bytes[i..i + l]
+                                .iter()
+                                .all(|b| b.is_ascii_digit() || *b == b'-' || *b == b'.');
+                            let prev_continuacion = bytes[i].is_ascii_digit()
+                                && ((i > 0 && bytes[i - 1].is_ascii_digit())
+                                    || (i > 1
+                                        && matches!(bytes[i - 1], b'-' | b'.')
+                                        && bytes[i - 2].is_ascii_digit()));
+                            let next_continuacion = bytes[i + l - 1].is_ascii_digit()
+                                && ((i + l < len && bytes[i + l].is_ascii_digit())
+                                    || (i + l + 1 < len
+                                        && matches!(bytes[i + l], b'-' | b'.')
+                                        && bytes[i + l + 1].is_ascii_digit()));
+                            if !(es_num_continuo && (prev_continuacion || next_continuacion)) {
+                                match_len = l;
+                                break;
+                            }
+                        }
+                    }
+                    if match_len > 0 {
+                        let buf = out.get_or_insert_with(|| String::with_capacity(len));
+                        buf.push_str(&texto[ultimo..i]);
+                        buf.push_str("[RADICADO]");
+                        i += match_len;
+                        ultimo = i;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        match out {
+            Some(mut buf) => {
+                buf.push_str(&texto[ultimo..]);
+                Cow::Owned(buf)
+            }
+            None => Cow::Borrowed(texto),
+        }
+    }
+}
+
+#[inline]
+fn es_sep_solo_espacios(sep: &str) -> bool {
+    !sep.is_empty() && sep.chars().all(char::is_whitespace)
+}
+
+#[inline]
+fn es_sep_post_honorifico(sep: &str) -> bool {
+    if let Some(resto) = sep.strip_prefix('.') {
+        es_sep_solo_espacios(resto)
+    } else {
+        es_sep_solo_espacios(sep)
+    }
+}
+
+#[inline]
+fn es_sep_inicial_con_punto(sep: &str, tok_prev_fold: &str) -> bool {
+    sep.strip_prefix('.').is_some_and(|resto| {
+        (resto.is_empty() || resto.chars().all(char::is_whitespace))
+            && tok_prev_fold.chars().count() <= 2
+            && !PALABRAS_VACIAS_NOMBRE.contains(&tok_prev_fold)
+    })
+}
+
+#[inline]
+fn es_sep_escudo_defensor(sep: &str, tok_prev_fold: &str) -> bool {
+    es_sep_solo_espacios(sep)
+        || matches!(sep, "-" | "–" | "—" | "'" | "’")
+        || es_sep_inicial_con_punto(sep, tok_prev_fold)
+}
+
+fn detectar_prefijo_honorifico(
+    texto: &str,
+    tokens: &[TokenSpan],
+    fold_buf: &str,
+    consumido: Option<&[bool]>,
+    i: usize,
+) -> Option<usize> {
+    let n = tokens.len();
+    let esta_consumido = |idx: usize| consumido.is_some_and(|c| c[idx]);
+    if i + 1 >= n || esta_consumido(i) {
+        return None;
+    }
+    let t0 = &fold_buf[tokens[i].fold_start..tokens[i].fold_end];
+
+    // Forma de 2 tokens: `defensor(a)? \s+ public[oa] \.? \s+`
+    if matches!(t0, "defensor" | "defensora") && i + 2 < n && !esta_consumido(i + 1) {
+        let sep01 = &texto[tokens[i].orig_end..tokens[i + 1].orig_start];
+        let t1 = &fold_buf[tokens[i + 1].fold_start..tokens[i + 1].fold_end];
+        if es_sep_solo_espacios(sep01) && matches!(t1, "publico" | "publica") {
+            let sep12 = &texto[tokens[i + 1].orig_end..tokens[i + 2].orig_start];
+            if es_sep_post_honorifico(sep12) {
+                return Some(i + 2);
+            }
+        }
+    }
+
+    // Forma de 1 token: `(dr|dra|doctor|doctora|abg|abogado|abogada|defensor|defensora|lic|licenciado|licenciada) \.? \s+`
+    if matches!(
+        t0,
+        "dr" | "dra"
+            | "doctor"
+            | "doctora"
+            | "abg"
+            | "abogado"
+            | "abogada"
+            | "defensor"
+            | "defensora"
+            | "lic"
+            | "licenciado"
+            | "licenciada"
+    ) {
+        let sep01 = &texto[tokens[i].orig_end..tokens[i + 1].orig_start];
+        if es_sep_post_honorifico(sep01) {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+#[derive(Default)]
+struct EscudosDefensores {
+    vocab: HashMap<String, u32>,
+    sin_honorifico: TrieFrases,
+    con_honorifico: TrieFrases,
+}
+
+impl EscudosDefensores {
+    fn esta_vacio(&self) -> bool {
+        self.sin_honorifico.esta_vacio() && self.con_honorifico.esta_vacio()
+    }
+
+    fn internar(&mut self, tok: &str) -> u32 {
+        if let Some(&id) = self.vocab.get(tok) {
+            return id;
+        }
+        let id = self.vocab.len() as u32;
+        self.vocab.insert(tok.to_string(), id);
+        id
+    }
+
+    fn insertar_con_hon(&mut self, tokens: &[&str]) {
+        let ids: Vec<u32> = tokens.iter().map(|t| self.internar(t)).collect();
+        self.con_honorifico.insertar(&ids, false);
+    }
+
+    fn insertar_sin_hon(&mut self, tokens: &[&str]) {
+        let ids: Vec<u32> = tokens.iter().map(|t| self.internar(t)).collect();
+        self.sin_honorifico.insertar(&ids, false);
+    }
+
+    fn agregar_claves_y_nombres(&mut self, claves_y_nombres: &[String]) {
+        let mut claves_vistas: HashSet<String> = HashSet::new();
         for raw in claves_y_nombres {
             let dk = normalizar_clave_defensor(raw);
-            if dk.is_empty() {
+            if dk.is_empty() || !claves_vistas.insert(dk.clone()) {
                 continue;
             }
             let tokens: Vec<&str> = dk.split_whitespace().collect();
@@ -3596,102 +3862,652 @@ impl Anonimizador {
                 continue;
             }
             if tokens.len() >= 2 && tokens.iter().any(|t| es_token_anonimizacion_valido(t)) {
-                let pat_nombre = tokens
-                    .iter()
-                    .map(|t| patron_sin_tildes(t))
-                    .collect::<Vec<_>>()
-                    .join(r"\s+");
-                let pat = format!(r"(?i)\b(?:{})?{}\b", PREFIJO_HON, pat_nombre);
-                if patrones_vistos.insert(pat.clone()) {
-                    if let Ok(re) = Regex::new(&pat) {
-                        self.escudos_defensores.push(re);
-                    }
-                }
+                self.insertar_sin_hon(&tokens);
+                self.insertar_con_hon(&tokens);
                 if tokens.len() >= 3 {
                     for win_len in (2..tokens.len()).rev() {
                         for win in tokens.windows(win_len) {
-                            if !win.iter().any(|t| es_token_anonimizacion_valido(t)) {
-                                continue;
-                            }
-                            let pat_sub = win
-                                .iter()
-                                .map(|t| patron_sin_tildes(t))
-                                .collect::<Vec<_>>()
-                                .join(r"\s+");
-                            let pat_h = format!(r"(?i)\b{}{}\b", PREFIJO_HON, pat_sub);
-                            if patrones_vistos.insert(pat_h.clone()) {
-                                if let Ok(re) = Regex::new(&pat_h) {
-                                    self.escudos_defensores.push(re);
-                                }
+                            if win.iter().any(|t| es_token_anonimizacion_valido(t)) {
+                                self.insertar_con_hon(win);
                             }
                         }
                     }
                 }
                 for tok in &tokens {
-                    if tok.chars().count() >= 3 && es_token_anonimizacion_valido(tok) {
-                        let pat_h = format!(r"(?i)\b{}{}\b", PREFIJO_HON, patron_sin_tildes(tok));
-                        if patrones_vistos.insert(pat_h.clone()) {
-                            if let Ok(re) = Regex::new(&pat_h) {
-                                self.escudos_defensores.push(re);
+                    if es_token_anonimizacion_valido(tok) {
+                        self.insertar_con_hon(&[*tok]);
+                    }
+                }
+            } else if es_token_anonimizacion_valido(tokens[0]) {
+                self.insertar_con_hon(&[tokens[0]]);
+            }
+        }
+    }
+
+    fn buscar_largo_en_trie(
+        &self,
+        trie: &TrieFrases,
+        texto: &str,
+        tokens: &[TokenSpan],
+        fold_buf: &str,
+        consumido: Option<&[bool]>,
+        inicio: usize,
+    ) -> Option<usize> {
+        let esta_consumido = |idx: usize| consumido.is_some_and(|c| c[idx]);
+        if inicio >= tokens.len() || esta_consumido(inicio) {
+            return None;
+        }
+        let mut nodo = 0u32;
+        let mut mejor_fin: Option<usize> = None;
+        for k in inicio..tokens.len() {
+            if esta_consumido(k) {
+                break;
+            }
+            if k > inicio {
+                let sep = &texto[tokens[k - 1].orig_end..tokens[k].orig_start];
+                let prev_fold = &fold_buf[tokens[k - 1].fold_start..tokens[k - 1].fold_end];
+                if !es_sep_escudo_defensor(sep, prev_fold) {
+                    break;
+                }
+            }
+            let tok_fold = &fold_buf[tokens[k].fold_start..tokens[k].fold_end];
+            let Some(&wid) = self.vocab.get(tok_fold) else {
+                break;
+            };
+            let Some(sig) = trie.siguiente(nodo, wid) else {
+                break;
+            };
+            nodo = sig;
+            if (trie.flags_nodo(nodo) & FLAG_TRIE_FINAL) != 0 {
+                mejor_fin = Some(k);
+            }
+        }
+        mejor_fin
+    }
+
+    fn detectar_rangos(
+        &self,
+        texto: &str,
+        tokens: &[TokenSpan],
+        fold_buf: &str,
+    ) -> Vec<(usize, usize)> {
+        let mut rangos = Vec::new();
+        if self.esta_vacio() {
+            return rangos;
+        }
+        for i in 0..tokens.len() {
+            if let Some(inicio_nombre) =
+                detectar_prefijo_honorifico(texto, tokens, fold_buf, None, i)
+            {
+                if let Some(fin) = self.buscar_largo_en_trie(
+                    &self.con_honorifico,
+                    texto,
+                    tokens,
+                    fold_buf,
+                    None,
+                    inicio_nombre,
+                ) {
+                    rangos.push((i, fin));
+                }
+            }
+            if let Some(fin) = self.buscar_largo_en_trie(
+                &self.sin_honorifico,
+                texto,
+                tokens,
+                fold_buf,
+                None,
+                i,
+            ) {
+                rangos.push((i, fin));
+            }
+        }
+        rangos
+    }
+
+    fn marcar_protegidos(
+        &self,
+        texto: &str,
+        tokens: &[TokenSpan],
+        fold_buf: &str,
+        consumido: &[bool],
+        protegido: &mut [bool],
+    ) {
+        if self.esta_vacio() {
+            return;
+        }
+        let n = tokens.len();
+        for i in 0..n {
+            if consumido[i] {
+                continue;
+            }
+            if let Some(inicio_nombre) =
+                detectar_prefijo_honorifico(texto, tokens, fold_buf, Some(consumido), i)
+            {
+                if let Some(fin) = self.buscar_largo_en_trie(
+                    &self.con_honorifico,
+                    texto,
+                    tokens,
+                    fold_buf,
+                    Some(consumido),
+                    inicio_nombre,
+                ) {
+                    for p in &mut protegido[i..=fin] {
+                        *p = true;
+                    }
+                }
+            }
+            if let Some(fin) = self.buscar_largo_en_trie(
+                &self.sin_honorifico,
+                texto,
+                tokens,
+                fold_buf,
+                Some(consumido),
+                i,
+            ) {
+                for p in &mut protegido[i..=fin] {
+                    *p = true;
+                }
+            }
+        }
+    }
+}
+
+enum SepProcesado {
+    Invalido,
+    Espacio,
+    Puntuacion,
+    ConComa,
+}
+
+fn clasificar_sep_nombre_procesado(sep: &str, tok_prev_fold: &str) -> SepProcesado {
+    if sep.is_empty() {
+        return SepProcesado::Invalido;
+    }
+    if sep.chars().all(char::is_whitespace) {
+        return SepProcesado::Espacio;
+    }
+    if matches!(sep, "-" | "–" | "—" | "'" | "’") {
+        return SepProcesado::Puntuacion;
+    }
+    if es_sep_inicial_con_punto(sep, tok_prev_fold) {
+        return SepProcesado::Puntuacion;
+    }
+    if let Some(resto) = sep.strip_prefix(',') {
+        if resto.is_empty() || resto.chars().all(char::is_whitespace) {
+            return SepProcesado::ConComa;
+        }
+    }
+    SepProcesado::Invalido
+}
+
+#[inline]
+fn es_etiqueta_radicado_fold(tok_fold: &str) -> bool {
+    matches!(
+        tok_fold,
+        "rad" | "radicado" | "nro" | "num" | "proc" | "procesado"
+    )
+}
+
+fn tiene_coma_entre_tokens(texto: &str, spans: &[TokenSpan]) -> bool {
+    spans
+        .windows(2)
+        .any(|w| texto[w[0].orig_end..w[1].orig_start].contains(','))
+}
+
+fn extraer_frases_procesado(
+    texto: &str,
+    filtrar_etiquetas: bool,
+) -> (Vec<String>, Vec<Vec<String>>, bool) {
+    let (spans, fold) = tokenizar_con_spans(texto);
+    let spans_filtrados: Vec<TokenSpan> = if filtrar_etiquetas {
+        spans
+            .into_iter()
+            .filter(|sp| !es_etiqueta_radicado_fold(&fold[sp.fold_start..sp.fold_end]))
+            .collect()
+    } else {
+        spans
+    };
+    let tokens_fold: Vec<String> = spans_filtrados
+        .iter()
+        .map(|sp| fold[sp.fold_start..sp.fold_end].to_string())
+        .collect();
+    let permite_coma = tiene_coma_entre_tokens(texto, &spans_filtrados);
+
+    let mut subfrases: Vec<Vec<String>> = Vec::new();
+    for bloque in texto.split_whitespace() {
+        let (sub_spans, sub_fold) = tokenizar_con_spans(bloque);
+        let sub: Vec<String> = sub_spans
+            .iter()
+            .map(|sp| sub_fold[sp.fold_start..sp.fold_end].to_string())
+            .filter(|t| !filtrar_etiquetas || !es_etiqueta_radicado_fold(t))
+            .collect();
+        if sub.len() >= 2 {
+            subfrases.push(sub);
+        }
+    }
+
+    (tokens_fold, subfrases, permite_coma)
+}
+
+/// Reemplaza únicamente el nombre del procesado, números de radicado, cédulas y teléfonos
+/// por marcadores (`[PROCESADO]`, `[RADICADO]`, `[TELEFONO]`, `[NUMERO]`), preservando los
+/// nombres reales de defensores públicos incluso si comparten un apellido con algún procesado.
+pub(crate) struct Anonimizador {
+    escudos_defensores: EscudosDefensores,
+    radicados: IndiceRadicados,
+    vocab: HashMap<String, u32>,
+    frases_procesado: TrieFrases,
+    subfrases_procesado: TrieFrases,
+    es_palabra_procesado: Vec<bool>,
+    tiene_palabras_procesado: bool,
+}
+
+impl Anonimizador {
+    fn internar(&mut self, tok_fold: &str) -> u32 {
+        if let Some(&id) = self.vocab.get(tok_fold) {
+            return id;
+        }
+        let id = self.vocab.len() as u32;
+        self.vocab.insert(tok_fold.to_string(), id);
+        self.es_palabra_procesado.push(false);
+        id
+    }
+
+    fn registrar_frase_y_palabras(
+        &mut self,
+        tokens_fold: &[String],
+        subfrases: &[Vec<String>],
+        permite_coma: bool,
+    ) {
+        if !tokens_fold.iter().any(|t| es_token_anonimizacion_valido(t)) {
+            return;
+        }
+        if tokens_fold.len() >= 2 {
+            let ids: Vec<u32> = tokens_fold.iter().map(|t| self.internar(t)).collect();
+            self.frases_procesado.insertar(&ids, permite_coma);
+        }
+        for sub in subfrases {
+            if sub.len() >= 2 && sub.iter().any(|t| es_token_anonimizacion_valido(t)) {
+                let ids: Vec<u32> = sub.iter().map(|t| self.internar(t)).collect();
+                self.subfrases_procesado
+                    .insertar_con_flags(&ids, FLAG_TRIE_FINAL_PUNT);
+            }
+        }
+        for tok in tokens_fold {
+            if !es_token_anonimizacion_valido(tok) {
+                continue;
+            }
+            let id = self.internar(tok);
+            self.es_palabra_procesado[id as usize] = true;
+            self.tiene_palabras_procesado = true;
+        }
+    }
+
+    fn desde_radicados(radicados: &[&str]) -> Self {
+        let mut anon = Self {
+            escudos_defensores: EscudosDefensores::default(),
+            radicados: IndiceRadicados::default(),
+            vocab: HashMap::new(),
+            frases_procesado: TrieFrases::new(),
+            subfrases_procesado: TrieFrases::new(),
+            es_palabra_procesado: Vec::new(),
+            tiene_palabras_procesado: false,
+        };
+
+        let mut radicados_vistos: HashSet<&str> = HashSet::with_capacity(radicados.len());
+        let mut partes_vistas: HashSet<String> = HashSet::new();
+
+        for &radicado in radicados {
+            let rad_trim = radicado.trim();
+            if rad_trim.is_empty() || !radicados_vistos.insert(rad_trim) {
+                continue;
+            }
+            let partes: Vec<String> = match re_separador_radicado() {
+                Some(re) => re.split(rad_trim).map(colapsar_espacios).collect(),
+                None => vec![colapsar_espacios(rad_trim)],
+            };
+
+            for parte in partes.into_iter().filter(|p| !p.is_empty()) {
+                if !partes_vistas.insert(parte.clone()) {
+                    continue;
+                }
+                let digitos = parte.bytes().filter(u8::is_ascii_digit).count();
+                if digitos >= 5 {
+                    let chars: Vec<char> = parte.chars().collect();
+                    let len_c = chars.len();
+                    let mut num_runs: Vec<String> = Vec::new();
+                    let mut texto_no_num = String::with_capacity(parte.len());
+                    let mut idx = 0usize;
+                    while idx < len_c {
+                        if chars[idx].is_ascii_digit() {
+                            let start = idx;
+                            let mut total_dig = 0usize;
+                            let mut end_valido = idx;
+                            let mut j = idx;
+                            while j < len_c {
+                                let c = chars[j];
+                                if c.is_ascii_digit() {
+                                    total_dig += 1;
+                                    j += 1;
+                                    end_valido = j;
+                                } else if matches!(c, '-' | '.' | '/')
+                                    && j + 1 < len_c
+                                    && chars[j + 1].is_ascii_digit()
+                                {
+                                    j += 1;
+                                } else if c == ' '
+                                    && total_dig >= 2
+                                    && j + 1 < len_c
+                                    && chars[j + 1].is_ascii_digit()
+                                {
+                                    // Mantener unido un radicado espaciado (`20001 60 01075 2025 00777`)
+                                    // para no aislar el prefijo DANE (`20001`) como patrón suelto.
+                                    j += 1;
+                                } else {
+                                    break;
+                                }
                             }
+                            if total_dig >= 5 {
+                                let run: String = chars[start..end_valido].iter().collect();
+                                num_runs.push(run);
+                            }
+                            texto_no_num.push(' ');
+                            idx = end_valido;
+                        } else {
+                            texto_no_num.push(chars[idx]);
+                            idx += 1;
+                        }
+                    }
+
+                    let tiene_alfa = texto_no_num.chars().any(char::is_alphabetic);
+                    if !tiene_alfa {
+                        anon.radicados.insertar(&parte);
+                        if num_runs.len() == 1
+                            && num_runs[0] != parte
+                            && num_runs[0].bytes().filter(u8::is_ascii_digit).count() == digitos
+                        {
+                            anon.radicados.insertar(&num_runs[0]);
+                        }
+                    } else {
+                        for nr in &num_runs {
+                            anon.radicados.insertar(nr);
+                        }
+                        let (tokens_alfa, subfrases, permite_coma) =
+                            extraer_frases_procesado(&texto_no_num, true);
+                        anon.registrar_frase_y_palabras(&tokens_alfa, &subfrases, permite_coma);
+                    }
+                    continue;
+                }
+
+                let (tokens_fold, subfrases, permite_coma) =
+                    extraer_frases_procesado(&parte, false);
+                anon.registrar_frase_y_palabras(&tokens_fold, &subfrases, permite_coma);
+            }
+        }
+
+        anon
+    }
+
+    fn con_escudos_defensores(mut self, claves_y_nombres: &[String]) -> Self {
+        self.escudos_defensores
+            .agregar_claves_y_nombres(claves_y_nombres);
+        self
+    }
+
+    fn aplicar_nombres_y_escudos<'a>(
+        &self,
+        texto: &'a str,
+        escudos: &EscudosDefensores,
+    ) -> Cow<'a, str> {
+        let (tokens, fold_buf) = tokenizar_con_spans(texto);
+        let n = tokens.len();
+        if n == 0 {
+            return Cow::Borrowed(texto);
+        }
+
+        const SIN_ID: u32 = u32::MAX;
+        let mut word_ids: Vec<u32> = Vec::with_capacity(n);
+        let mut algun_conocido = false;
+        for tok in &tokens {
+            let slice = &fold_buf[tok.fold_start..tok.fold_end];
+            if let Some(&id) = self.vocab.get(slice) {
+                word_ids.push(id);
+                algun_conocido = true;
+            } else {
+                word_ids.push(SIN_ID);
+            }
+        }
+
+        if !algun_conocido {
+            return Cow::Borrowed(texto);
+        }
+
+        // 0) Detectar rangos de defensores (escudos) para impedir que una frase con coma
+        //    (`López, Fernando`) o una frase parcial estrictamente interna (`Juan Carlos` dentro
+        //    de `Dr. Juan Carlos López`) rompa el escudo del defensor.
+        let rangos_escudos = if !escudos.esta_vacio() {
+            escudos.detectar_rangos(texto, &tokens, &fold_buf)
+        } else {
+            Vec::new()
+        };
+
+        let mut reemplazo_fin: Vec<Option<usize>> = vec![None; n];
+        let mut consumido: Vec<bool> = vec![false; n];
+        let mut hubo_reemplazo = false;
+
+        // 1) Frases completas de procesados (coincidencia más larga de izquierda a derecha)
+        if !self.frases_procesado.esta_vacio() {
+            let mut i = 0usize;
+            while i < n {
+                let wid0 = word_ids[i];
+                if wid0 == SIN_ID {
+                    i += 1;
+                    continue;
+                }
+                let Some(mut nodo) = self.frases_procesado.siguiente(0, wid0) else {
+                    i += 1;
+                    continue;
+                };
+                let mut uso_coma = false;
+                let mut mejor_fin: Option<usize> = None;
+                for k in (i + 1)..n {
+                    let sep = &texto[tokens[k - 1].orig_end..tokens[k].orig_start];
+                    let prev_fold = &fold_buf[tokens[k - 1].fold_start..tokens[k - 1].fold_end];
+                    match clasificar_sep_nombre_procesado(sep, prev_fold) {
+                        SepProcesado::Invalido => break,
+                        SepProcesado::Espacio | SepProcesado::Puntuacion => {}
+                        SepProcesado::ConComa => {
+                            uso_coma = true;
+                        }
+                    }
+                    let wid = word_ids[k];
+                    if wid == SIN_ID {
+                        break;
+                    }
+                    let Some(sig) = self.frases_procesado.siguiente(nodo, wid) else {
+                        break;
+                    };
+                    nodo = sig;
+                    let fl = self.frases_procesado.flags_nodo(nodo);
+                    let acepta_normal = (fl & FLAG_TRIE_FINAL) != 0
+                        && (!uso_coma || (fl & FLAG_TRIE_PERMITE_COMA) != 0);
+                    if acepta_normal {
+                        let bloqueado_por_escudo = rangos_escudos.iter().any(|&(ds, de)| {
+                            (uso_coma && ((ds < i && i <= de) || (ds <= k && k < de)))
+                                || (ds < i && k < de)
+                        });
+                        if !bloqueado_por_escudo {
+                            mejor_fin = Some(k);
                         }
                     }
                 }
-            } else if tokens[0].chars().count() >= 3 && es_token_anonimizacion_valido(tokens[0]) {
-                let pat = format!(r"(?i)\b{}{}\b", PREFIJO_HON, patron_sin_tildes(tokens[0]));
-                if patrones_vistos.insert(pat.clone()) {
-                    if let Ok(re) = Regex::new(&pat) {
-                        self.escudos_defensores.push(re);
+                if let Some(fin) = mejor_fin {
+                    reemplazo_fin[i] = Some(fin);
+                    for c in &mut consumido[i..=fin] {
+                        *c = true;
+                    }
+                    hubo_reemplazo = true;
+                    i = fin + 1;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        // 2) Escudos de defensores sobre tokens no consumidos
+        let mut protegido: Vec<bool> = vec![false; n];
+        if (self.tiene_palabras_procesado || !self.subfrases_procesado.esta_vacio())
+            && !rangos_escudos.is_empty()
+        {
+            if hubo_reemplazo {
+                escudos.marcar_protegidos(texto, &tokens, &fold_buf, &consumido, &mut protegido);
+            } else {
+                for &(ds, de) in &rangos_escudos {
+                    for p in &mut protegido[ds..=de] {
+                        *p = true;
                     }
                 }
             }
         }
-        self
+
+        // 3) Sub-frases compuestas con puntuación (`Juan-Carlos`, `O'Connor`) y palabras individuales
+        //    fuera de frases consumidas y escudos de defensores
+        if !self.subfrases_procesado.esta_vacio() {
+            let mut i = 0usize;
+            while i < n {
+                if consumido[i] || protegido[i] {
+                    i += 1;
+                    continue;
+                }
+                let wid0 = word_ids[i];
+                if wid0 == SIN_ID {
+                    i += 1;
+                    continue;
+                }
+                let Some(mut nodo) = self.subfrases_procesado.siguiente(0, wid0) else {
+                    i += 1;
+                    continue;
+                };
+                let mut uso_punt = false;
+                let mut mejor_fin: Option<usize> = None;
+                for k in (i + 1)..n {
+                    if consumido[k] || protegido[k] {
+                        break;
+                    }
+                    let sep = &texto[tokens[k - 1].orig_end..tokens[k].orig_start];
+                    let prev_fold = &fold_buf[tokens[k - 1].fold_start..tokens[k - 1].fold_end];
+                    match clasificar_sep_nombre_procesado(sep, prev_fold) {
+                        SepProcesado::Puntuacion => {
+                            uso_punt = true;
+                        }
+                        SepProcesado::Espacio => {}
+                        SepProcesado::ConComa | SepProcesado::Invalido => break,
+                    }
+                    let wid = word_ids[k];
+                    if wid == SIN_ID {
+                        break;
+                    }
+                    let Some(sig) = self.subfrases_procesado.siguiente(nodo, wid) else {
+                        break;
+                    };
+                    nodo = sig;
+                    if (self.subfrases_procesado.flags_nodo(nodo) & FLAG_TRIE_FINAL_PUNT) != 0
+                        && uso_punt
+                    {
+                        mejor_fin = Some(k);
+                    }
+                }
+                if let Some(fin) = mejor_fin {
+                    reemplazo_fin[i] = Some(fin);
+                    for c in &mut consumido[i..=fin] {
+                        *c = true;
+                    }
+                    hubo_reemplazo = true;
+                    i = fin + 1;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        if self.tiene_palabras_procesado {
+            for i in 0..n {
+                if consumido[i] || protegido[i] {
+                    continue;
+                }
+                let wid = word_ids[i];
+                if wid != SIN_ID && self.es_palabra_procesado[wid as usize] {
+                    reemplazo_fin[i] = Some(i);
+                    hubo_reemplazo = true;
+                }
+            }
+        }
+
+        if !hubo_reemplazo {
+            return Cow::Borrowed(texto);
+        }
+
+        let mut out = String::with_capacity(texto.len());
+        let mut ultimo_byte = 0usize;
+        let mut i = 0usize;
+        while i < n {
+            if let Some(fin) = reemplazo_fin[i] {
+                out.push_str(&texto[ultimo_byte..tokens[i].orig_start]);
+                out.push_str("[PROCESADO]");
+                ultimo_byte = tokens[fin].orig_end;
+                i = fin + 1;
+            } else {
+                i += 1;
+            }
+        }
+        out.push_str(&texto[ultimo_byte..]);
+        Cow::Owned(out)
     }
 
-    fn aplicar_con_escudos(&self, texto: &str, escudos: &[Regex]) -> String {
-        let mut out = texto.to_string();
-        for (re, marca) in &self.completos {
-            out = re.replace_all(&out, *marca).into_owned();
+    fn aplicar_sin_numeros_largos_con_escudos<'a>(
+        &self,
+        texto: &'a str,
+        escudos: &EscudosDefensores,
+    ) -> Cow<'a, str> {
+        if texto.is_empty() {
+            return Cow::Borrowed(texto);
         }
-        let mut restaurar: Vec<(String, String)> = Vec::new();
-        for re in escudos {
-            out = re
-                .replace_all(&out, |caps: &regex::Captures| {
-                    let marker = format!("\u{E000}DEF_{}\u{E001}", restaurar.len());
-                    restaurar.push((marker.clone(), caps[0].to_string()));
-                    marker
-                })
-                .into_owned();
+        let tras_rad = self.radicados.reemplazar(texto);
+        if self.frases_procesado.esta_vacio()
+            && self.subfrases_procesado.esta_vacio()
+            && !self.tiene_palabras_procesado
+        {
+            return tras_rad;
         }
-        for (re, marca) in &self.palabras {
-            out = re.replace_all(&out, *marca).into_owned();
+        match self.aplicar_nombres_y_escudos(&tras_rad, escudos) {
+            Cow::Borrowed(_) => tras_rad,
+            Cow::Owned(s) => Cow::Owned(s),
         }
-        for (marker, orig) in restaurar {
-            out = out.replace(&marker, &orig);
+    }
+
+    fn aplicar_con_escudos(&self, texto: &str, escudos: &EscudosDefensores) -> String {
+        if texto.is_empty() {
+            return String::new();
         }
-        enmascarar_numeros_largos(&out)
+        let tras_nombres = self.aplicar_sin_numeros_largos_con_escudos(texto, escudos);
+        enmascarar_numeros_largos(&tras_nombres).into_owned()
     }
 
     fn aplicar(&self, texto: &str) -> String {
         self.aplicar_con_escudos(texto, &self.escudos_defensores)
     }
 
-    fn aplicar_audiencia_con_escudos(&self, a: &AudienciaInput, escudos: &[Regex]) -> AudienciaInput {
+    fn aplicar_audiencia(&self, a: &AudienciaInput) -> AudienciaInput {
         AudienciaInput {
-            radicado: self.aplicar_con_escudos(&a.radicado, escudos),
-            tipo: self.aplicar_con_escudos(&a.tipo, escudos),
+            radicado: self.aplicar(&a.radicado),
+            tipo: self.aplicar(&a.tipo),
             fecha: a.fecha.clone(),
             hora: a.hora.clone(),
-            juzgado: self.aplicar_con_escudos(&a.juzgado, escudos),
+            juzgado: self.aplicar(&a.juzgado),
             realizada: a.realizada.clone(),
             motivo: a.motivo.clone(),
-            observaciones: self.aplicar_con_escudos(&a.observaciones, escudos),
+            observaciones: self.aplicar(&a.observaciones),
         }
-    }
-
-    fn aplicar_audiencia(&self, a: &AudienciaInput) -> AudienciaInput {
-        self.aplicar_audiencia_con_escudos(a, &self.escudos_defensores)
     }
 }
 
@@ -3702,21 +4518,29 @@ pub(crate) fn anonimizar_correccion_con_global(
 ) -> CorreccionIa {
     let anon_local =
         Anonimizador::desde_radicados(&[&c.prediccion.radicado, &c.final_usuario.radicado]);
-    let escudos: &[Regex] = anon_global
-        .map(|g| g.escudos_defensores.as_slice())
-        .unwrap_or(&[]);
+    let escudos_vacios = EscudosDefensores::default();
+    let escudos = anon_global
+        .map(|g| &g.escudos_defensores)
+        .unwrap_or(&escudos_vacios);
     let aplicar_ambos = |s: &str| -> String {
-        let paso1 = anon_local.aplicar_con_escudos(s, escudos);
         match anon_global {
-            Some(g) => g.aplicar(&paso1),
-            None => paso1,
+            Some(g) => {
+                let paso1 = anon_local.aplicar_sin_numeros_largos_con_escudos(s, escudos);
+                g.aplicar(&paso1)
+            }
+            None => anon_local.aplicar_con_escudos(s, escudos),
         }
     };
     let aplicar_aud = |a: &AudienciaInput| -> AudienciaInput {
-        let paso1 = anon_local.aplicar_audiencia_con_escudos(a, escudos);
-        match anon_global {
-            Some(g) => g.aplicar_audiencia(&paso1),
-            None => paso1,
+        AudienciaInput {
+            radicado: aplicar_ambos(&a.radicado),
+            tipo: aplicar_ambos(&a.tipo),
+            fecha: a.fecha.clone(),
+            hora: a.hora.clone(),
+            juzgado: aplicar_ambos(&a.juzgado),
+            realizada: a.realizada.clone(),
+            motivo: a.motivo.clone(),
+            observaciones: aplicar_ambos(&a.observaciones),
         }
     };
 
@@ -6176,20 +7000,29 @@ fn construir_preferencias_resumen(pref: &PreferenciasEstilo) -> PreferenciasEsti
     }
 }
 
+fn claves_catalogo_oficiales() -> &'static HashSet<String> {
+    static OFICIALES: OnceLock<HashSet<String>> = OnceLock::new();
+    OFICIALES.get_or_init(|| {
+        let mut set = HashSet::new();
+        for t in TIPOS_AUDIENCIA {
+            let norm = normalizar_clave_catalogo(t);
+            if !norm.is_empty() {
+                set.insert(norm);
+            }
+        }
+        for j in crate::estadistica_ia::juzgados_base() {
+            let norm = normalizar_clave_catalogo(j);
+            if !norm.is_empty() {
+                set.insert(norm);
+            }
+        }
+        set
+    })
+}
+
 fn es_juzgado_o_tipo_oficial(valor: &str) -> bool {
     let norm = normalizar_clave_catalogo(valor);
-    if norm.is_empty() {
-        return false;
-    }
-    if TIPOS_AUDIENCIA
-        .iter()
-        .any(|t| normalizar_clave_catalogo(t) == norm)
-    {
-        return true;
-    }
-    crate::estadistica_ia::juzgados_base()
-        .iter()
-        .any(|j| normalizar_clave_catalogo(j) == norm)
+    !norm.is_empty() && claves_catalogo_oficiales().contains(&norm)
 }
 
 fn anonimizar_valor_catalogo(valor: &str, anon: &Anonimizador) -> String {
@@ -6200,35 +7033,65 @@ fn anonimizar_valor_catalogo(valor: &str, anon: &Anonimizador) -> String {
     }
 }
 
+/// Caché local para evitar re-anonimizar los mismos nombres de juzgados/tipos repetidos
+/// a través del grafo de asociaciones, frecuencias, alias y reporte de uso durante una exportación.
+struct CacheCatalogoAnon<'a> {
+    anon: &'a Anonimizador,
+    cache: RefCell<HashMap<String, String>>,
+}
+
+impl<'a> CacheCatalogoAnon<'a> {
+    fn new(anon: &'a Anonimizador) -> Self {
+        Self {
+            anon,
+            cache: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn anonimizar(&self, valor: &str) -> String {
+        if let Some(cached) = self.cache.borrow().get(valor) {
+            return cached.clone();
+        }
+        let res = anonimizar_valor_catalogo(valor, self.anon);
+        self.cache.borrow_mut().insert(valor.to_string(), res.clone());
+        res
+    }
+}
+
 fn recoger_radicados_y_escudos(
     memoria: &MemoriaAprendizaje,
     radicados_excel: &[String],
     nombres_defensores_extra: &[String],
 ) -> (Vec<String>, Vec<String>) {
-    let mut radicados: Vec<String> = Vec::new();
+    fn agregar_rad<'a>(s: &'a str, vistos: &mut HashSet<&'a str>, out: &mut Vec<String>) {
+        let trim = s.trim();
+        if !trim.is_empty() && vistos.insert(trim) {
+            out.push(trim.to_string());
+        }
+    }
+    let mut radicados_vistos: HashSet<&str> = HashSet::with_capacity(
+        memoria.correcciones.len() * 2 + memoria.ejemplos_aciertos.len() + radicados_excel.len(),
+    );
+    let mut radicados: Vec<String> = Vec::with_capacity(radicados_excel.len());
     for c in &memoria.correcciones {
-        if !c.prediccion.radicado.trim().is_empty() {
-            radicados.push(c.prediccion.radicado.clone());
-        }
-        if !c.final_usuario.radicado.trim().is_empty() {
-            radicados.push(c.final_usuario.radicado.clone());
-        }
+        agregar_rad(&c.prediccion.radicado, &mut radicados_vistos, &mut radicados);
+        agregar_rad(&c.final_usuario.radicado, &mut radicados_vistos, &mut radicados);
     }
     for e in &memoria.ejemplos_aciertos {
-        if !e.salida_anonimizada.radicado.trim().is_empty() {
-            radicados.push(e.salida_anonimizada.radicado.clone());
-        }
+        agregar_rad(&e.salida_anonimizada.radicado, &mut radicados_vistos, &mut radicados);
     }
     for rad in radicados_excel {
-        if !rad.trim().is_empty() {
-            radicados.push(rad.clone());
-        }
+        agregar_rad(rad, &mut radicados_vistos, &mut radicados);
     }
 
+    let mut escudos_vistos: HashSet<String> = HashSet::new();
     let mut escudos: Vec<String> = Vec::new();
     let mut push_escudo = |s: &str| {
         let limpio = colapsar_espacios(s);
-        if !limpio.is_empty() && !es_alcance_general(&limpio) && !escudos.contains(&limpio) {
+        if !limpio.is_empty()
+            && !es_alcance_general(&limpio)
+            && escudos_vistos.insert(limpio.clone())
+        {
             escudos.push(limpio);
         }
     };
@@ -6470,13 +7333,13 @@ fn construir_resumen_patrones_generales(
     memoria: &MemoriaAprendizaje,
     priors: Option<&IndicePriorsExcel>,
     directorio: &[ResumenDefensorExport],
-    anon: &Anonimizador,
+    cache_cat: &CacheCatalogoAnon<'_>,
 ) -> ResumenPatronesGenerales {
     let mut top_juzgados: Vec<(String, u32)> = priors
         .map(|p| {
             p.juzgados_freq
                 .iter()
-                .map(|(nombre, &conteo)| (anonimizar_valor_catalogo(nombre, anon), conteo))
+                .map(|(nombre, &conteo)| (cache_cat.anonimizar(nombre), conteo))
                 .collect()
         })
         .unwrap_or_default();
@@ -6487,7 +7350,7 @@ fn construir_resumen_patrones_generales(
         .map(|p| {
             p.tipos_freq
                 .iter()
-                .map(|(nombre, &conteo)| (anonimizar_valor_catalogo(nombre, anon), conteo))
+                .map(|(nombre, &conteo)| (cache_cat.anonimizar(nombre), conteo))
                 .collect()
         })
         .unwrap_or_default();
@@ -6511,7 +7374,7 @@ fn construir_resumen_patrones_generales(
         })
         .count();
 
-    let errores_recurrentes_transversales = calcular_patrones_transversales(memoria, anon);
+    let errores_recurrentes_transversales = calcular_patrones_transversales(memoria, cache_cat.anon);
 
     ResumenPatronesGenerales {
         total_defensores_activos: directorio.len(),
@@ -6593,7 +7456,7 @@ fn anonimizar_registro_consolidacion(
 
 fn construir_metricas_diagnostico(
     memoria: &MemoriaAprendizaje,
-    anon: &Anonimizador,
+    cache_cat: &CacheCatalogoAnon<'_>,
 ) -> (
     Vec<CampoDiagnostico>,
     Vec<ModeloDiagnostico>,
@@ -6663,11 +7526,14 @@ fn construir_metricas_diagnostico(
             }
             let (entrada_norm, canonico) = if a.campo == "juzgado" || a.campo == "tipo" {
                 (
-                    anonimizar_valor_catalogo(&a.entrada_norm, anon),
-                    anonimizar_valor_catalogo(&a.canonico, anon),
+                    cache_cat.anonimizar(&a.entrada_norm),
+                    cache_cat.anonimizar(&a.canonico),
                 )
             } else {
-                (anon.aplicar(&a.entrada_norm), anon.aplicar(&a.canonico))
+                (
+                    cache_cat.anon.aplicar(&a.entrada_norm),
+                    cache_cat.anon.aplicar(&a.canonico),
+                )
             };
             Some(AliasDiagnostico {
                 campo: a.campo.clone(),
@@ -6695,9 +7561,10 @@ fn construir_diagnostico_desde_memoria(
     let (radicados_str, escudos) = recoger_radicados_y_escudos(memoria, &[], nombres_settings);
     let radicados_ref: Vec<&str> = radicados_str.iter().map(String::as_str).collect();
     let anon = Anonimizador::desde_radicados(&radicados_ref).con_escudos_defensores(&escudos);
+    let cache_cat = CacheCatalogoAnon::new(&anon);
 
     let (metricas_por_campo, metricas_por_modelo, alias_validados, drift_campos_activos) =
-        construir_metricas_diagnostico(memoria, &anon);
+        construir_metricas_diagnostico(memoria, &cache_cat);
 
     let mut reglas_por_estado: BTreeMap<String, usize> = BTreeMap::new();
     for r in &memoria.reglas {
@@ -6944,6 +7811,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
         let radicados_ref: Vec<&str> = todos_radicados.iter().map(String::as_str).collect();
         let anon_global =
             Anonimizador::desde_radicados(&radicados_ref).con_escudos_defensores(&escudos);
+        let cache_cat = CacheCatalogoAnon::new(&anon_global);
 
         let reglas_anonimizadas: Vec<ReglaAprendida> = memoria
             .reglas
@@ -6994,22 +7862,22 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
 
         let juzgados_anon: Vec<String> = juzgados_usuario
             .iter()
-            .map(|j| anonimizar_valor_catalogo(j, &anon_global))
+            .map(|j| cache_cat.anonimizar(j))
             .collect();
         let tipos_anon: Vec<String> = tipos_usuario
             .iter()
-            .map(|t| anonimizar_valor_catalogo(t, &anon_global))
+            .map(|t| cache_cat.anonimizar(t))
             .collect();
 
         let reporte_uso = construir_reporte_uso_catalogos(
             &uso,
             juzgados_usuario,
             tipos_usuario,
-            &|s| anonimizar_valor_catalogo(s, &anon_global),
+            &|s| cache_cat.anonimizar(s),
         );
 
         let (metricas_por_campo, metricas_por_modelo, alias_validados, _) =
-            construir_metricas_diagnostico(&memoria, &anon_global);
+            construir_metricas_diagnostico(&memoria, &cache_cat);
         let preferencias_estilo = construir_preferencias_resumen(&memoria.preferencias_estilo);
         let preferencias_por_defensor: BTreeMap<String, PreferenciasEstiloResumen> = memoria
             .preferencias_por_defensor
@@ -7028,7 +7896,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             &memoria,
             priors_ref,
             &defensores_directorio,
-            &anon_global,
+            &cache_cat,
         );
 
         let grafo_asociaciones: GrafoAsociaciones = priors_ref
@@ -7041,7 +7909,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
                     }
                     let dest = g.defensor_a_juzgados.entry(k_norm).or_default();
                     for (juz, &cnt) in m {
-                        let juz_limpio = anonimizar_valor_catalogo(juz, &anon_global);
+                        let juz_limpio = cache_cat.anonimizar(juz);
                         *dest.entry(juz_limpio).or_insert(0) += cnt;
                     }
                 }
@@ -7052,7 +7920,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
                     }
                     let dest = g.defensor_a_tipos.entry(k_norm).or_default();
                     for (tp, &cnt) in m {
-                        let tp_limpio = anonimizar_valor_catalogo(tp, &anon_global);
+                        let tp_limpio = cache_cat.anonimizar(tp);
                         *dest.entry(tp_limpio).or_insert(0) += cnt;
                     }
                 }
@@ -7065,7 +7933,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
                     for (sig, m) in siglas {
                         let dest_sig = dest_dk.entry(sig.clone()).or_default();
                         for (juz, &cnt) in m {
-                            let juz_limpio = anonimizar_valor_catalogo(juz, &anon_global);
+                            let juz_limpio = cache_cat.anonimizar(juz);
                             *dest_sig.entry(juz_limpio).or_insert(0) += cnt;
                         }
                     }
@@ -7073,15 +7941,15 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
                 for (pref, m) in &p.grafo.prefijo_radicado_a_juzgados {
                     let dest = g.prefijo_radicado_a_juzgados.entry(pref.clone()).or_default();
                     for (juz, &cnt) in m {
-                        let juz_limpio = anonimizar_valor_catalogo(juz, &anon_global);
+                        let juz_limpio = cache_cat.anonimizar(juz);
                         *dest.entry(juz_limpio).or_insert(0) += cnt;
                     }
                 }
                 for (tp, m) in &p.grafo.tipo_a_juzgados {
-                    let tp_limpio = anonimizar_valor_catalogo(tp, &anon_global);
+                    let tp_limpio = cache_cat.anonimizar(tp);
                     let dest = g.tipo_a_juzgados.entry(tp_limpio).or_default();
                     for (juz, &cnt) in m {
-                        let juz_limpio = anonimizar_valor_catalogo(juz, &anon_global);
+                        let juz_limpio = cache_cat.anonimizar(juz);
                         *dest.entry(juz_limpio).or_insert(0) += cnt;
                     }
                 }
@@ -10294,5 +11162,434 @@ mod tests {
         assert_eq!(mem_ren.correcciones[0].regla_id_asociada, "r-ana-dup");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_anonimizador_radicados_pegados_cortos_largos_solapados_y_telefonos() {
+        let anon = Anonimizador::desde_radicados(&[
+            "CARLOS MENDOZA - 12345",
+            "CARLOS MENDOZA - 123456789",
+            "ANA TORRES - 200016001075",
+            "PEDRO RUIZ - 200016001075202500111",
+            "LUIS GOMEZ - (200016009999)",
+            "SOFIA VARGAS - 2025-00123",
+            "DIEGO SILVA - 20001/00123",
+            "20001 60 01075 2025 00777",
+        ]);
+
+        // Radicados cortos/largos pegados a texto sin espacios
+        assert_eq!(anon.aplicar("rad12345"), "rad[RADICADO]");
+        assert_eq!(anon.aplicar("proc12345fin"), "proc[RADICADO]fin");
+        assert_eq!(anon.aplicar("rad200016001075"), "rad[RADICADO]");
+        assert_eq!(
+            anon.aplicar("CARLOS MENDOZA-200016001075"),
+            "[PROCESADO]-[RADICADO]"
+        );
+        assert_eq!(
+            anon.aplicar("CARLOS MENDOZA200016001075"),
+            "[PROCESADO][RADICADO]"
+        );
+        assert_eq!(
+            anon.aplicar("200016001075CARLOS MENDOZA"),
+            "[RADICADO][PROCESADO]"
+        );
+        assert_eq!(anon.aplicar("rad2025-00123"), "rad[RADICADO]");
+        assert_eq!(anon.aplicar("rad20001/00123"), "rad[RADICADO]");
+        assert_eq!(anon.aplicar("120001/00123"), "1[RADICADO]");
+
+        // Prefijos solapados: debe ganar la coincidencia más larga sin dejar colas numéricas
+        assert_eq!(anon.aplicar("caso 123456789"), "caso [RADICADO]");
+        assert_eq!(
+            anon.aplicar("rad 200016001075202500111"),
+            "rad [RADICADO]"
+        );
+
+        // Un radicado corto de 5 dígitos NO debe partir un teléfono ni un radicado no registrado más largo
+        assert_eq!(anon.aplicar("cel 3001234567"), "cel [TELEFONO]");
+        assert_eq!(anon.aplicar("cel 300 123 4567"), "cel [TELEFONO]");
+        assert_eq!(anon.aplicar("fijo 6012345678"), "fijo [TELEFONO]");
+        assert_eq!(anon.aplicar("fijo 601 234 5678"), "fijo [TELEFONO]");
+        assert_eq!(anon.aplicar("wa 573101234567"), "wa [TELEFONO]");
+        assert_eq!(anon.aplicar("cc 91234567"), "cc [NUMERO]");
+        assert_eq!(
+            anon.aplicar("otro 2000160010759999"),
+            "otro [RADICADO]"
+        );
+
+        // Radicado envuelto en paréntesis cubre tanto la forma con paréntesis como la limpia
+        assert_eq!(anon.aplicar("ver (200016009999) y 200016009999"), "ver [RADICADO] y [RADICADO]");
+
+        // Radicado espaciado se reemplaza completo sin convertir su prefijo DANE 20001 en patrón aislado
+        assert_eq!(
+            anon.aplicar("rad 20001 60 01075 2025 00777 en codigo 20001"),
+            "rad [RADICADO] en codigo 20001"
+        );
+
+        // Fechas, horas y textos vacíos se preservan intactos
+        assert_eq!(
+            anon.aplicar("Audiencia el 15-08-2025, 15/08/2025 y 15.08.2025 a las 08:30 y 14:45"),
+            "Audiencia el 15-08-2025, 15/08/2025 y 15.08.2025 a las 08:30 y 14:45"
+        );
+        assert_eq!(anon.aplicar(""), "");
+        assert_eq!(anon.aplicar("   "), "   ");
+
+        // Anonimizador vacío sigue enmascarando teléfonos y números >= 6 dígitos
+        let anon_vacio = Anonimizador::desde_radicados(&[]);
+        assert_eq!(
+            anon_vacio.aplicar("Tel 3109876543 cc 1065888999 fecha 15-08-2025"),
+            "Tel [TELEFONO] cc [NUMERO] fecha 15-08-2025"
+        );
+    }
+
+    #[test]
+    fn test_anonimizador_tildes_nfd_limites_palabra_y_puntuacion_nombres() {
+        let anon = Anonimizador::desde_radicados(&[
+            "JOSÉ PÉREZ PEÑA AGÜERO - 200016001075",
+            "JUAN-CARLOS MENDOZA - 200016001076",
+            "MARÍA O'CONNOR - 200016001077",
+            "J. PÉREZ - 200016001078",
+            "M.A. GÓMEZ - 200016001079",
+            "LOPEZ, FERNANDO - 200016001080",
+            "MARÍA DE LOS ÁNGELES ORTEGA - 200016001081",
+            "JOSE\u{0301} RAMI\u{0301}REZ-200016001082",
+        ]);
+
+        // Tildes NFC, sin tildes y Unicode NFD (combining marks) sin dejar acentos huérfanos
+        assert_eq!(
+            anon.aplicar("Audiencia de Jose Perez Pena Aguero"),
+            "Audiencia de [PROCESADO]"
+        );
+        let nfd = "Audiencia de Jose\u{0301} Pe\u{0301}rez Pen\u{0303}a Agu\u{0308}ero y Jose\u{0301} Rami\u{0301}rez";
+        assert_eq!(
+            anon.aplicar(nfd),
+            "Audiencia de [PROCESADO] y [PROCESADO]"
+        );
+
+        // Emoji y UTF-8 multibyte alrededor de nombres/radicados sin errores de frontera
+        assert_eq!(
+            anon.aplicar("🏛️ Audiencia «Pérez» (200016001075) — OK"),
+            "🏛️ Audiencia «[PROCESADO]» ([RADICADO]) — OK"
+        );
+
+        // Límites de palabra estrictos (\b): no recorta subcadenas de otras palabras
+        assert_eq!(
+            anon.aplicar("El perezoso aperez juanito perez_1 y Pérez/Gómez"),
+            "El perezoso aperez juanito perez_1 y [PROCESADO]/[PROCESADO]"
+        );
+
+        // Frontera de oración y coma no registrada no se tragan puntuación
+        assert_eq!(
+            anon.aplicar("Se citó a José. Pérez no asistió"),
+            "Se citó a [PROCESADO]. [PROCESADO] no asistió"
+        );
+        assert_eq!(
+            anon.aplicar("Citaron a José, Pérez no llegó"),
+            "Citaron a [PROCESADO], [PROCESADO] no llegó"
+        );
+
+        // Nombres con guiones, apóstrofes, iniciales con punto, comas registradas y preposiciones
+        assert_eq!(
+            anon.aplicar("Asistió Juan-Carlos Mendoza, luego Juan Carlos Mendoza y Juan-Carlos"),
+            "Asistió [PROCESADO], luego [PROCESADO] y [PROCESADO]"
+        );
+        assert_eq!(
+            anon.aplicar("Asistió María O'Connor, luego O'Connor; uno o dos"),
+            "Asistió [PROCESADO], luego [PROCESADO]; uno o dos"
+        );
+        assert_eq!(
+            anon.aplicar("Asistió J. Pérez, J.Pérez y M.A. Gómez en J. 2 Penal"),
+            "Asistió [PROCESADO], [PROCESADO] y [PROCESADO] en J. 2 Penal"
+        );
+        assert_eq!(
+            anon.aplicar("Caso de López, Fernando; López no compareció"),
+            "Caso de [PROCESADO]; [PROCESADO] no compareció"
+        );
+        assert_eq!(
+            anon.aplicar("Audiencia de María de los Ángeles Ortega acerca de los hechos"),
+            "Audiencia de [PROCESADO] acerca de los hechos"
+        );
+    }
+
+    #[test]
+    fn test_anonimizador_escudos_defensores_honorificos_coma_homonimo_y_cache_catalogos() {
+        // Deduplicación masiva + variedad de casos de interacción entre procesados y defensores
+        let mut rads = vec![
+            "JUAN-CARLOS MENDOZA - 200016001075",
+            "PEDRO DANIEL - 200016001076",
+            "CARLOS PEREZ - 200016001077",
+            "RODRIGUEZ - 200016001078",
+            "ANA MORA - 200016001079",
+        ];
+        for _ in 0..200 {
+            rads.push("CARLOS PEREZ - 200016001077");
+        }
+        let anon = Anonimizador::desde_radicados(&rads)
+            .con_escudos_defensores(&[
+                "Dra. Ana Pérez".into(),
+                "Dr. José Daniel Martínez".into(),
+                "Dr. Juan Carlos López".into(),
+            ])
+            .con_escudos_defensores(&[
+                "Dr. Luis Rodríguez".into(),
+                "Dra. Ana Mora".into(),
+            ]);
+
+        // 1) Todos los honoríficos y nombre completo sin honorífico quedan protegidos
+        let txt1 = "La Dra. Ana Pérez, Defensora Pública Ana Pérez, Defensor Público Martínez, Abg. José Daniel, Lic. José-Daniel y José Daniel Martínez asistieron; Carlos Pérez y Pérez no.";
+        let out1 = anon.aplicar(txt1);
+        assert!(out1.contains("Dra. Ana Pérez"), "{}", out1);
+        assert!(out1.contains("Defensora Pública Ana Pérez"), "{}", out1);
+        assert!(out1.contains("Defensor Público Martínez"), "{}", out1);
+        assert!(out1.contains("Abg. José Daniel"), "{}", out1);
+        assert!(out1.contains("Lic. José-Daniel"), "{}", out1);
+        assert!(out1.contains("José Daniel Martínez"), "{}", out1);
+        assert!(!out1.contains("Carlos Pérez"), "{}", out1);
+        assert!(out1.ends_with("[PROCESADO] y [PROCESADO] no."), "{}", out1);
+
+        // 2) Sub-frase con guion (`JUAN-CARLOS`) NO pisa al defensor `Dr. Juan Carlos López`
+        let out2 = anon.aplicar("Confirmó el Dr. Juan Carlos López que Juan-Carlos Mendoza faltó.");
+        assert!(out2.contains("Dr. Juan Carlos López"), "{}", out2);
+        assert!(!out2.contains("Juan-Carlos"), "{}", out2);
+        assert!(!out2.contains("Mendoza"), "{}", out2);
+
+        // 3) Procesado de 1 sola palabra (`RODRIGUEZ`) respeta escudo `Dr. Luis Rodríguez` pero redacta `Rodríguez` suelto
+        let out3 = anon.aplicar("El Dr. Luis Rodríguez asistió por Rodríguez.");
+        assert_eq!(out3, "El Dr. Luis Rodríguez asistió por [PROCESADO].");
+
+        // 4) La coma después del honorífico bloquea el escudo y evita fuga del procesado `Daniel`
+        let out4 = anon.aplicar("Confirmó el Dr. José, Daniel no asistió.");
+        assert_eq!(out4, "Confirmó el Dr. José, [PROCESADO] no asistió.");
+
+        // 5) Sub-frase sin honorífico (`José Daniel`) SÍ redacta el token compartido `Daniel`
+        let out5 = anon.aplicar("José Daniel no compareció.");
+        assert_eq!(out5, "José [PROCESADO] no compareció.");
+
+        // 6) Homónimo exacto (`ANA MORA`) se redacta siempre para no filtrar PII de procesado
+        let out6 = anon.aplicar("Audiencia del procesado Ana Mora.");
+        assert_eq!(out6, "Audiencia del procesado [PROCESADO].");
+
+        // 7) CacheCatalogoAnon conserva catálogos oficiales (incluso sin tildes/mayúsculas) y cachea personalizados
+        let cache = CacheCatalogoAnon::new(&anon);
+        assert_eq!(
+            cache.anonimizar("Juzgado 1 Promiscuo Municipal de San Juan del Cesar"),
+            "Juzgado 1 Promiscuo Municipal de San Juan del Cesar"
+        );
+        assert_eq!(
+            cache.anonimizar("AUDIENCIA DE ACUSACION"),
+            "AUDIENCIA DE ACUSACION"
+        );
+        let cust1 = cache.anonimizar("Juzgado Libre Carlos Pérez 200016001077");
+        let cust2 = cache.anonimizar("Juzgado Libre Carlos Pérez 200016001077");
+        assert_eq!(cust1, "Juzgado Libre [PROCESADO] [RADICADO]");
+        assert_eq!(cust1, cust2);
+        assert_eq!(cache.cache.borrow().len(), 3);
+    }
+
+    #[test]
+    fn test_anonimizador_bordes_escudos_puntuacion_radicados_y_propiedades_fuzz() {
+        let anon = Anonimizador::desde_radicados(&[
+            "CARLOS O'CONNOR - 200016001075",
+            "JUAN-CARLOS MENDOZA - 200016001076",
+            "CARLOS PÉREZ - 200016001077",
+            "PEDRO GÓMEZ - 200016001078",
+            "LÓPEZ, FERNANDO - 200016001079",
+            "ANA RUIZ - 123-4567",
+            "SOFIA VARGAS - 2025-00123",
+            "DIEGO - 08-2025",
+            "20001 60 1075 2025 1234",
+            "RAD 20001 60 01075 2025 00777",
+            "SOFÍA O'BRIEN 200016001081",
+            "PEREZ, CAMILO 200016001082",
+            "LUIS-MIGUEL TORRES-200016001083",
+            "JUAN - 2025 - 00123",
+            "JUAN CARLOS - 200016001084",
+            "SERGIO SALAZAR, 200016001085",
+        ])
+        .con_escudos_defensores(&[
+            "Dra. María O'Connor".into(),
+            "Dr. Juan-Carlos López".into(),
+            "Dr. J. Pérez".into(),
+            "Dra. M.A. Gómez".into(),
+            "Licenciado Juan Pérez".into(),
+            "Dr. Luis López".into(),
+            "Dr. Fernando Gómez".into(),
+            "Dr. Juan Carlos López".into(),
+        ]);
+
+        // 1) Sub-frases compuestas (`O'Connor`, `Juan-Carlos`) NO rompen escudos de defensores
+        assert_eq!(
+            anon.aplicar("La Dra. María O'Connor asistió por Carlos O'Connor y O'Connor."),
+            "La Dra. María O'Connor asistió por [PROCESADO] y [PROCESADO]."
+        );
+        assert_eq!(
+            anon.aplicar("El Dr. Juan-Carlos López asistió por Juan-Carlos Mendoza y Juan-Carlos."),
+            "El Dr. Juan-Carlos López asistió por [PROCESADO] y [PROCESADO]."
+        );
+
+        // 2) Escudos con iniciales con punto (`Dr. J. Pérez`, `J. Pérez`, `Dra. M.A. Gómez`) y `Licenciado`
+        assert_eq!(
+            anon.aplicar("El Dr. J. Pérez y J. Pérez confirmaron el caso de Carlos Pérez."),
+            "El Dr. J. Pérez y J. Pérez confirmaron el caso de [PROCESADO]."
+        );
+        assert_eq!(
+            anon.aplicar("La Dra. M.A. Gómez y el Licenciado Pérez atendieron a Pedro Gómez."),
+            "La Dra. M.A. Gómez y el Licenciado Pérez atendieron a [PROCESADO]."
+        );
+        // Un punto final de oración tras palabra normal NO filtra escudo hacia la siguiente oración
+        assert_eq!(
+            anon.aplicar("Asistió el Dr. Luis. Pérez no llegó."),
+            "Asistió el Dr. Luis. [PROCESADO] no llegó."
+        );
+
+        // 3) Procesado con coma (`LÓPEZ, FERNANDO`) NO rompe escudos a izquierda ni a derecha de la coma
+        assert_eq!(
+            anon.aplicar("Confirmó el Dr. Luis López, Fernando no asistió."),
+            "Confirmó el Dr. Luis López, [PROCESADO] no asistió."
+        );
+        assert_eq!(
+            anon.aplicar("Faltó López, Fernando Gómez confirmó."),
+            "Faltó [PROCESADO], Fernando Gómez confirmó."
+        );
+        // Frase parcial atrapada dentro de escudo más largo (`Dr. Juan Carlos López`) no rompe el escudo
+        assert_eq!(
+            anon.aplicar("El Dr. Juan Carlos López atendió a Juan Carlos."),
+            "El Dr. Juan Carlos López atendió a [PROCESADO]."
+        );
+
+        // 4) Radicados con guion NO parten teléfonos, radicados largos, colas `-00` ni fechas
+        assert_eq!(anon.aplicar("Tel 300-123-4567 para confirmar."), "Tel [TELEFONO] para confirmar.");
+        assert_eq!(
+            anon.aplicar("rad 11001-60-00015-2025-00123 pendiente."),
+            "rad [RADICADO] pendiente."
+        );
+        assert_eq!(anon.aplicar("rad 2025-00123-00 pendiente."), "rad [NUMERO] pendiente.");
+        assert_eq!(
+            anon.aplicar("Fecha 15-08-2025 reprogramada para Juan."),
+            "Fecha 15-08-2025 reprogramada para [PROCESADO]."
+        );
+
+        // 5) Radicados espaciados (con o sin etiqueta `RAD`) no convierten DANE `20001` en patrón suelto
+        assert_eq!(
+            anon.aplicar("Caso RAD 20001 60 01075 2025 00777 y 20001 60 1075 2025 1234; DANE 20001."),
+            "Caso RAD [RADICADO] y [RADICADO]; DANE 20001."
+        );
+
+        // 6) Nombre + radicado sin ` - ` conserva subfrases/comas internas, sin habilitar coma final suelta
+        assert_eq!(
+            anon.aplicar("Audiencia de O'Brien, Perez, Camilo y Luis-Miguel; Sergio, Salazar."),
+            "Audiencia de [PROCESADO], [PROCESADO] y [PROCESADO]; [PROCESADO], [PROCESADO]."
+        );
+
+        // 7) `anonimizar_correccion_con_global` clasifica radicados globales de 6-14 dígitos como `[RADICADO]`
+        let corr = CorreccionIa {
+            id: "c-glob".into(),
+            registrada: "2026-01-01".into(),
+            proveedor: "openai".into(),
+            modelo: "gpt-5-mini".into(),
+            texto_original: "El Dr. J. Pérez confundió 00123 con 200016001075 de Carlos O'Connor."
+                .into(),
+            prediccion: AudienciaInput {
+                radicado: "JUAN - 00123".into(),
+                tipo: "Acusación".into(),
+                fecha: "15-08-2025".into(),
+                hora: "08:00".into(),
+                juzgado: "Juzgado 1".into(),
+                realizada: "SI".into(),
+                motivo: String::new(),
+                observaciones: String::new(),
+            },
+            final_usuario: AudienciaInput {
+                radicado: "JUAN - 00123".into(),
+                tipo: "Acusación".into(),
+                fecha: "15-08-2025".into(),
+                hora: "08:00".into(),
+                juzgado: "Juzgado 1".into(),
+                realizada: "NO".into(),
+                motivo: "Fiscalía".into(),
+                observaciones: "Confirmó Dra. María O'Connor sobre 200016001075".into(),
+            },
+            campos: vec![],
+            estado: "pendiente".into(),
+            regla_generada: String::new(),
+            regla_id_asociada: String::new(),
+            pregunta_ia: String::new(),
+            nota_usuario: String::new(),
+            exportada: false,
+            defensor_clave: "maria o connor".into(),
+        };
+        let ca = anonimizar_correccion_con_global(&corr, Some(&anon));
+        assert_eq!(
+            ca.texto_original,
+            "El Dr. J. Pérez confundió [RADICADO] con [RADICADO] de [PROCESADO]."
+        );
+        assert_eq!(
+            ca.final_usuario.observaciones,
+            "Confirmó Dra. María O'Connor sobre [RADICADO]"
+        );
+
+        // 8) Propiedades de fuzz determinista (250 notas con tildes NFC/NFD, emojis, puntuación, teléfonos y fechas):
+        //    sin pánicos, sin fugas PII, defensores/fechas intactos e idempotencia estricta
+        let mut seed: u64 = 0x5EED_CAFE_1234_9876;
+        let mut next_usize = |bound: usize| -> usize {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as usize) % bound
+        };
+        let defs_txt = [
+            "Dra. María O'Connor",
+            "Dr. Juan-Carlos López",
+            "Dr. J. Pérez",
+            "Dra. M.A. Gómez",
+            "Licenciado Pérez",
+        ];
+        let procs_txt = [
+            ("Carlos O'Connor", "oconnor"),
+            ("Juan-Carlos Mendoza", "mendoza"),
+            ("Lo\u{0301}pez, Fernando", "fernando"),
+            ("Luis-Miguel Torres", "torres"),
+            ("Sofi\u{0301}a O'Brien", "obrien"),
+            ("Sergio Salazar", "salazar"),
+        ];
+        let rads_txt = [
+            "200016001075",
+            "200016001076",
+            "2025-00123",
+            "20001 60 01075 2025 00777",
+            "00123",
+        ];
+        let tels_txt = ["3105559876", "300-123-4567", "300 456 7890", "573112223344"];
+        let fechas_txt = ["15-08-2025", "01.12.2026", "20/05/2025"];
+        let seps = [" ", " — ", "; ", " | ", " 🏛️ ", "\n", ", "];
+
+        for _ in 0..250 {
+            let def = defs_txt[next_usize(defs_txt.len())];
+            let (proc_nom, _) = procs_txt[next_usize(procs_txt.len())];
+            let rad = rads_txt[next_usize(rads_txt.len())];
+            let tel = tels_txt[next_usize(tels_txt.len())];
+            let fecha = fechas_txt[next_usize(fechas_txt.len())];
+            let s1 = seps[next_usize(seps.len())];
+            let s2 = seps[next_usize(seps.len())];
+            let s3 = seps[next_usize(seps.len())];
+            let nota = format!(
+                "Audiencia el {}{}atendida por {}{}contra {} rad{}cel {} (DANE 20001).",
+                fecha, s1, def, s2, proc_nom, rad, tel
+            ) + s3;
+
+            let out = anon.aplicar(&nota);
+            assert!(out.contains(fecha), "Fecha perdida en: {} -> {}", nota, out);
+            assert!(out.contains(def), "Defensor perdido en: {} -> {}", nota, out);
+            assert!(out.contains("20001"), "DANE 20001 perdido en: {} -> {}", nota, out);
+            assert!(!out.contains(rad), "Radicado filtrado en: {} -> {}", nota, out);
+            assert!(!out.contains(tel), "Teléfono filtrado en: {} -> {}", nota, out);
+            assert!(
+                !out.to_lowercase().contains("mendoza")
+                    && !out.to_lowercase().contains("salazar")
+                    && !out.to_lowercase().contains("torres"),
+                "Procesado filtrado en: {} -> {}",
+                nota,
+                out
+            );
+            // Idempotencia estricta
+            assert_eq!(anon.aplicar(&out), out, "No idempotente: {}", out);
+        }
     }
 }
