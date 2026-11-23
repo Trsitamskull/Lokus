@@ -1,5 +1,18 @@
 # Historial de Versiones (Lokus)
 
+## [5.2.0] - 2026-11-23
+
+### Corrección de errores (Bugs)
+- **Estado real en la tabla de precisión de IA:** Se corrigió la tabla de precisión por campo que antes mostraba siempre `Estable` en verde aunque un campo tuviera `0` evaluaciones o precisión baja. Ahora refleja el estado real (`Sin datos`, `Aprendiendo`, `En revisión`, `Baja`, `Mejorable` o `Confiable`) y muestra `—` cuando aún no hay evaluaciones.
+
+### Nuevas funciones
+- **Usar cualquier juzgado o tipo de audiencia como plantilla rápida:** Cada opción del desplegable de **Juzgado** y **Tipo de Audiencia** (tanto las incluidas en Lokus como las guardadas por el usuario) ahora tiene un botón de copiar para llevar su texto directo a **Otra** y preseleccionar automáticamente el número (por ejemplo, cambiar `2` por `10` sin volver a escribir todo el nombre).
+- **Alta rápida desde búsquedas sin coincidencias:** Al buscar un juzgado o tipo de audiencia que aún no está en la lista, aparece un botón directo `Usar "<texto>" en Otra` para pasarlo al campo editable en un clic.
+
+### Mejoras y funciones modificadas
+- **Ventana de Inteligencia Artificial más clara y organizada en 2 pestañas:** Se rediseñó la configuración de IA separando **Conexión y ajustes** (proveedor, modelo, clave API y casillas explicadas en lenguaje cotidiano) de **Aprendizaje y memoria** (indicadores principales, explicación de los porcentajes, diferencia clara entre **Recargar datos** vs. **Consolidar perfil del defensor** / **Consolidar reglas generales**, y los datos técnicos avanzados guardados en un acordeón aparte).
+- **Alta unificada en "Otra":** Se eliminó el botón duplicado *Agregar nuevo* al final del menú desplegable de Juzgados y Tipos de Audiencia; ahora **Otra** aparece al inicio de la lista con una guía breve que deja claro que puedes usarlo solo para esa audiencia o pulsar **`+`** para guardarlo en tu lista permanente.
+
 ## [5.1.0] - 2026-11-22
 
 ### Corrección de errores (Bugs)

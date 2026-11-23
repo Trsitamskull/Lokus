@@ -20,7 +20,7 @@ Este documento constituye la memoria persistente, la especificación operativa y
 
 | Categoría | Especificación del proyecto |
 | :--- | :--- |
-| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v5.1` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
+| **Nombre de la aplicación** | **Lokus — Gestor de Audiencias Judiciales** (`v5.2` en rama `rust-tauri` / `v2.0` en rama `legacy-python`) |
 | **Pila tecnológica activa (`rust-tauri`)** | **Backend:** Rust 2021 + Tauri v2 (`umya-spreadsheet`, `reqwest` con `rustls-tls`, `tokio`, `serde`, `chrono`, `regex`, `base64`, `flate2`)<br>**Frontend:** Svelte 5 (Runes: `$state`, `$derived`) + Vite 6 + CSS Variables nativas (puerto dev `5173`) |
 | **Pila tecnológica legado (`legacy-python`)** | Python 3 + `flet==1.1.2` (`flet-desktop==1.1.2`, `flet-cli==1.1.2`) + `openpyxl==3.1.2` + `openai==1.98.0` |
 | **Proveedores de IA soportados** | **OpenAI** (`gpt-5-mini`, `gpt-4o-mini`, `gpt-4o`) y **Google Gemini** (`gemini-2.5-flash`, `gemini-2.0-flash`) para autocompletado de formulario a partir de texto libre |
@@ -34,7 +34,7 @@ Este documento constituye la memoria persistente, la especificación operativa y
 1. **Frontend y vistas (`src/` e `index.html`):**
    - `src/App.svelte`: Orquestador principal de estado, barra superior, comandos IPC y atajos globales.
    - `src/lib/constants.js`: Catálogos oficiales del frontend (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`, `HORAS_RAPIDAS`, `JUZGADOS_BASE`, `normalizarClaveCatalogo`).
-   - `src/lib/components/`: Componentes modulares Svelte 5 (`Sidebar.svelte`, `AudienciaForm.svelte` incluyendo `.ia-clarify-panel` adaptativo con pills de cambio y chips rápidos, `RegistrosTable.svelte`, `EstadisticasView.svelte`, `Modals.svelte` con controles de consolidación y perfiles sintéticos en `config_ia`, `CustomSelect.svelte`, `AutocompleteInput.svelte` con edición/borrado en línea de defensores guardados, `DatePickerInput.svelte`).
+   - `src/lib/components/`: Componentes modulares Svelte 5 (`Sidebar.svelte`, `AudienciaForm.svelte` incluyendo `.ia-clarify-panel` adaptativo con pills de cambio, chips rápidos y flujo unificado desde `"Otra"` con `+`, `RegistrosTable.svelte`, `EstadisticasView.svelte`, `Modals.svelte`, `ConfigIaModal.svelte` con configuración de IA en 2 pestañas y diagnóstico comprensible, `CustomSelect.svelte` con botón de plantilla rápida hacia `"Otra"`, `AutocompleteInput.svelte` con edición/borrado en línea de defensores guardados, `DatePickerInput.svelte`).
    - `src/app.css`: Sistema de temas (`data-theme="dark"` Warm Obsidian y `data-theme="light"` Azul Niebla Sereno), barras de scroll integradas y CSS `@container` responsivo.
 2. **Backend y lógica de dominio en Rust (`src-tauri/src/`):**
    - `models.rs`: Estructuras `AudienciaInput`, `RegistroAudiencia`, `TotalesExcel`, `IndicePriorsExcel` (incluyendo `GrafoAsociaciones`), catálogos oficiales (`TIPOS_AUDIENCIA`, `MOTIVOS_LABELS`, `HORAS_RAPIDAS`), `normalizar_clave_catalogo`, `normalizar_clave_defensor` (identidad unificada sin honoríficos `Dr./Dra./Defensor Público`), `es_alcance_general`, `coincide_alcance_defensor`, `extraer_prefijo_dane_radicado`, `extraer_siglas_cortas_juzgado`, `texto_indica_instalacion_efectiva`, `texto_indica_no_instalacion`, mapeo de columnas `mapear_motivo_a_indice` y validadores.
