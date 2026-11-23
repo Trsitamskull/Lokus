@@ -383,6 +383,8 @@ button,
   display: flex;
   flex-direction: column;
   gap: 2px;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .sidebar-folder-block {
@@ -396,6 +398,11 @@ button,
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.sidebar-folder-children.is-drop-target-children {
+  background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  border-radius: var(--radius-ctrl);
 }
 
 .sidebar-folder-children::before {
@@ -415,6 +422,9 @@ button,
   align-items: center;
   border-radius: var(--radius-ctrl);
   padding-left: calc(var(--tree-depth, 0) * 12px);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
   transition: background-color 0.12s ease;
 }
 
@@ -441,6 +451,9 @@ button,
   font-weight: 600;
   text-align: left;
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
 }
 
 .folder-chevron {
@@ -487,6 +500,9 @@ button,
   border: 1px solid transparent;
   padding-left: calc(var(--tree-depth, 0) * 12px);
   box-shadow: none;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
   transition: background-color 0.12s ease, border-color 0.12s ease;
 }
 
@@ -517,6 +533,9 @@ button,
   font-weight: 500;
   text-align: left;
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
 }
 
 .sidebar-file-row.active .sidebar-file-btn {
@@ -713,7 +732,8 @@ body.is-dragging-tree {
   justify-content: center;
   gap: 6px;
   padding: 7px 8px;
-  margin-bottom: 4px;
+  margin: 4px 8px 6px;
+  flex-shrink: 0;
   border-radius: var(--radius-ctrl);
   border: 1.5px dashed var(--border-strong);
   background: var(--bg-subtle);
@@ -1231,6 +1251,12 @@ body.is-dragging-tree {
   text-overflow: ellipsis;
 }
 
+.active-doc-edit-btn {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
 .active-doc-empty {
   color: var(--text-muted);
   font-style: italic;
@@ -1504,6 +1530,30 @@ body.is-dragging-tree {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+}
+
+.otra-inline-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.otra-inline-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.otra-add-btn {
+  flex-shrink: 0;
+  padding: 0 11px;
+  color: var(--accent-primary);
+}
+
+.otra-add-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
 }
 
 .time-field-group {

@@ -6,6 +6,7 @@
     Edit3,
     SlidersHorizontal,
     HelpCircle,
+    Plus,
   } from "@lucide/svelte";
   import CustomSelect from "./CustomSelect.svelte";
   import DatePickerInput from "./DatePickerInput.svelte";
@@ -67,6 +68,8 @@
   let pmBtnEl = $state(null);
   let notaAclaracion = $state("");
   let clarifyInputEl = $state(null);
+  let guardandoJuzgadoOtra = $state(false);
+  let guardandoTipoOtra = $state(false);
   let fechaTouched = $state(false);
   let horaTouched = $state(false);
   let intentoEnviar = $state(false);
@@ -112,6 +115,36 @@
     const ok = await onResponderAclaracion?.(texto, false);
     if (ok !== false) {
       notaAclaracion = "";
+    }
+  }
+
+  async function guardarJuzgadoDesdeOtra() {
+    const limpio = juzgadoOtra.trim().replace(/\s+/g, " ");
+    if (!limpio || guardandoJuzgadoOtra) return;
+    guardandoJuzgadoOtra = true;
+    try {
+      const resultado = onAgregarJuzgado ? await onAgregarJuzgado(limpio) : limpio;
+      if (resultado === null || resultado === false) return;
+      juzgadoSeleccionado =
+        typeof resultado === "string" && resultado.trim() ? resultado.trim() : limpio;
+      juzgadoOtra = "";
+    } finally {
+      guardandoJuzgadoOtra = false;
+    }
+  }
+
+  async function guardarTipoDesdeOtra() {
+    const limpio = tipoOtra.trim().replace(/\s+/g, " ");
+    if (!limpio || guardandoTipoOtra) return;
+    guardandoTipoOtra = true;
+    try {
+      const resultado = onAgregarTipo ? await onAgregarTipo(limpio) : limpio;
+      if (resultado === null || resultado === false) return;
+      tipoSeleccionado =
+        typeof resultado === "string" && resultado.trim() ? resultado.trim() : limpio;
+      tipoOtra = "";
+    } finally {
+      guardandoTipoOtra = false;
     }
   }
 
@@ -672,17 +705,30 @@
           allowAdd={true}
           addButtonLabel="Agregar nuevo juzgado a la lista..."
           addPlaceholder="Nombre del nuevo juzgado o despacho..."
+          defaultAddValue={juzgadoSeleccionado === "Otra" ? juzgadoOtra : ""}
           onAddOption={onAgregarJuzgado}
           onDeleteOption={onEliminarJuzgado}
         />
         {#if juzgadoSeleccionado === "Otra"}
-          <input
-            id="juzgado-otra"
-            type="text"
-            class="input"
-            bind:value={juzgadoOtra}
-            placeholder="Especificar juzgado solo para este registro..."
-          />
+          <div class="otra-inline-row">
+            <input
+              id="juzgado-otra"
+              type="text"
+              class="input"
+              bind:value={juzgadoOtra}
+              placeholder="Especificar juzgado solo para este registro..."
+            />
+            <button
+              type="button"
+              class="btn btn-subtle otra-add-btn"
+              disabled={!juzgadoOtra.trim() || guardandoJuzgadoOtra}
+              title="Guardar este juzgado en la lista y seleccionarlo"
+              aria-label="Guardar juzgado en la lista"
+              onclick={guardarJuzgadoDesdeOtra}
+            >
+              <Plus size={15} strokeWidth={2.2} />
+            </button>
+          </div>
         {/if}
       </div>
 
@@ -700,17 +746,30 @@
           allowAdd={true}
           addButtonLabel="Agregar nuevo tipo de audiencia..."
           addPlaceholder="Nombre del nuevo tipo de audiencia..."
+          defaultAddValue={tipoSeleccionado === "Otra" ? tipoOtra : ""}
           onAddOption={onAgregarTipo}
           onDeleteOption={onEliminarTipo}
         />
         {#if tipoSeleccionado === "Otra"}
-          <input
-            id="tipo-otra"
-            type="text"
-            class="input"
-            bind:value={tipoOtra}
-            placeholder="Escriba el tipo de audiencia..."
-          />
+          <div class="otra-inline-row">
+            <input
+              id="tipo-otra"
+              type="text"
+              class="input"
+              bind:value={tipoOtra}
+              placeholder="Escriba el tipo de audiencia..."
+            />
+            <button
+              type="button"
+              class="btn btn-subtle otra-add-btn"
+              disabled={!tipoOtra.trim() || guardandoTipoOtra}
+              title="Guardar este tipo de audiencia en la lista y seleccionarlo"
+              aria-label="Guardar tipo de audiencia en la lista"
+              onclick={guardarTipoDesdeOtra}
+            >
+              <Plus size={15} strokeWidth={2.2} />
+            </button>
+          </div>
         {/if}
       </div>
     </div>

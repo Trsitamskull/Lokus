@@ -20,6 +20,7 @@
     inputEl = $bindable(null),
     onEnter = undefined,
     onSelect = undefined,
+    onInput = undefined,
     onEditOption = undefined,
     onDeleteOption = undefined,
   } = $props();
@@ -289,10 +290,11 @@
       onfocus={() => {
         if (suggestions.length > 0) open = true;
       }}
-      oninput={() => {
+      oninput={(e) => {
         open = true;
         mostrarTodas = false;
         highlightedIndex = -1;
+        onInput?.(e.currentTarget.value);
       }}
       onkeydown={handleKeydown}
     />

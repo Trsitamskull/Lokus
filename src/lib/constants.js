@@ -49,6 +49,41 @@ export function normalizarClaveCatalogo(texto = "") {
     .toLowerCase();
 }
 
+export const MESES_ES = [
+  "Enero",
+  "Febrero",
+  "Marzo",
+  "Abril",
+  "Mayo",
+  "Junio",
+  "Julio",
+  "Agosto",
+  "Septiembre",
+  "Octubre",
+  "Noviembre",
+  "Diciembre",
+];
+
+export function generarNombrePlanilla(defensor = "", fechaRef = new Date()) {
+  const limpio = String(defensor || "")
+    .replace(/[<>:"/\\|?*.\u0000-\u001f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!limpio) return "";
+
+  const soloLetras = limpio.replace(/[^\p{L}]/gu, "");
+  const esTodoMayus =
+    soloLetras.length > 0 && soloLetras === soloLetras.toLocaleUpperCase("es");
+
+  const baseDefensor = limpio.replace(/\s+/g, "_").replace(/^_+|_+$/g, "");
+  if (!baseDefensor) return "";
+
+  const mesBase = MESES_ES[fechaRef.getMonth()] || "Mes";
+  const mes = esTodoMayus ? mesBase.toLocaleUpperCase("es") : mesBase;
+  const anio = fechaRef.getFullYear();
+  return `${baseDefensor}_${mes}_${anio}`;
+}
+
 export const COLORES_CARPETA = [
   { id: "", label: "Predeterminado", cssVar: "var(--text-secondary)" },
   { id: "azul", label: "Azul", cssVar: "var(--folder-azul)" },

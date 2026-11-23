@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
-use umya_spreadsheet::{reader, writer, Spreadsheet, Worksheet};
+use umya_spreadsheet::{reader, writer, OrientationValues, PageSetup, Spreadsheet, Worksheet};
 
 use crate::models::{
     buscar_posible_duplicado, extraer_numeros_radicado, extraer_prefijo_dane_radicado,
@@ -441,67 +441,175 @@ pub fn renombrar_carpeta(actual: &str, nueva: &str) -> Result<String, String> {
     Ok(nueva_limpia)
 }
 
-/// Mueve una planilla (y su historial de respaldos) a otra carpeta. `carpeta_destino` vacío = raíz.
-pub fn mover_archivo(nombre_archivo: &str, carpeta_destino: &str) -> Result<String, String> {
-    let origen = ruta_archivo(nombre_archivo)?;
+fn mover_respaldos_si_existen(origen: &Path, destino: &Path) {
+    let respaldos_origen = carpeta_respaldos_de(origen);
+    if !respaldos_origen.is_dir() {
+        return;
+    }
+    let respaldos_destino = carpeta_respaldos_de(destino);
+    if respaldos_origen == respaldos_destino {
+        return;
+    }
+    if let Some(parent) = respaldos_destino.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let solo_capitalizacion = respaldos_origen.to_string_lossy().to_lowercase()
+        == respaldos_destino.to_string_lossy().to_lowercase();
+    if solo_capitalizacion {
+        if let Some(parent) = respaldos_destino.parent() {
+            let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let tmp_dir = parent.join(format!(".bak_tmp_{}_{}", std::process::id(), seq));
+            if fs::rename(&respaldos_origen, &tmp_dir).is_ok() {
+                if respaldos_destino.exists() || fs::rename(&tmp_dir, &respaldos_destino).is_err() {
+                    let _ = fs::rename(&tmp_dir, &respaldos_origen);
+                }
+            }
+        }
+    } else if !respaldos_destino.exists() {
+        let _ = fs::rename(&respaldos_origen, &respaldos_destino);
+    }
+}
+
+fn reubicar_archivo_en(
+    base: &Path,
+    actual: &str,
+    nuevo_nombre: Option<&str>,
+    carpeta_destino: Option<&str>,
+) -> Result<String, String> {
+    let segmentos =
+        segmentos_ruta_relativa(actual).map_err(|_| "Nombre de archivo inválido.".to_string())?;
+    let mut origen = base.to_path_buf();
+    let mut norm_partes = Vec::with_capacity(segmentos.len());
+    let ultimo = segmentos.len() - 1;
+    for (i, seg) in segmentos.into_iter().enumerate() {
+        let final_seg = if i == ultimo && !seg.to_lowercase().ends_with(".xlsx") {
+            format!("{}.xlsx", seg)
+        } else {
+            seg
+        };
+        origen.push(&final_seg);
+        norm_partes.push(final_seg);
+    }
     if !origen.is_file() {
         return Err("El archivo no existe.".to_string());
     }
-    let nombre_base = origen
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| "Nombre de archivo inválido.".to_string())?
-        .to_string();
 
-    let (dir_destino, relativo) = if carpeta_destino.trim().is_empty() {
-        (obtener_carpeta_archivos(), nombre_base.clone())
+    let rel_orig = norm_partes.join("/");
+    let nombre_actual = norm_partes
+        .last()
+        .cloned()
+        .ok_or_else(|| "Nombre de archivo inválido.".to_string())?;
+    let carpeta_actual = if norm_partes.len() > 1 {
+        norm_partes[..norm_partes.len() - 1].join("/")
     } else {
-        let limpia = sanitizar_ruta_carpeta(carpeta_destino)?;
-        (ruta_carpeta(&limpia)?, format!("{}/{}", limpia, nombre_base))
+        String::new()
     };
-    let destino = dir_destino.join(&nombre_base);
-    if destino == origen {
-        return Ok(relativo);
+
+    let nombre_destino = match nuevo_nombre {
+        Some(n) => sanitizar_nombre_archivo(n)?,
+        None => nombre_actual,
+    };
+
+    let carpeta_limpia = match carpeta_destino {
+        None => carpeta_actual,
+        Some(c) if c.trim().is_empty() => String::new(),
+        Some(c) => sanitizar_ruta_carpeta(c)?,
+    };
+
+    let (dir_destino, rel_dest) = if carpeta_limpia.is_empty() {
+        (base.to_path_buf(), nombre_destino.clone())
+    } else {
+        let mut dir = base.to_path_buf();
+        for seg in carpeta_limpia.split('/') {
+            dir.push(seg);
+        }
+        (dir, format!("{}/{}", carpeta_limpia, nombre_destino))
+    };
+    let destino = dir_destino.join(&nombre_destino);
+
+    if rel_orig == rel_dest {
+        return Ok(rel_dest);
     }
-    if destino.exists() {
-        return Err("Ya existe una planilla con ese nombre en la carpeta de destino.".to_string());
+
+    let solo_capitalizacion = rel_orig.to_lowercase() == rel_dest.to_lowercase();
+    if !solo_capitalizacion && destino.exists() {
+        return Err(
+            "Ya existe una planilla con ese nombre en la carpeta de destino.".to_string(),
+        );
     }
+
     fs::create_dir_all(&dir_destino)
         .map_err(|e| format!("No se pudo preparar la carpeta de destino: {}", e))?;
 
-    let respaldos_origen = carpeta_respaldos_de(&origen);
-    fs::rename(&origen, &destino).map_err(|e| {
-        format!(
-            "No se pudo mover el archivo (verifique que no esté abierto en Excel): {}",
-            e
-        )
-    })?;
+    if solo_capitalizacion {
+        let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp_ruta = dir_destino.join(format!(
+            ".rename_{}_{}_{}",
+            std::process::id(),
+            seq,
+            nombre_destino
+        ));
+        fs::rename(&origen, &tmp_ruta).map_err(|e| {
+            format!(
+                "No se pudo renombrar el archivo (verifique que no esté abierto en Excel): {}",
+                e
+            )
+        })?;
+        if destino.exists() {
+            let _ = fs::rename(&tmp_ruta, &origen);
+            return Err(
+                "Ya existe una planilla con ese nombre en la carpeta de destino.".to_string(),
+            );
+        }
+        if let Err(e) = fs::rename(&tmp_ruta, &destino) {
+            let _ = fs::rename(&tmp_ruta, &origen);
+            return Err(format!(
+                "No se pudo renombrar el archivo (verifique que no esté abierto en Excel): {}",
+                e
+            ));
+        }
+    } else {
+        fs::rename(&origen, &destino).map_err(|e| {
+            format!(
+                "No se pudo mover o renombrar el archivo (verifique que no esté abierto en Excel): {}",
+                e
+            )
+        })?;
+    }
+
     invalidar_cache(&origen);
     invalidar_cache(&destino);
-    let base = obtener_carpeta_archivos();
-    if let (Ok(rel_orig), Ok(rel_dest)) = (origen.strip_prefix(&base), destino.strip_prefix(&base)) {
-        let orig_s = rel_orig
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().to_string())
-            .collect::<Vec<_>>()
-            .join("/");
-        let dest_s = rel_dest
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().to_string())
-            .collect::<Vec<_>>()
-            .join("/");
-        let _ = actualizar_ruta_en_indice(&base, &orig_s, &dest_s);
-    }
-    if respaldos_origen.is_dir() {
-        let respaldos_destino = carpeta_respaldos_de(&destino);
-        if let Some(parent) = respaldos_destino.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if !respaldos_destino.exists() {
-            let _ = fs::rename(&respaldos_origen, &respaldos_destino);
-        }
-    }
-    Ok(relativo)
+    let _ = actualizar_ruta_en_indice(base, &rel_orig, &rel_dest);
+    mover_respaldos_si_existen(&origen, &destino);
+    Ok(rel_dest)
+}
+
+/// Renombra y/o reubica una planilla Excel (y su historial de respaldos e índice interno).
+pub fn renombrar_archivo_en(
+    base: &Path,
+    actual: &str,
+    nuevo_nombre: &str,
+    carpeta_destino: Option<&str>,
+) -> Result<String, String> {
+    reubicar_archivo_en(base, actual, Some(nuevo_nombre), carpeta_destino)
+}
+
+pub fn renombrar_archivo(
+    actual: &str,
+    nuevo_nombre: &str,
+    carpeta_destino: Option<&str>,
+) -> Result<String, String> {
+    renombrar_archivo_en(&obtener_carpeta_archivos(), actual, nuevo_nombre, carpeta_destino)
+}
+
+/// Mueve una planilla (y su historial de respaldos) a otra carpeta. `carpeta_destino` vacío = raíz.
+pub fn mover_archivo(nombre_archivo: &str, carpeta_destino: &str) -> Result<String, String> {
+    reubicar_archivo_en(
+        &obtener_carpeta_archivos(),
+        nombre_archivo,
+        None,
+        Some(carpeta_destino),
+    )
 }
 
 fn leer_defensor_de_hoja(ws: &Worksheet) -> String {
@@ -540,18 +648,18 @@ fn crear_copia_plantilla_en(destino: &Path, defensor: Option<&str>) -> Result<()
     fs::write(destino, PLANTILLA_BYTES)
         .map_err(|e| format!("No se pudo crear el archivo desde la plantilla: {}", e))?;
 
+    let mut book = reader::xlsx::read(destino)
+        .map_err(|e| format!("Error al preparar plantilla de Excel: {}", e))?;
     if let Some(def) = defensor {
         let limpio = def.trim();
         if !limpio.is_empty() {
-            let mut book = reader::xlsx::read(destino)
-                .map_err(|e| format!("Error al preparar defensor en plantilla: {}", e))?;
             let ws = book
                 .get_sheet_mut(&0)
                 .ok_or_else(|| "No se pudo acceder a la hoja principal".to_string())?;
             escribir_defensor_en_hoja(ws, limpio);
-            guardar_libro(&book, destino)?;
         }
     }
+    guardar_libro(&mut book, destino)?;
 
     Ok(())
 }
@@ -644,13 +752,23 @@ pub fn carpeta_descargas() -> Result<PathBuf, String> {
         .ok_or_else(|| "No se pudo localizar la carpeta de Descargas".to_string())
 }
 
-pub fn descargar_archivo(nombre_archivo: &str) -> Result<String, String> {
-    let origen = ruta_archivo(nombre_archivo)?;
+fn contiene_printer_settings_zip(ruta: &Path) -> bool {
+    let Ok(bytes) = fs::read(ruta) else {
+        return false;
+    };
+    const AGUJA: &[u8] = b"xl/printerSettings/";
+    bytes.windows(AGUJA.len()).any(|w| w == AGUJA)
+}
+
+pub(crate) fn descargar_archivo_en(
+    origen: &Path,
+    carpeta_descargas: &Path,
+) -> Result<String, String> {
     if !origen.exists() {
         return Err("Archivo no encontrado.".to_string());
     }
-
-    let carpeta_descargas = carpeta_descargas()?;
+    fs::create_dir_all(carpeta_descargas)
+        .map_err(|e| format!("No se pudo preparar la carpeta de Descargas: {}", e))?;
 
     let nombre_limpio = origen
         .file_name()
@@ -672,10 +790,26 @@ pub fn descargar_archivo(nombre_archivo: &str) -> Result<String, String> {
         contador += 1;
     }
 
-    fs::copy(&origen, &destino)
+    // Planillas generadas antes de limpiar printerSettings pueden contener binarios DEVMODE
+    // de otro PC Windows que bloquean a Excel en la primera apertura; se sanean al exportar.
+    if contiene_printer_settings_zip(origen) {
+        if let Ok(mut book) = reader::xlsx::read(origen) {
+            if guardar_libro(&mut book, &destino).is_ok() {
+                return Ok(destino.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    fs::copy(origen, &destino)
         .map_err(|e| format!("No se pudo copiar el archivo a Descargas: {}", e))?;
 
     Ok(destino.to_string_lossy().to_string())
+}
+
+pub fn descargar_archivo(nombre_archivo: &str) -> Result<String, String> {
+    let origen = ruta_archivo(nombre_archivo)?;
+    let carpeta_descargas = carpeta_descargas()?;
+    descargar_archivo_en(&origen, &carpeta_descargas)
 }
 
 fn carpeta_respaldos_de(ruta_excel: &Path) -> PathBuf {
@@ -820,8 +954,49 @@ pub fn restaurar_respaldo(nombre_archivo: &str, archivo_respaldo: &str) -> Resul
     Ok(())
 }
 
+/// Elimina binarios `printerSettings*.bin` (DEVMODE Windows) conservando márgenes,
+/// escala y orientación, para evitar bloqueos de impresora al abrir en otro equipo Windows.
+fn limpiar_printer_settings_libro(book: &mut Spreadsheet) {
+    for ws in book.get_sheet_collection_mut() {
+        let actual = ws.get_page_setup();
+        if actual.get_object_data().is_none() {
+            continue;
+        }
+        let mut limpio = PageSetup::default();
+        if *actual.get_paper_size() > 0 {
+            limpio.set_paper_size(*actual.get_paper_size());
+        }
+        match actual.get_orientation() {
+            OrientationValues::Landscape => {
+                limpio.set_orientation(OrientationValues::Landscape);
+            }
+            OrientationValues::Portrait => {
+                limpio.set_orientation(OrientationValues::Portrait);
+            }
+            OrientationValues::Default => {}
+        }
+        if *actual.get_scale() > 0 {
+            limpio.set_scale(*actual.get_scale());
+        }
+        if *actual.get_fit_to_height() > 0 {
+            limpio.set_fit_to_height(*actual.get_fit_to_height());
+        }
+        if *actual.get_fit_to_width() > 0 {
+            limpio.set_fit_to_width(*actual.get_fit_to_width());
+        }
+        if *actual.get_horizontal_dpi() > 0 {
+            limpio.set_horizontal_dpi(*actual.get_horizontal_dpi());
+        }
+        if *actual.get_vertical_dpi() > 0 {
+            limpio.set_vertical_dpi(*actual.get_vertical_dpi());
+        }
+        ws.set_page_setup(limpio);
+    }
+}
+
 /// Escribe el libro Excel de forma atómica usando un archivo temporal en la misma carpeta.
-fn guardar_libro(book: &Spreadsheet, ruta: &Path) -> Result<(), String> {
+fn guardar_libro(book: &mut Spreadsheet, ruta: &Path) -> Result<(), String> {
+    limpiar_printer_settings_libro(book);
     invalidar_cache(ruta);
     let parent = ruta.parent().unwrap_or_else(|| Path::new("."));
     let file_name = ruta
@@ -1221,7 +1396,7 @@ fn actualizar_defensor_en(ruta: &Path, defensor: &str) -> Result<String, String>
 
     escribir_defensor_en_hoja(ws, defensor);
     let resultado = leer_defensor_de_hoja(ws);
-    guardar_libro(&book, ruta)?;
+    guardar_libro(&mut book, ruta)?;
     Ok(resultado)
 }
 
@@ -1275,7 +1450,7 @@ fn guardar_nueva_audiencia_en_con_defensor(
     escribir_registro_en_fila(ws, fila, consecutivo, datos);
 
     let totales = reordenar_y_recalcular(ws);
-    guardar_libro(&book, ruta)?;
+    guardar_libro(&mut book, ruta)?;
     Ok((totales, defensor))
 }
 
@@ -1393,7 +1568,7 @@ fn actualizar_audiencia_en_con_anterior(
     escribir_registro_en_fila(ws, fila_excel, consecutivo, datos);
 
     let totales = reordenar_y_recalcular(ws);
-    guardar_libro(&book, ruta)?;
+    guardar_libro(&mut book, ruta)?;
     Ok((totales, anterior, defensor))
 }
 
@@ -1469,7 +1644,7 @@ fn eliminar_registro_en_con_anterior(
     limpiar_fila(ws, fila_excel);
 
     let totales = reordenar_y_recalcular(ws);
-    guardar_libro(&book, ruta)?;
+    guardar_libro(&mut book, ruta)?;
     Ok((totales, anterior, defensor))
 }
 
@@ -2628,7 +2803,7 @@ mod tests {
             let input = ejemplo_audiencia(&rad, "10/08/2025", "09:00", "SI", "");
             escribir_registro_en_fila(ws, FILA_INICIO_DATOS + idx, idx + 1, &input);
         }
-        guardar_libro(&book, &ruta).unwrap();
+        guardar_libro(&mut book, &ruta).unwrap();
 
         let extra = ejemplo_audiencia("RAD-101", "11/08/2025", "09:00", "SI", "");
         let err = guardar_nueva_audiencia_en(&ruta, &extra, false).unwrap_err();
@@ -3119,6 +3294,171 @@ mod tests {
         let p_post_stats = cargar_priors_en(&dir).unwrap();
         assert_eq!(p_post_stats.formato, FORMATO_PRIORS_ACTUAL);
         assert!(p_post_stats.grafo.defensor_a_juzgados.contains_key("sofia ruiz"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_nueva_plantilla_sin_printer_settings_ni_abspath_conserva_logo_y_totales() {
+        let dir = preparar_temp_dir("nueva_plantilla_limpia");
+        let ruta = dir.join("Laura_Gomez_Noviembre_2026.xlsx");
+        crear_copia_plantilla_en(&ruta, Some("Laura Gómez")).unwrap();
+
+        let a1 = ejemplo_audiencia("20001-2026-001", "20/11/2026", "09:00", "SI", "");
+        let a2 = ejemplo_audiencia("20001-2026-002", "21/11/2026", "14:30", "NO", "Fiscalía");
+        guardar_nueva_audiencia_en(&ruta, &a1, false).unwrap();
+        let tot = guardar_nueva_audiencia_en(&ruta, &a2, false).unwrap();
+        assert_eq!(tot.num_registros, 2);
+        assert_eq!(tot.total_si, 1);
+        assert_eq!(tot.total_no, 1);
+
+        let bytes = fs::read(&ruta).unwrap();
+        assert!(!contiene_printer_settings_zip(&ruta), "No debe contener xl/printerSettings/");
+        assert!(
+            !bytes.windows(b"x15ac:absPath".len()).any(|w| w == b"x15ac:absPath"),
+            "No debe contener x15ac:absPath"
+        );
+        assert!(
+            bytes.windows(b"xl/drawings/drawing1.xml".len()).any(|w| w == b"xl/drawings/drawing1.xml"),
+            "Debe conservar drawing1.xml"
+        );
+        assert!(
+            bytes.windows(b"xl/media/image1.png".len()).any(|w| w == b"xl/media/image1.png"),
+            "Debe conservar image1.png"
+        );
+
+        let book = reader::xlsx::read(&ruta).unwrap();
+        let ws = book.get_sheet(&0).unwrap();
+        assert!(ws.get_page_setup().get_object_data().is_none());
+        assert_eq!(*ws.get_page_setup().get_scale(), 33);
+        assert_eq!(ws.get_cell((2, FILA_DEFENSOR)).unwrap().get_value(), "DEFENSOR PÚBLICO: Laura Gómez");
+        assert_eq!(ws.get_cell((7, FILA_TOTALES)).unwrap().get_value(), "1");
+        assert_eq!(ws.get_cell((10, FILA_TOTALES)).unwrap().get_value(), "1");
+        assert_eq!(ws.get_cell((17, FILA_TOTALES)).unwrap().get_value(), "1");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_descargar_archivo_sanea_printer_settings_de_planilla_antigua() {
+        let dir = preparar_temp_dir("descargar_saneado");
+        let descargas = dir.join("Descargas");
+        let ruta = dir.join("planilla_vieja.xlsx");
+
+        // Simular una planilla antigua guardada antes de la limpieza de printerSettings
+        // Simular una planilla antigua guardada antes de la limpieza de printerSettings
+        let mut book =
+            reader::xlsx::read_reader(std::io::Cursor::new(PLANTILLA_BYTES), true).unwrap();
+        let mut ps = PageSetup::default();
+        ps.set_scale(33);
+        ps.set_orientation(OrientationValues::Portrait);
+        ps.set_object_data(vec![1u8, 2, 3, 4, 5]);
+        {
+            let ws = book.get_sheet_mut(&0).unwrap();
+            ws.set_page_setup(ps);
+            escribir_defensor_en_hoja(ws, "Carlos Mendoza");
+            escribir_registro_en_fila(
+                ws,
+                FILA_INICIO_DATOS,
+                1,
+                &ejemplo_audiencia("20001-2026-010", "22/11/2026", "10:00", "SI", ""),
+            );
+        }
+        writer::xlsx::write(&book, &ruta).unwrap();
+        assert!(contiene_printer_settings_zip(&ruta));
+
+        let exportado = descargar_archivo_en(&ruta, &descargas).unwrap();
+        let ruta_exp = Path::new(&exportado);
+        assert!(ruta_exp.exists());
+        assert!(
+            !contiene_printer_settings_zip(ruta_exp),
+            "La copia exportada debe quedar libre de xl/printerSettings/"
+        );
+
+        let (regs, _, def) = leer_archivo_en(ruta_exp).unwrap();
+        assert_eq!(def, "Carlos Mendoza");
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0].radicado, "20001-2026-010");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_renombrar_archivo_misma_carpeta_moviendo_y_conservando_respaldos_e_indice() {
+        let dir = preparar_temp_dir("renombrar_archivo");
+        let sub = dir.join("2026/Enero");
+        fs::create_dir_all(&sub).unwrap();
+        let orig = sub.join("orig.xlsx");
+        let otro = sub.join("ocupado.xlsx");
+        crear_copia_plantilla_en(&orig, Some("Laura Gómez")).unwrap();
+        crear_copia_plantilla_en(&otro, Some("Laura Gómez")).unwrap();
+        guardar_nueva_audiencia_en(
+            &orig,
+            &ejemplo_audiencia("RAD-REN-1", "10/11/2026", "09:00", "SI", ""),
+            false,
+        )
+        .unwrap();
+        assert_eq!(listar_respaldos_en(&orig).unwrap().len(), 1);
+
+        let stats_ini = calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        let id_orig = stats_ini
+            .planillas
+            .iter()
+            .find(|p| p.archivo == "2026/Enero/orig.xlsx")
+            .unwrap()
+            .id
+            .clone();
+
+        // Colisión y nombres inválidos deben rechazarse
+        assert!(renombrar_archivo_en(&dir, "2026/Enero/orig.xlsx", "ocupado", None).is_err());
+        assert!(renombrar_archivo_en(&dir, "2026/Enero/orig.xlsx", "CON", None).is_err());
+        assert!(renombrar_archivo_en(&dir, "2026/Enero/orig.xlsx", "   ", None).is_err());
+
+        // Renombrar en la misma carpeta
+        let r1 =
+            renombrar_archivo_en(&dir, "2026/Enero/orig.xlsx", "Laura_Noviembre_2026", None)
+                .unwrap();
+        assert_eq!(r1, "2026/Enero/Laura_Noviembre_2026.xlsx");
+        assert!(!orig.exists());
+        let p1 = dir.join(&r1);
+        assert!(p1.is_file());
+        assert_eq!(listar_respaldos_en(&p1).unwrap().len(), 1);
+
+        let reg_mid = cargar_registro_estadisticas_en(&dir);
+        assert_eq!(reg_mid.ids_por_ruta.get(&r1), Some(&id_orig));
+        assert!(!reg_mid.ids_por_ruta.contains_key("2026/Enero/orig.xlsx"));
+
+        // Cambio solo de mayúsculas/minúsculas
+        let r_case = renombrar_archivo_en(&dir, &r1, "laura_noviembre_2026", None).unwrap();
+        assert_eq!(r_case, "2026/Enero/laura_noviembre_2026.xlsx");
+        assert_eq!(listar_respaldos_en(&dir.join(&r_case)).unwrap().len(), 1);
+
+        // Renombrar + mover a otra subcarpeta
+        let r2 = renombrar_archivo_en(
+            &dir,
+            &r_case,
+            "Planilla_Final",
+            Some("2026/Febrero"),
+        )
+        .unwrap();
+        assert_eq!(r2, "2026/Febrero/Planilla_Final.xlsx");
+        assert!(dir.join(&r2).is_file());
+        assert_eq!(listar_respaldos_en(&dir.join(&r2)).unwrap().len(), 1);
+
+        // Renombrar + mover a la raíz
+        let r3 = renombrar_archivo_en(&dir, &r2, "En_Raiz", Some("")).unwrap();
+        assert_eq!(r3, "En_Raiz.xlsx");
+        let p3 = dir.join(&r3);
+        assert!(p3.is_file());
+        assert_eq!(listar_respaldos_en(&p3).unwrap().len(), 1);
+
+        let (regs, _, def) = leer_archivo_en(&p3).unwrap();
+        assert_eq!(def, "Laura Gómez");
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0].radicado, "RAD-REN-1");
+
+        let reg_fin = cargar_registro_estadisticas_en(&dir);
+        assert_eq!(reg_fin.ids_por_ruta.get(&r3), Some(&id_orig));
 
         let _ = fs::remove_dir_all(&dir);
     }

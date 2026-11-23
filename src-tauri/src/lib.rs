@@ -34,8 +34,8 @@ use excel::{
     guardar_color_carpeta, guardar_nueva_audiencia, guardar_orden_carpetas, invalidar_priors_en,
     leer_archivo_completo, listar_archivos, listar_carpetas, listar_respaldos, mover_archivo,
     obtener_carpeta_archivos, obtener_colores_carpetas, obtener_estadisticas_globales,
-    obtener_orden_carpetas, renombrar_carpeta, restaurar_respaldo, validar_color_carpeta,
-    RespaldoInfo,
+    obtener_orden_carpetas, renombrar_archivo, renombrar_carpeta, restaurar_respaldo,
+    validar_color_carpeta, RespaldoInfo,
 };
 use std::collections::BTreeMap;
 use models::{
@@ -136,6 +136,18 @@ async fn cmd_eliminar_carpeta(
 #[tauri::command]
 async fn cmd_mover_archivo(nombre: String, carpeta_destino: String) -> Result<String, String> {
     ejecutar_en_hilo_io(move || mover_archivo(&nombre, &carpeta_destino)).await
+}
+
+#[tauri::command]
+async fn cmd_renombrar_archivo(
+    actual: String,
+    nuevo_nombre: String,
+    carpeta_destino: Option<String>,
+) -> Result<String, String> {
+    ejecutar_en_hilo_io(move || {
+        renombrar_archivo(&actual, &nuevo_nombre, carpeta_destino.as_deref())
+    })
+    .await
 }
 
 fn validar_datos_creacion_archivo(
@@ -595,6 +607,7 @@ pub fn run() {
             cmd_renombrar_carpeta,
             cmd_eliminar_carpeta,
             cmd_mover_archivo,
+            cmd_renombrar_archivo,
             cmd_crear_archivo,
             cmd_eliminar_archivo,
             cmd_eliminar_estadistica_archivada,

@@ -11,12 +11,14 @@
     Package,
     FileSpreadsheet,
     UserCheck,
+    Pencil,
   } from "@lucide/svelte";
   import {
     TIPOS_AUDIENCIA,
     MOTIVOS_LABELS,
     JUZGADOS_BASE,
     normalizarClaveCatalogo,
+    generarNombrePlanilla,
   } from "./lib/constants.js";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import AudienciaForm from "./lib/components/AudienciaForm.svelte";
@@ -108,10 +110,19 @@
   // Modales y confirmaciones
   let modalActivo = $state(null);
   let nombreNuevoArchivo = $state("");
+  let nombreNuevoEditadoManual = $state(false);
   let defensorNuevoArchivo = $state("");
   let carpetaNuevoArchivo = $state("");
   let errorModalCrear = $state("");
   let errorModalDefensor = $state("");
+  let archivoEditarTarget = $state("");
+  let archivoEditarNombre = $state("");
+  let archivoEditarDefensor = $state("");
+  let archivoEditarDefensorInicial = $state("");
+  let archivoEditarCarpeta = $state("");
+  let archivoEditarCarpetaInicial = $state("");
+  let errorModalEditarArchivo = $state("");
+  let guardandoEdicionArchivo = $state(false);
   let carpetaPadreNueva = $state("");
   let nombreNuevaCarpeta = $state("");
   let colorNuevaCarpeta = $state("");
@@ -492,11 +503,29 @@
 
   function abrirCrearArchivoModal(carpetaInicial = "") {
     nombreNuevoArchivo = "";
+    nombreNuevoEditadoManual = false;
     defensorNuevoArchivo = "";
     carpetaNuevoArchivo = typeof carpetaInicial === "string" ? carpetaInicial : "";
     errorModalCrear = "";
     errorModalDefensor = "";
     modalActivo = "crear";
+  }
+
+  function sincronizarNombreDesdeDefensorCrear(valorDef) {
+    if (!nombreNuevoEditadoManual) {
+      nombreNuevoArchivo = generarNombrePlanilla(valorDef);
+      errorModalCrear = "";
+    }
+  }
+
+  function marcarNombreNuevoEditadoManual(valor) {
+    nombreNuevoEditadoManual = String(valor || "").trim().length > 0;
+  }
+
+  function aplicarFormatoAutomaticoCrear() {
+    nombreNuevoArchivo = generarNombrePlanilla(defensorNuevoArchivo);
+    nombreNuevoEditadoManual = false;
+    errorModalCrear = "";
   }
 
   async function crearNuevoArchivo() {
@@ -532,6 +561,7 @@
       await recargarArchivoActual();
       modalActivo = null;
       nombreNuevoArchivo = "";
+      nombreNuevoEditadoManual = false;
       defensorNuevoArchivo = "";
       carpetaNuevoArchivo = "";
       errorModalCrear = "";
@@ -866,6 +896,123 @@
     modalActivo = "mover_archivo";
   }
 
+  async function abrirEditarArchivoModal(arch) {
+    if (!arch) return;
+    const idx = arch.lastIndexOf("/");
+    const carpetaActual = idx >= 0 ? arch.slice(0, idx) : "";
+    const nombreBase = (idx >= 0 ? arch.slice(idx + 1) : arch).replace(/\.xlsx$/i, "");
+    let defActual = "";
+    if (arch === archivoActual) {
+      defActual = defensorArchivo || "";
+    } else {
+      try {
+        const res = await invoke("cmd_leer_archivo", { nombre: arch });
+        defActual = res.defensor || "";
+      } catch (_) {}
+    }
+    archivoEditarTarget = arch;
+    archivoEditarNombre = nombreBase;
+    archivoEditarCarpeta = carpetaActual;
+    archivoEditarCarpetaInicial = carpetaActual;
+    archivoEditarDefensor = defActual;
+    archivoEditarDefensorInicial = defActual;
+    errorModalEditarArchivo = "";
+    guardandoEdicionArchivo = false;
+    sidebarMobileOpen = false;
+    modalActivo = "editar_archivo";
+  }
+
+  function aplicarFormatoAutomaticoEditar() {
+    const sugerido = generarNombrePlanilla(archivoEditarDefensor);
+    if (sugerido) {
+      archivoEditarNombre = sugerido;
+      errorModalEditarArchivo = "";
+    }
+  }
+
+  async function guardarEdicionArchivo() {
+    if (!archivoEditarTarget || guardandoEdicionArchivo) return;
+    const nuevoNombre = archivoEditarNombre.trim().replace(/\.xlsx$/i, "");
+    if (!nuevoNombre) {
+      errorModalEditarArchivo = "Ingresa un nombre para la planilla.";
+      return;
+    }
+
+    const idx = archivoEditarTarget.lastIndexOf("/");
+    const nombreActualBase = (
+      idx >= 0 ? archivoEditarTarget.slice(idx + 1) : archivoEditarTarget
+    ).replace(/\.xlsx$/i, "");
+    const cambioRuta =
+      nuevoNombre !== nombreActualBase ||
+      archivoEditarCarpeta !== archivoEditarCarpetaInicial;
+    const defNuevo = archivoEditarDefensor.trim();
+    const defAnterior = archivoEditarDefensorInicial.trim();
+    const cambioDefensor = defNuevo !== defAnterior;
+
+    if (!cambioRuta && !cambioDefensor) {
+      modalActivo = null;
+      return;
+    }
+
+    guardandoEdicionArchivo = true;
+    errorModalEditarArchivo = "";
+    let rutaFinal = archivoEditarTarget;
+
+    try {
+      if (cambioRuta) {
+        rutaFinal = await invoke("cmd_renombrar_archivo", {
+          actual: archivoEditarTarget,
+          nuevoNombre,
+          carpetaDestino: archivoEditarCarpeta,
+        });
+        if (archivoActual === archivoEditarTarget) {
+          archivoActual = rutaFinal;
+        }
+        if (statsArchivoFiltro === archivoEditarTarget) {
+          statsArchivoFiltro = rutaFinal;
+        }
+        archivoEditarTarget = rutaFinal;
+        archivoEditarCarpetaInicial = archivoEditarCarpeta;
+      }
+
+      if (cambioDefensor) {
+        const guardado = await invoke("cmd_actualizar_defensor_archivo", {
+          nombreArchivo: rutaFinal,
+          defensor: defNuevo,
+        });
+        if (defNuevo) {
+          try {
+            const cfg = await invoke("cmd_agregar_defensor", { nombre: defNuevo });
+            defensores = cfg.defensores || [];
+          } catch (_) {}
+        }
+        if (rutaFinal === archivoActual) {
+          if (guardado.trim() !== defensorArchivo.trim()) {
+            ocultarAclaracionDescontextualizada();
+          }
+          defensorArchivo = guardado;
+        }
+        archivoEditarDefensorInicial = guardado;
+      }
+
+      if (cambioRuta) {
+        await refrescarListaArchivos();
+      }
+      if (vistaActiva === "estadisticas") {
+        cargarEstadisticas();
+      }
+      modalActivo = null;
+      mostrarToast(`Planilla actualizada: '${rutaFinal}'`, "success");
+    } catch (e) {
+      if (cambioRuta) {
+        await refrescarListaArchivos();
+      }
+      errorModalEditarArchivo = String(e);
+    } finally {
+      guardandoEdicionArchivo = false;
+    }
+  }
+
   async function moverArchivoACarpeta() {
     const destino =
       carpetaDestinoMover === "__NUEVA__"
@@ -1163,6 +1310,10 @@
         lista.find((d) => d.toLowerCase() === nuevoLower) || limpioNuevo;
       if (defensorNuevoArchivo.trim().toLowerCase() === actualLower) {
         defensorNuevoArchivo = guardado;
+        sincronizarNombreDesdeDefensorCrear(guardado);
+      }
+      if (archivoEditarDefensor.trim().toLowerCase() === actualLower) {
+        archivoEditarDefensor = guardado;
       }
       if (defensorPlanillaDraft.trim().toLowerCase() === actualLower) {
         defensorPlanillaDraft = guardado;
@@ -1186,6 +1337,10 @@
       const targetLower = nombre.trim().toLowerCase();
       if (defensorNuevoArchivo.trim().toLowerCase() === targetLower) {
         defensorNuevoArchivo = "";
+        sincronizarNombreDesdeDefensorCrear("");
+      }
+      if (archivoEditarDefensor.trim().toLowerCase() === targetLower) {
+        archivoEditarDefensor = "";
       }
       if (defensorPlanillaDraft.trim().toLowerCase() === targetLower) {
         defensorPlanillaDraft = "";
@@ -1849,6 +2004,7 @@
     onMoverPorArrastre={moverPorArrastre}
     onReordenarCarpetas={guardarOrdenCarpetas}
     onSeleccionarArchivo={seleccionarArchivo}
+    onEditarArchivo={abrirEditarArchivoModal}
     onAbrirDefensorArchivo={abrirModalDefensoresArchivo}
     onAbrirRespaldos={abrirRespaldos}
     onDescargarArchivo={descargarArchivo}
@@ -1967,6 +2123,15 @@
             <strong class="active-doc-name" title={archivoActual}>
               {nombrePart}
             </strong>
+            <button
+              type="button"
+              class="mini-icon-btn active-doc-edit-btn"
+              onclick={() => abrirEditarArchivoModal(archivoActual)}
+              title="Editar o renombrar esta planilla"
+              aria-label="Editar o renombrar esta planilla"
+            >
+              <Pencil size={13} />
+            </button>
           {:else}
             <span class="active-doc-empty">Ninguna planilla abierta</span>
           {/if}
@@ -2084,8 +2249,14 @@
   bind:nombreNuevoArchivo
   bind:defensorNuevoArchivo
   bind:carpetaNuevoArchivo
-  {errorModalCrear}
+  errorModalCrear={errorModalCrear}
   {errorModalDefensor}
+  {archivoEditarTarget}
+  bind:archivoEditarNombre
+  bind:archivoEditarDefensor
+  bind:archivoEditarCarpeta
+  {errorModalEditarArchivo}
+  {guardandoEdicionArchivo}
   bind:carpetaPadreNueva
   bind:nombreNuevaCarpeta
   bind:colorNuevaCarpeta
@@ -2139,6 +2310,11 @@
   onRefrescarDiagnosticoIa={cargarDiagnosticoIa}
   onConsolidarMemoriaIa={consolidarMemoriaIaManual}
   onCrearNuevoArchivo={crearNuevoArchivo}
+  onDefensorNuevoChange={sincronizarNombreDesdeDefensorCrear}
+  onNombreNuevoInput={marcarNombreNuevoEditadoManual}
+  onUsarFormatoAutomaticoCrear={aplicarFormatoAutomaticoCrear}
+  onGuardarEdicionArchivo={guardarEdicionArchivo}
+  onUsarFormatoAutomaticoEditar={aplicarFormatoAutomaticoEditar}
   onCrearCarpeta={crearNuevaCarpeta}
   onRenombrarCarpeta={renombrarCarpetaExistente}
   onGuardarColorCarpeta={guardarColorCarpetaModal}

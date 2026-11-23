@@ -27,7 +27,12 @@
   } from "@lucide/svelte";
   import AutocompleteInput from "./AutocompleteInput.svelte";
   import CustomSelect from "./CustomSelect.svelte";
-  import { COLORES_CARPETA, MODELOS_GEMINI, MODELOS_OPENAI } from "../constants.js";
+  import {
+    COLORES_CARPETA,
+    MODELOS_GEMINI,
+    MODELOS_OPENAI,
+    generarNombrePlanilla,
+  } from "../constants.js";
 
   let {
     modalActivo = $bindable(null),
@@ -42,6 +47,12 @@
     carpetaNuevoArchivo = $bindable(""),
     errorModalCrear = "",
     errorModalDefensor = "",
+    archivoEditarTarget = "",
+    archivoEditarNombre = $bindable(""),
+    archivoEditarDefensor = $bindable(""),
+    archivoEditarCarpeta = $bindable(""),
+    errorModalEditarArchivo = "",
+    guardandoEdicionArchivo = false,
     carpetaPadreNueva = $bindable(""),
     nombreNuevaCarpeta = $bindable(""),
     colorNuevaCarpeta = $bindable(""),
@@ -95,6 +106,11 @@
     onRefrescarDiagnosticoIa = null,
     onConsolidarMemoriaIa = null,
     onCrearNuevoArchivo,
+    onDefensorNuevoChange = null,
+    onNombreNuevoInput = null,
+    onUsarFormatoAutomaticoCrear = null,
+    onGuardarEdicionArchivo = null,
+    onUsarFormatoAutomaticoEditar = null,
     onCrearCarpeta,
     onRenombrarCarpeta,
     onGuardarColorCarpeta,
@@ -118,6 +134,9 @@
     onEliminarDefensorDirecto = null,
     onRestaurarRespaldo,
   } = $props();
+
+  let sugerenciaNombreCrear = $derived(generarNombrePlanilla(defensorNuevoArchivo));
+  let sugerenciaNombreEditar = $derived(generarNombrePlanilla(archivoEditarDefensor));
 
   let dialogEl = $state(null);
   let consolidandoAmbito = $state("");
@@ -209,7 +228,7 @@
     bind:this={dialogEl}
     class={modalActivo === "defensores" || modalActivo === "portabilidad"
       ? "modal-wide"
-      : ["crear", "crear_carpeta", "mover_archivo"].includes(modalActivo)
+      : ["crear", "crear_carpeta", "mover_archivo", "editar_archivo"].includes(modalActivo)
         ? "modal-overflow-visible"
         : ""}
     aria-labelledby="dialog-heading"
@@ -243,30 +262,6 @@
       </div>
       <div class="modal-body scroller">
         <div class="field-group">
-          <label class="field-label" for="nuevo-archivo-input">
-            Nombre de la planilla Excel
-          </label>
-          <input
-            id="nuevo-archivo-input"
-            type="text"
-            class="input {errorModalCrear ? 'is-invalid' : ''}"
-            bind:value={nombreNuevoArchivo}
-            autocorrect="off"
-            spellcheck="false"
-            placeholder="Ej: informe_agosto_2025"
-            onkeydown={(e) => {
-              if (!e.isComposing && e.key === "Enter") {
-                e.preventDefault();
-                onCrearNuevoArchivo();
-              }
-            }}
-          />
-          {#if errorModalCrear}
-            <p style="color: var(--status-no); font-size: 12px">{errorModalCrear}</p>
-          {/if}
-        </div>
-
-        <div class="field-group">
           <div class="field-header">
             <label class="field-label" for="nuevo-archivo-defensor">
               Defensor Público asignado
@@ -296,6 +291,8 @@
             placeholder={defensores.length > 0
               ? "Elige de tu lista o escribe un nombre nuevo"
               : "Escribe el nombre del Defensor Público"}
+            onSelect={(val) => onDefensorNuevoChange?.(val)}
+            onInput={(val) => onDefensorNuevoChange?.(val)}
             onEditOption={onRenombrarDefensorDirecto}
             onDeleteOption={onEliminarDefensorDirecto}
             onEnter={onCrearNuevoArchivo}
@@ -312,6 +309,46 @@
           <span class="shortcut-hint">
             Recomendación: escribe el nombre completo sin títulos (Dr./Dra.) para que la IA reconozca siempre al mismo defensor.
           </span>
+        </div>
+
+        <div class="field-group">
+          <div class="field-header">
+            <label class="field-label" for="nuevo-archivo-input">
+              Nombre de la planilla Excel
+            </label>
+            {#if sugerenciaNombreCrear && nombreNuevoArchivo.trim() !== sugerenciaNombreCrear}
+              <button
+                type="button"
+                class="inline-action-link"
+                onclick={() => onUsarFormatoAutomaticoCrear?.()}
+              >
+                Usar formato automático
+              </button>
+            {/if}
+          </div>
+          <input
+            id="nuevo-archivo-input"
+            type="text"
+            class="input {errorModalCrear ? 'is-invalid' : ''}"
+            bind:value={nombreNuevoArchivo}
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="Ej: Laura_Gomez_Noviembre_2026"
+            oninput={(e) => onNombreNuevoInput?.(e.currentTarget.value)}
+            onkeydown={(e) => {
+              if (!e.isComposing && e.key === "Enter") {
+                e.preventDefault();
+                onCrearNuevoArchivo();
+              }
+            }}
+          />
+          {#if errorModalCrear}
+            <p style="color: var(--status-no); font-size: 12px">{errorModalCrear}</p>
+          {:else}
+            <span class="shortcut-hint">
+              Al elegir un defensor se completa automáticamente como <code>[DEFENSOR]_[MES]_[AÑO]</code> (editable).
+            </span>
+          {/if}
         </div>
 
         {#if carpetasDisponibles.length > 0 || carpetaNuevoArchivo}
@@ -566,6 +603,128 @@
         </button>
         <button type="button" class="btn btn-solid" onclick={onMoverArchivo}>
           Mover aquí
+        </button>
+      </div>
+
+    {:else if modalActivo === "editar_archivo" && archivoEditarTarget}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <Pencil size={15} />
+          <span>Editar planilla Excel</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          disabled={guardandoEdicionArchivo}
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body scroller">
+        <p class="shortcut-hint">
+          Planilla actual: <strong>{archivoEditarTarget}</strong>
+        </p>
+        <div class="field-group">
+          <div class="field-header">
+            <label class="field-label" for="editar-archivo-nombre">
+              Nombre de la planilla Excel
+            </label>
+            {#if sugerenciaNombreEditar && archivoEditarNombre.trim() !== sugerenciaNombreEditar}
+              <button
+                type="button"
+                class="inline-action-link"
+                onclick={() => onUsarFormatoAutomaticoEditar?.()}
+              >
+                Usar formato automático
+              </button>
+            {/if}
+          </div>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            id="editar-archivo-nombre"
+            type="text"
+            class="input {errorModalEditarArchivo ? 'is-invalid' : ''}"
+            bind:value={archivoEditarNombre}
+            autofocus
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="Ej: Laura_Gomez_Noviembre_2026"
+            onkeydown={(e) => {
+              if (!e.isComposing && e.key === "Enter") {
+                e.preventDefault();
+                onGuardarEdicionArchivo?.();
+              }
+            }}
+          />
+        </div>
+
+        <div class="field-group">
+          <div class="field-header">
+            <label class="field-label" for="editar-archivo-defensor">
+              Defensor Público asignado
+            </label>
+          </div>
+          <AutocompleteInput
+            id="editar-archivo-defensor"
+            bind:value={archivoEditarDefensor}
+            suggestions={defensores}
+            showDropdownButton={defensores.length > 0}
+            headerText="Defensores guardados en tu directorio"
+            allowEmptyOption={false}
+            maxSuggestions={100}
+            autocorrect="off"
+            spellcheck="false"
+            placeholder={defensores.length > 0
+              ? "Elige de tu lista o escribe un nombre nuevo"
+              : "Escribe el nombre del Defensor Público"}
+            onEditOption={onRenombrarDefensorDirecto}
+            onDeleteOption={onEliminarDefensorDirecto}
+            onEnter={onGuardarEdicionArchivo}
+          />
+          <span class="shortcut-hint">
+            Recomendación: escribe el nombre completo sin títulos (Dr./Dra.) para que la IA reconozca siempre al mismo defensor.
+          </span>
+        </div>
+
+        {#if carpetasDisponibles.length > 0 || archivoEditarCarpeta}
+          <div class="field-group">
+            <label class="field-label" for="editar-archivo-carpeta">
+              Carpeta de ubicación
+            </label>
+            <CustomSelect
+              id="editar-archivo-carpeta"
+              bind:value={archivoEditarCarpeta}
+              options={opcionesCarpetas}
+              placeholder="Carpeta principal (raíz)"
+              searchPlaceholder="Filtrar carpeta..."
+            />
+          </div>
+        {/if}
+
+        {#if errorModalEditarArchivo}
+          <p role="alert" style="color: var(--status-no); font-size: 12px">
+            {errorModalEditarArchivo}
+          </p>
+        {/if}
+      </div>
+      <div class="modal-footer">
+        <button
+          type="button"
+          class="btn btn-subtle"
+          disabled={guardandoEdicionArchivo}
+          onclick={() => (modalActivo = null)}
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          class="btn btn-solid"
+          disabled={guardandoEdicionArchivo}
+          onclick={() => onGuardarEdicionArchivo?.()}
+        >
+          {guardandoEdicionArchivo ? "Guardando..." : "Guardar cambios"}
         </button>
       </div>
 

@@ -13,6 +13,7 @@
     allowAdd = false,
     addButtonLabel = "Agregar nuevo a la lista...",
     addPlaceholder = "Escribe el nuevo nombre...",
+    defaultAddValue = "",
     onAddOption = undefined,
     onDeleteOption = undefined,
     onchange = undefined,
@@ -99,7 +100,7 @@
 
   function startAddingNew() {
     addingNew = true;
-    newOptionText = searchQuery.trim();
+    newOptionText = searchQuery.trim() || String(defaultAddValue || "").trim();
     setTimeout(() => {
       newOptionInputEl?.focus();
     }, 15);

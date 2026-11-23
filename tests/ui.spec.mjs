@@ -3,7 +3,13 @@ import { test, expect } from "@playwright/test";
 function mockTauriInit(opts = {}) {
   const configured = Boolean(opts?.configured);
   const sinDefensorInicial = Boolean(opts?.sinDefensor);
-  const carpetas = ["2026", "2026/Enero"];
+  const carpetasIniciales = [
+    "2026",
+    "2026/Enero",
+    ...(Array.isArray(opts?.extraCarpetas) ? opts.extraCarpetas : []),
+  ];
+  let carpetas = [...carpetasIniciales];
+  let ordenCarpetas = [...carpetasIniciales];
   const extraArchivos = Array.isArray(opts?.extraArchivos) ? opts.extraArchivos : [];
   let archivos = ["2026/Enero/audiencias_enero.xlsx", ...extraArchivos];
   const defensoresPorArchivo = {
@@ -194,6 +200,10 @@ function mockTauriInit(opts = {}) {
 
   window.__LOKUS_TEST_CALLS__ = {
     crearArchivo: [],
+    moverArchivo: [],
+    renombrarArchivo: [],
+    guardarOrdenCarpetas: [],
+    renombrarCarpeta: [],
     autocompletarIa: [],
     registrarResultadoIa: [],
     actualizarDefensor: [],
@@ -358,12 +368,76 @@ function mockTauriInit(opts = {}) {
               masked_gemini_key: "",
             },
           };
+        case "cmd_mover_archivo": {
+          window.__LOKUS_TEST_CALLS__.moverArchivo.push(args);
+          const actual = String(args.nombre || "");
+          const dest = String(args.carpetaDestino || "").trim();
+          const idx = actual.lastIndexOf("/");
+          const base = idx >= 0 ? actual.slice(idx + 1) : actual;
+          const nuevaRuta = dest ? `${dest}/${base}` : base;
+          if (nuevaRuta !== actual && archivos.includes(nuevaRuta)) {
+            throw "Ya existe una planilla con ese nombre en la carpeta de destino.";
+          }
+          archivos = archivos.map((a) => (a === actual ? nuevaRuta : a));
+          if (actual !== nuevaRuta) {
+            defensoresPorArchivo[nuevaRuta] = defensoresPorArchivo[actual] ?? "";
+            delete defensoresPorArchivo[actual];
+          }
+          return nuevaRuta;
+        }
+        case "cmd_renombrar_archivo": {
+          window.__LOKUS_TEST_CALLS__.renombrarArchivo.push(args);
+          const actual = String(args.actual || "");
+          const idx = actual.lastIndexOf("/");
+          const carpetaActual = idx >= 0 ? actual.slice(0, idx) : "";
+          const baseLimpia = String(args.nuevoNombre || "")
+            .trim()
+            .replace(/\.xlsx$/i, "");
+          if (!baseLimpia) {
+            throw "El nombre del archivo no es válido o está vacío.";
+          }
+          const nombreFinal = `${baseLimpia}.xlsx`;
+          const carpetaDest =
+            args.carpetaDestino !== undefined && args.carpetaDestino !== null
+              ? String(args.carpetaDestino).trim()
+              : carpetaActual;
+          const nuevaRuta = carpetaDest ? `${carpetaDest}/${nombreFinal}` : nombreFinal;
+          if (nuevaRuta !== actual && archivos.includes(nuevaRuta)) {
+            throw "Ya existe una planilla con ese nombre en la carpeta de destino.";
+          }
+          archivos = archivos.map((a) => (a === actual ? nuevaRuta : a));
+          if (actual !== nuevaRuta) {
+            defensoresPorArchivo[nuevaRuta] = defensoresPorArchivo[actual] ?? "";
+            delete defensoresPorArchivo[actual];
+          }
+          return nuevaRuta;
+        }
+        case "cmd_renombrar_carpeta": {
+          window.__LOKUS_TEST_CALLS__.renombrarCarpeta.push(args);
+          const actual = String(args.actual || "");
+          const nueva = String(args.nueva || "").trim();
+          const prefijo = `${actual}/`;
+          carpetas = carpetas.map((c) =>
+            c === actual ? nueva : c.startsWith(prefijo) ? `${nueva}/${c.slice(prefijo.length)}` : c
+          );
+          ordenCarpetas = ordenCarpetas.map((c) =>
+            c === actual ? nueva : c.startsWith(prefijo) ? `${nueva}/${c.slice(prefijo.length)}` : c
+          );
+          archivos = archivos.map((a) =>
+            a.startsWith(prefijo) ? `${nueva}/${a.slice(prefijo.length)}` : a
+          );
+          return nueva;
+        }
         case "cmd_listar_archivos":
           return archivos;
         case "cmd_listar_carpetas":
           return carpetas;
         case "cmd_obtener_orden_carpetas":
-          return carpetas;
+          return ordenCarpetas;
+        case "cmd_guardar_orden_carpetas":
+          window.__LOKUS_TEST_CALLS__.guardarOrdenCarpetas.push(args);
+          ordenCarpetas = Array.isArray(args.orden) ? [...args.orden] : ordenCarpetas;
+          return ordenCarpetas;
         case "cmd_obtener_colores_carpetas":
           return colores;
         case "cmd_resumen_aprendizaje_ia":
@@ -435,9 +509,9 @@ function mockTauriInit(opts = {}) {
           pendientesIa = 0;
           pendientesUso = 0;
           return "/home/test/Descargas/lokus_uso_y_aprendizaje_ia_test.json";
-        case "cmd_autocompletar_ia":
+        case "cmd_autocompletar_ia": {
           window.__LOKUS_TEST_CALLS__.autocompletarIa.push(args);
-          return {
+          const baseResp = {
             radicado: "200016001075202500999",
             tipo_audiencia: "Audiencia de imputacion",
             tipo_otra: "",
@@ -469,6 +543,8 @@ function mockTauriInit(opts = {}) {
               drift_motivo: false,
             },
           };
+          return opts?.iaCustomResponse ? { ...baseResp, ...opts.iaCustomResponse } : baseResp;
+        }
         case "cmd_diagnostico_aprendizaje_ia":
           return construirDiagnostico();
         case "cmd_consolidar_memoria_ia": {
@@ -632,6 +708,7 @@ test.describe("Lokus UI smoke checks", () => {
     await expect(archivoRow.locator(".file-row-actions")).toHaveCount(0);
     await archivoRow.click({ button: "right" });
     await expect(ctxMenu).toBeVisible();
+    await expect(ctxMenu.getByRole("button", { name: "Editar o renombrar planilla" })).toBeVisible();
     await expect(ctxMenu.getByRole("button", { name: "Mover a otra carpeta" })).toBeVisible();
     await expect(ctxMenu.getByRole("button", { name: "Asignar o editar defensor" })).toBeVisible();
     await expect(ctxMenu.getByRole("button", { name: "Historial de respaldos" })).toBeVisible();
@@ -1320,6 +1397,294 @@ test.describe("Lokus UI smoke checks", () => {
       expect(dlgOverflow.docOver, `docOverflow en config_ia (${theme})`).toBe(false);
       expect(dlgOverflow.bodyOver, `modal body overflow en config_ia (${theme})`).toBe(false);
     }
+
+    expect(errors).toEqual([]);
+  });
+
+  test("drag & drop en árbol de planillas (carpeta expandida, raíz y reordenamiento)", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, {
+      configured: true,
+      extraCarpetas: ["2026/Febrero"],
+      extraArchivos: ["suelta.xlsx"],
+    });
+    await page.goto("/");
+
+    const sueltaBtn = page.locator('[data-context-file="suelta.xlsx"] .sidebar-file-btn');
+    const eneroHijoArchivo = page.locator(
+      '[data-context-file="2026/Enero/audiencias_enero.xlsx"]'
+    );
+    await expect(sueltaBtn).toBeVisible();
+    await expect(eneroHijoArchivo).toBeVisible();
+
+    // Salvaguardas WebView2: draggable="false", touch-action: none, user-select: none y dragstart prevenido
+    const dndGuard = await page.evaluate(() => {
+      const fileBtn = document.querySelector('[data-context-file="suelta.xlsx"] .sidebar-file-btn');
+      const style = getComputedStyle(fileBtn);
+      const ev = new Event("dragstart", { bubbles: true, cancelable: true });
+      fileBtn.dispatchEvent(ev);
+      return {
+        draggableAttr: fileBtn.getAttribute("draggable"),
+        touchAction: style.touchAction,
+        userSelect: style.userSelect || style.webkitUserSelect,
+        dragStartPrevented: ev.defaultPrevented,
+      };
+    });
+    expect(dndGuard.draggableAttr).toBe("false");
+    expect(dndGuard.touchAction).toBe("none");
+    expect(dndGuard.userSelect).toBe("none");
+    expect(dndGuard.dragStartPrevented).toBe(true);
+
+    // 1) Arrastrar archivo raíz directamente sobre un archivo hijo dentro de carpeta expandida "2026/Enero"
+    const origBox = await sueltaBtn.boundingBox();
+    const hijoBox = await eneroHijoArchivo.boundingBox();
+    await page.mouse.move(origBox.x + origBox.width / 2, origBox.y + origBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      origBox.x + origBox.width / 2 + 12,
+      origBox.y + origBox.height / 2,
+      { steps: 4 }
+    );
+    await expect(page.locator(".tree-drag-ghost")).toBeVisible();
+    await page.mouse.move(hijoBox.x + hijoBox.width / 2, hijoBox.y + hijoBox.height / 2, {
+      steps: 8,
+    });
+    await expect(page.locator('[data-drop-folder="2026/Enero"].is-drop-target')).toBeVisible();
+    await page.mouse.up();
+
+    await expect
+      .poll(async () => page.evaluate(() => window.__LOKUS_TEST_CALLS__.moverArchivo.length))
+      .toBe(1);
+    const mov1 = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.moverArchivo[0]);
+    expect(mov1.nombre).toBe("suelta.xlsx");
+    expect(mov1.carpetaDestino).toBe("2026/Enero");
+    await expect(page.locator('[data-context-file="2026/Enero/suelta.xlsx"]')).toBeVisible();
+
+    // 2) Arrastrar desde carpeta hacia la zona superior ".sidebar-root-dropzone" (raíz "")
+    const movidaBtn = page.locator(
+      '[data-context-file="2026/Enero/suelta.xlsx"] .sidebar-file-btn'
+    );
+    const movidaBox = await movidaBtn.boundingBox();
+    await page.mouse.move(movidaBox.x + movidaBox.width / 2, movidaBox.y + movidaBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      movidaBox.x + movidaBox.width / 2 + 12,
+      movidaBox.y + movidaBox.height / 2,
+      { steps: 4 }
+    );
+    const rootZone = page.locator(".sidebar-root-dropzone");
+    await expect(rootZone).toBeVisible();
+    const rootBox = await rootZone.boundingBox();
+    await page.mouse.move(rootBox.x + rootBox.width / 2, rootBox.y + rootBox.height / 2, {
+      steps: 6,
+    });
+    await page.mouse.up();
+
+    await expect
+      .poll(async () => page.evaluate(() => window.__LOKUS_TEST_CALLS__.moverArchivo.length))
+      .toBe(2);
+    const mov2 = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.moverArchivo[1]);
+    expect(mov2.nombre).toBe("2026/Enero/suelta.xlsx");
+    expect(mov2.carpetaDestino).toBe("");
+    await expect(page.locator('[data-context-file="suelta.xlsx"]')).toBeVisible();
+
+    // 3) Reordenar subcarpeta "2026/Febrero" antes de "2026/Enero"
+    const eneroRow = page.locator('[data-context-folder="2026/Enero"]');
+    const febreroRow = page.locator('[data-context-folder="2026/Febrero"]');
+    const febBox = await febreroRow.boundingBox();
+    const eneBox = await eneroRow.boundingBox();
+    await page.mouse.move(febBox.x + 24, febBox.y + febBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(eneBox.x + 24, eneBox.y + Math.max(2, eneBox.height * 0.14), {
+      steps: 10,
+    });
+    await page.mouse.up();
+
+    await expect
+      .poll(async () => page.evaluate(() => window.__LOKUS_TEST_CALLS__.guardarOrdenCarpetas.length))
+      .toBe(1);
+    const nuevoOrden = await page.evaluate(
+      () => window.__LOKUS_TEST_CALLS__.guardarOrdenCarpetas[0].orden
+    );
+    expect(nuevoOrden.indexOf("2026/Febrero")).toBeLessThan(nuevoOrden.indexOf("2026/Enero"));
+    expect(errors).toEqual([]);
+  });
+
+  test("editar y renombrar planilla Excel y autocompletado [DEFENSOR]_[MES]_[AÑO]", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, { configured: true });
+    await page.goto("/");
+
+    // 1) Editar y renombrar planilla desde menú contextual del sidebar
+    await page.locator('[data-context-file="2026/Enero/audiencias_enero.xlsx"]').click({
+      button: "right",
+    });
+    await page
+      .locator(".folder-context-menu")
+      .getByRole("button", { name: "Editar o renombrar planilla" })
+      .click();
+    await expect(page.getByRole("heading", { name: "Editar planilla Excel" })).toBeVisible();
+
+    await page.locator("#editar-archivo-nombre").fill("Laura_Renombrada");
+    await page.locator("#editar-archivo-defensor").fill("Dr. Carlos Mendoza");
+    await page.getByRole("button", { name: "Guardar cambios" }).click();
+
+    await expect(page.getByRole("heading", { name: "Editar planilla Excel" })).toBeHidden();
+    await expect(page.locator(".active-doc-name")).toHaveText("Laura_Renombrada.xlsx");
+    await expect(page.locator(".active-doc-defensor-btn")).toContainText("Dr. Carlos Mendoza");
+    await expect(
+      page.locator('[data-context-file="2026/Enero/Laura_Renombrada.xlsx"]')
+    ).toBeVisible();
+
+    const renArchivoCalls = await page.evaluate(
+      () => window.__LOKUS_TEST_CALLS__.renombrarArchivo
+    );
+    expect(renArchivoCalls.length).toBe(1);
+    expect(renArchivoCalls[0]).toEqual({
+      actual: "2026/Enero/audiencias_enero.xlsx",
+      nuevoNombre: "Laura_Renombrada",
+      carpetaDestino: "2026/Enero",
+    });
+
+    // 2) También puede editarse con el botón rápido en .active-doc-bar y reubicar a la raíz
+    await page.locator(".active-doc-edit-btn").click();
+    await expect(page.getByRole("heading", { name: "Editar planilla Excel" })).toBeVisible();
+    await page.locator("#editar-archivo-carpeta").click();
+    await page.getByRole("option", { name: "Carpeta principal (raíz)" }).click();
+    await page.getByRole("button", { name: "Guardar cambios" }).click();
+    await expect(page.locator('[data-context-file="Laura_Renombrada.xlsx"]')).toBeVisible();
+
+    // 3) Autocompletado [NOMBRE_DEFENSOR]_[MES_ACTUAL]_[AÑO_ACTUAL] al crear planilla nueva
+    const meses = [
+      "Enero",
+      "Febrero",
+      "Marzo",
+      "Abril",
+      "Mayo",
+      "Junio",
+      "Julio",
+      "Agosto",
+      "Septiembre",
+      "Octubre",
+      "Noviembre",
+      "Diciembre",
+    ];
+    const ahora = new Date();
+    const mesEsperado = meses[ahora.getMonth()];
+    const anioEsperado = ahora.getFullYear();
+
+    await page.locator('[data-context-folder="2026"]').click({ button: "right" });
+    await page
+      .locator(".folder-context-menu")
+      .getByRole("button", { name: "Nueva planilla aquí" })
+      .click();
+    await expect(page.getByRole("heading", { name: "Nuevo archivo de audiencias" })).toBeVisible();
+
+    // Elegir defensor guardado rellena automáticamente [DEFENSOR]_[MES]_[AÑO]
+    await page.getByRole("button", { name: "Mostrar opciones guardadas" }).click();
+    await page.getByRole("option", { name: "Dra. Laura Gómez" }).click();
+    const nombreInput = page.locator("#nuevo-archivo-input");
+    await expect(nombreInput).toHaveValue(`Dra_Laura_Gómez_${mesEsperado}_${anioEsperado}`);
+
+    // Si el usuario escribe manualmente un nombre propio, cambiar de defensor NO lo sobrescribe
+    await nombreInput.fill("Planilla_Manual_Especial");
+    await page.locator("#nuevo-archivo-defensor").fill("Dr. Carlos Mendoza");
+    await expect(nombreInput).toHaveValue("Planilla_Manual_Especial");
+
+    // Botón "Usar formato automático" vuelve a aplicar [DEFENSOR]_[MES]_[AÑO]
+    await page.getByRole("button", { name: "Usar formato automático" }).click();
+    const esperadoCarlos = `Dr_Carlos_Mendoza_${mesEsperado}_${anioEsperado}`;
+    await expect(nombreInput).toHaveValue(esperadoCarlos);
+
+    await page.getByRole("button", { name: "Crear archivo" }).click();
+    await expect(page.getByRole("heading", { name: "Nuevo archivo de audiencias" })).toBeHidden();
+    const crearCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.crearArchivo);
+    expect(crearCalls.length).toBe(1);
+    expect(crearCalls[0].nombre).toBe(esperadoCarlos);
+    expect(crearCalls[0].defensor).toBe("Dr. Carlos Mendoza");
+    expect(errors).toEqual([]);
+  });
+
+  test("IA en 'Otra' ofrece botón + directo y prellena 'Agregar nuevo' en Juzgado y Tipo", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, {
+      configured: true,
+      iaCustomResponse: {
+        juzgado: "Juzgado Promiscuo Municipal de La Paz",
+        tipo_audiencia: "Otra",
+        tipo_otra: "Audiencia de revocatoria de medida",
+      },
+    });
+    await page.goto("/");
+
+    await page
+      .locator("#ia-inline-textarea")
+      .fill("Audiencia de revocatoria de medida ante Juzgado Promiscuo de La Paz");
+    await page.getByRole("button", { name: /Autocompletar con IA/i }).click();
+
+    await expect(page.locator("#juzgado")).toContainText("Otra");
+    await expect(page.locator("#juzgado-otra")).toHaveValue(
+      "Juzgado Promiscuo Municipal de La Paz"
+    );
+    await expect(page.locator("#tipo-audiencia")).toContainText("Otra");
+    await expect(page.locator("#tipo-otra")).toHaveValue("Audiencia de revocatoria de medida");
+
+    // Abrir "Agregar nuevo juzgado..." dentro del select prellena con el texto actual de "Otra"
+    await page.locator("#juzgado").click();
+    await page.locator(".custom-select-add-trigger").click();
+    await expect(page.locator(".custom-select-add-input")).toHaveValue(
+      "Juzgado Promiscuo Municipal de La Paz"
+    );
+    await page.locator("#juzgado").click();
+
+    // Cero desbordamiento horizontal en tema oscuro y claro con .otra-inline-row visible
+    for (const theme of ["dark", "light"]) {
+      if (theme === "light") {
+        await page.getByRole("button", { name: "Cambiar tema" }).click();
+        await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+      }
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth > document.documentElement.clientWidth
+      );
+      expect(overflow, `overflow con .otra-inline-row en tema ${theme}`).toBe(false);
+    }
+
+    // Botón + junto a #juzgado-otra agrega a la lista y lo selecciona inmediatamente
+    await page.getByRole("button", { name: "Guardar juzgado en la lista" }).click();
+    await expect(page.locator("#juzgado")).toContainText(
+      "Juzgado Promiscuo Municipal de La Paz"
+    );
+    await expect(page.locator("#juzgado-otra")).toHaveCount(0);
+    await expect(page.locator(".toast")).toContainText("agregado a la lista de juzgados");
+
+    // Botón + junto a #tipo-otra agrega el nuevo tipo y lo selecciona inmediatamente
+    await page.getByRole("button", { name: "Guardar tipo de audiencia en la lista" }).click();
+    await expect(page.locator("#tipo-audiencia")).toContainText(
+      "Audiencia de revocatoria de medida"
+    );
+    await expect(page.locator("#tipo-otra")).toHaveCount(0);
+    await expect(page.locator(".toast")).toContainText("agregado a los tipos de audiencia");
 
     expect(errors).toEqual([]);
   });

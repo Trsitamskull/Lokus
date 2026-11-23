@@ -45,6 +45,7 @@
     onMoverPorArrastre,
     onReordenarCarpetas,
     onSeleccionarArchivo,
+    onEditarArchivo = null,
     onAbrirDefensorArchivo,
     onAbrirRespaldos,
     onDescargarArchivo,
@@ -66,8 +67,8 @@
   let restaurarFocoAlCerrar = true;
 
   // Estado de arrastre mediante Pointer Events (Windows WebView2 y Linux WebKitGTK)
-  let posibleArrastre = $state(null); // { tipo, ruta, nombre, carpetaOrigen, startX, startY, pointerId }
-  let arrastreActivo = $state(null);  // { tipo, ruta, nombre, carpetaOrigen, x, y }
+  let posibleArrastre = $state(null); // { tipo, ruta, nombre, carpetaOrigen, startX, startY, pointerId, pointerType }
+  let arrastreActivo = $state(null);  // { tipo, ruta, nombre, carpetaOrigen, x, y, pointerId }
   let hoverDestino = $state(null);    // "" (raíz) | "2026/Enero" | null
   let hoverPosicion = $state(null);   // "antes" | "dentro" | "despues" | null
   let bloquearClickTemporal = false;
@@ -289,7 +290,10 @@
   }
 
   function iniciarPosibleArrastre(e, item) {
-    if (e.button !== 0 || mobileOpen) return;
+    if (e.button !== 0) return;
+    if (e.pointerType === "mouse") {
+      window.getSelection?.()?.removeAllRanges?.();
+    }
     posibleArrastre = {
       tipo: item.tipo,
       ruta: item.ruta,
@@ -298,6 +302,7 @@
       startX: e.clientX,
       startY: e.clientY,
       pointerId: e.pointerId,
+      pointerType: e.pointerType,
     };
   }
 
@@ -310,12 +315,42 @@
   }
 
   function finalizarEstadoArrastre() {
+    const pid = arrastreActivo?.pointerId ?? posibleArrastre?.pointerId;
+    if (pid != null && filesContainerEl?.hasPointerCapture?.(pid)) {
+      try {
+        filesContainerEl.releasePointerCapture(pid);
+      } catch (_) {}
+    }
     limpiarAutoExpand();
     posibleArrastre = null;
     arrastreActivo = null;
     hoverDestino = null;
     hoverPosicion = null;
     document.body.classList.remove("is-dragging-tree");
+  }
+
+  function calcularDestinoDesdePunto(clientX, clientY, arrastre) {
+    if (!arrastre || !Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return { destino: null, posicion: null };
+    }
+    const el = document.elementFromPoint(clientX, clientY);
+    const zona = el?.closest?.("[data-drop-folder]");
+    const destino = zona ? zona.getAttribute("data-drop-folder") : null;
+    if (destino === null) {
+      return { destino: null, posicion: null };
+    }
+    if (
+      destino === "" ||
+      zona.hasAttribute("data-drop-only-inside") ||
+      arrastre.tipo !== "carpeta"
+    ) {
+      return { destino, posicion: "dentro" };
+    }
+    const rect = zona.getBoundingClientRect();
+    const relY = (clientY - rect.top) / Math.max(1, rect.height);
+    if (relY < 0.28) return { destino, posicion: "antes" };
+    if (relY > 0.72) return { destino, posicion: "despues" };
+    return { destino, posicion: "dentro" };
   }
 
   function calcularNuevoOrdenCarpetas(rutaMovida, destino, posicion) {
@@ -350,13 +385,22 @@
 
   function manejarPointerMoveGlobal(e) {
     if (!posibleArrastre && !arrastreActivo) return;
+    const esperado = arrastreActivo?.pointerId ?? posibleArrastre?.pointerId;
+    if (esperado != null && e.pointerId != null && e.pointerId !== esperado) return;
+    if (arrastreActivo && e.isTrusted && e.pointerType === "mouse" && e.buttons === 0) {
+      manejarPointerUpGlobal(e);
+      return;
+    }
 
     if (!arrastreActivo && posibleArrastre) {
       const dist = Math.hypot(
         e.clientX - posibleArrastre.startX,
         e.clientY - posibleArrastre.startY
       );
-      if (dist < 6) return;
+      if (dist < 5) return;
+      if (e.pointerType === "mouse") {
+        window.getSelection?.()?.removeAllRanges?.();
+      }
       arrastreActivo = {
         tipo: posibleArrastre.tipo,
         ruta: posibleArrastre.ruta,
@@ -364,7 +408,13 @@
         carpetaOrigen: posibleArrastre.carpetaOrigen,
         x: e.clientX,
         y: e.clientY,
+        pointerId: posibleArrastre.pointerId ?? e.pointerId,
       };
+      if (e.pointerId != null) {
+        try {
+          filesContainerEl?.setPointerCapture?.(e.pointerId);
+        } catch (_) {}
+      }
       document.body.classList.add("is-dragging-tree");
     }
 
@@ -380,24 +430,11 @@
       }
     }
 
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    const zona = el?.closest?.("[data-drop-folder]");
-    const destino = zona ? zona.getAttribute("data-drop-folder") : null;
-
-    let posicion = null;
-    if (destino !== null) {
-      if (destino === "") {
-        posicion = "dentro";
-      } else if (arrastreActivo.tipo === "carpeta") {
-        const rect = zona.getBoundingClientRect();
-        const relY = (e.clientY - rect.top) / Math.max(1, rect.height);
-        if (relY < 0.28) posicion = "antes";
-        else if (relY > 0.72) posicion = "despues";
-        else posicion = "dentro";
-      } else {
-        posicion = "dentro";
-      }
-    }
+    const { destino, posicion } = calcularDestinoDesdePunto(
+      e.clientX,
+      e.clientY,
+      arrastreActivo
+    );
 
     hoverDestino = destino;
     hoverPosicion = posicion;
@@ -416,13 +453,17 @@
     }
   }
 
-  async function manejarPointerUpGlobal() {
+  async function manejarPointerUpGlobal(e) {
     if (!posibleArrastre && !arrastreActivo) return;
+    const esperado = arrastreActivo?.pointerId ?? posibleArrastre?.pointerId;
+    if (esperado != null && e?.pointerId != null && e.pointerId !== esperado) return;
 
     if (arrastreActivo) {
       const arrastre = arrastreActivo;
-      const destino = hoverDestino;
-      const posicion = hoverPosicion;
+      const { destino, posicion } =
+        Number.isFinite(e?.clientX) && Number.isFinite(e?.clientY)
+          ? calcularDestinoDesdePunto(e.clientX, e.clientY, arrastre)
+          : { destino: hoverDestino, posicion: hoverPosicion };
       bloquearClickTemporal = true;
       setTimeout(() => {
         bloquearClickTemporal = false;
@@ -643,6 +684,7 @@
   onpointerdown={manejarPointerDownVentana}
   onkeydown={manejarKeydownVentana}
   onblur={() => {
+    finalizarEstadoArrastre();
     if (contextMenu) cerrarMenuContextual({ restaurarFoco: false });
   }}
 />
@@ -662,6 +704,8 @@
     <button
       type="button"
       class="sidebar-file-btn"
+      draggable="false"
+      ondragstart={(e) => e.preventDefault()}
       title="{item.ruta} · clic derecho para opciones o arrastra para mover"
       oncontextmenu={(e) => abrirMenuContextual(e, "archivo", item.ruta, e.currentTarget)}
       onpointerdown={(e) => {
@@ -713,6 +757,8 @@
       <button
         type="button"
         class="sidebar-folder-btn"
+        draggable="false"
+        ondragstart={(e) => e.preventDefault()}
         aria-expanded={abierta}
         title="{nodo.ruta}{tieneActivoPlegado ? ' (contiene la planilla activa)' : ''} · clic derecho para opciones o arrastra para reordenar"
         oncontextmenu={(e) => abrirMenuContextual(e, "carpeta", nodo.ruta, e.currentTarget)}
@@ -759,7 +805,12 @@
     </div>
 
     {#if abierta && (nodo.carpetas.length > 0 || nodo.archivos.length > 0)}
-      <div class="sidebar-folder-children" style="--tree-depth: {depth}">
+      <div
+        class="sidebar-folder-children {dropValido && hoverPosicion === 'dentro' ? 'is-drop-target-children' : ''}"
+        style="--tree-depth: {depth}"
+        data-drop-folder={nodo.ruta}
+        data-drop-only-inside="true"
+      >
         {#each nodo.carpetas as subnodo (subnodo.ruta)}
           {@render renderCarpeta(subnodo, depth + 1, forzarAbierta)}
         {/each}
@@ -879,18 +930,9 @@
     class="sidebar-files scroller"
     bind:this={filesContainerEl}
     data-drop-folder=""
+    ondragstart={(e) => e.preventDefault()}
     oncontextmenu={manejarContextMenuLista}
   >
-    {#if arrastreActivo && arrastreActivo.carpetaOrigen !== ""}
-      <div
-        class="sidebar-root-dropzone {hoverDestino === '' ? 'is-drop-target' : ''}"
-        data-drop-folder=""
-      >
-        <Folder size={13} />
-        <span>Soltar aquí para mover a la carpeta principal</span>
-      </div>
-    {/if}
-
     {#if archivosDisponibles.length === 0 && carpetasDisponibles.length === 0}
       <div class="sidebar-empty">
         No hay planillas creadas.<br />
@@ -909,6 +951,16 @@
       {/each}
     {/if}
   </div>
+
+  {#if arrastreActivo && arrastreActivo.carpetaOrigen !== ""}
+    <div
+      class="sidebar-root-dropzone {hoverDestino === '' ? 'is-drop-target' : ''}"
+      data-drop-folder=""
+    >
+      <Folder size={13} />
+      <span>Soltar aquí para mover a la carpeta principal</span>
+    </div>
+  {/if}
 
   <div class="sidebar-footer">
     {#if archivoActual}
@@ -1042,6 +1094,7 @@
         <hr class="folder-context-sep" />
         {@render itemMenuContextual(Trash2, "Eliminar carpeta", onEliminarCarpeta, true)}
       {:else}
+        {@render itemMenuContextual(Pencil, "Editar o renombrar planilla", onEditarArchivo)}
         {@render itemMenuContextual(FolderInput, "Mover a otra carpeta", onMoverArchivo)}
         {@render itemMenuContextual(UserCheck, "Asignar o editar defensor", onAbrirDefensorArchivo)}
         {@render itemMenuContextual(History, "Historial de respaldos", onAbrirRespaldos)}
