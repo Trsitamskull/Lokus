@@ -1,5 +1,21 @@
 # Historial de Versiones (Lokus)
 
+## [5.1.0] - 2026-11-22
+
+### Corrección de errores (Bugs)
+- **Los archivos Excel descargados ya abren al instante en Windows:** Se eliminó la configuración interna de impresora externa y rutas antiguas de otro equipo que venían guardadas en la plantilla anterior y hacían que Microsoft Excel se quedara congelado hasta 5 minutos al abrir un archivo por primera vez. Ahora las planillas nuevas se crean limpias y, si exportas a Descargas una planilla creada antes de esta actualización, Lokus la limpia automáticamente al copiarla.
+- **Arrastrar y soltar (Drag & Drop) reparado en Windows:** Ya puedes arrastrar planillas y carpetas con el ratón directamente en el panel izquierdo en Windows igual que en Linux, soltar un archivo sobre cualquier registro dentro de una carpeta abierta para guardarlo ahí y arrastrar desde subcarpetas sin que la lista salte de posición.
+
+### Nuevas funciones
+- **Editar y renombrar planillas Excel dentro de la aplicación:** Al hacer clic derecho sobre cualquier archivo del panel lateral (o en el nuevo botón de lápiz junto al nombre de la planilla activa arriba) ahora aparece **Editar o renombrar planilla**, para cambiar el nombre del archivo, su Defensor Público asignado y su carpeta en un solo paso sin perder respaldos ni estadísticas.
+- **Nombre automático para nuevas planillas (`Defensor_Mes_Año`):** En *Nuevo archivo de audiencias*, al elegir o escribir el Defensor Público el sistema sugiere automáticamente el nombre `[NOMBRE_DEFENSOR]_[MES_ACTUAL]_[AÑO_ACTUAL]`. Si prefieres escribir otro nombre manualmente, Lokus lo respeta y deja un enlace rápido **Usar formato automático** por si luego quieres volver al formato estándar.
+- **Botón `+` directo para guardar nuevos juzgados y tipos de audiencia:** Cuando la IA o tú dejen Juzgado o Tipo de audiencia en **Otra**, ahora verás un botón **`+`** justo al lado del campo de texto para guardarlo en tu lista permanente y seleccionarlo automáticamente en un clic.
+
+### Mejoras y funciones modificadas
+- **Nueva plantilla oficial con mejor presentación visual:** Se actualizó la plantilla Excel oficial con columnas más amplias y el diseño visual preferido, manteniendo exactamente las mismas filas, totales y el logo institucional.
+- **Menos escritura al crear un juzgado o tipo nuevo desde el selector:** Si ya hay un texto escrito en *Otra*, al abrir *Agregar nuevo juzgado* o *Agregar nuevo tipo de audiencia* dentro del menú desplegable ese campo aparece prellenado automáticamente.
+- **Orden más cómodo al crear un archivo nuevo:** En la ventana *Nuevo archivo de audiencias*, el campo **Defensor Público asignado** ahora aparece primero para completar de inmediato el nombre de la planilla justo debajo.
+
 ## [5.0.0] - 2026-11-22
 
 ### Novedades principales
