@@ -109,6 +109,15 @@ function mockTauriInit(opts = {}) {
           confianza_q10: 0.61,
           drift_activo: false,
         },
+        {
+          campo: "hora",
+          evaluaciones: 0,
+          aciertos: 0,
+          correcciones: 0,
+          precision_ewma: 0.5,
+          confianza_q10: 0.24,
+          drift_activo: false,
+        },
       ],
       metricas_por_modelo: [
         {
@@ -876,22 +885,32 @@ test.describe("Lokus UI smoke checks", () => {
     await page.getByRole("tab", { name: /Registros/ }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Registros de la Planilla" })).toBeVisible();
 
-    // Verificar sección diagnóstica discreta de autoaprendizaje en modal Configurar IA
+    // Verificar modal IA y pestaña Aprendizaje y memoria
     await page.getByRole("button", { name: /Configurar IA/i }).click();
-    const diagSummary = page.locator("summary.ia-diag-summary");
-    await expect(diagSummary).toBeVisible();
-    await diagSummary.click();
-    await expect(page.getByRole("heading", { level: 3, name: "Fiabilidad por campo" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 2, name: "Inteligencia Artificial y Aprendizaje" })
+    ).toBeVisible();
+    await expect(page.locator(".ia-status-banner")).toContainText("Sin clave API");
+    await page.getByRole("tab", { name: /Aprendizaje y memoria/i }).click();
+    await expect(page.getByRole("heading", { level: 3, name: "Precisión por campo" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 3, name: "Criterios aprendidos" })).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Modelos evaluados" })).toBeVisible();
-    await expect(page.locator(".ia-diag-metrics-row")).toContainText("Perfiles def.");
-    await expect(page.locator(".ia-diag-metrics-row")).toContainText("Mapa conex.");
-    await expect(page.locator(".ia-diag-metrics-row")).toContainText("14");
-    await expect(page.locator(".ia-diag-details")).toContainText("Instalada");
-    await expect(page.locator(".ia-diag-details")).toContainText("40%");
-    await expect(page.locator(".ia-diag-table")).toContainText("realizada");
+    await expect(page.locator(".ia-kpi-strip")).toContainText("86%");
+    await expect(page.locator(".ia-kpi-strip")).toContainText("Perfiles de defensores");
+    await expect(page.locator(".ia-kpi-strip")).toContainText("14 conexiones de juzgados");
+    await expect(page.locator(".ia-prefs-list")).toContainText("instalada y reprogramada");
+    await expect(page.locator(".ia-prefs-list")).toContainText("40%");
+    const tablaCampos = page.locator(".ia-diag-table");
+    await expect(tablaCampos).toContainText("Realizada (SI/NO)");
+    await expect(tablaCampos.locator(".ia-diag-pill.is-ok")).toContainText("Confiable");
+    await expect(tablaCampos.locator(".ia-diag-pill.is-warn")).toContainText("Mejorable");
+    await expect(tablaCampos).toContainText("Hora");
+    await expect(tablaCampos.locator(".ia-diag-pill.is-neutral")).toContainText("Sin datos");
+    await expect(tablaCampos).toContainText("—");
     await expect(page.locator(".ia-diag-rules-list")).toContainText("CTO");
-    await expect(page.getByRole("button", { name: "Consolidar defensor" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Consolidar general (*)" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Consolidar perfil del defensor" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Consolidar reglas generales" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Recargar datos" })).toBeEnabled();
     await page.getByRole("button", { name: "Cancelar" }).click();
 
     // Cambio de tema y verificación de no desbordamiento horizontal en tema claro
@@ -966,31 +985,33 @@ test.describe("Lokus UI smoke checks", () => {
       expect(layout.containerOverflow, `containerOverflow at ${width}px`).toBe(false);
     }
 
-    // Probar flujo "+ Agregar nuevo" en CustomSelect con variante sin tilde y puntuación distinta
+    // Probar alta unificada desde "Otra" + botón + (sin pie "Agregar nuevo") y variante sin tilde
     await page.setViewportSize({ width: 1280, height: 820 });
     await page.locator("#tipo-audiencia").click();
-    await page.locator(".custom-select-add-trigger").click();
-    await page.locator(".custom-select-add-input").fill("Audiencia de imputacion");
-    await page.locator(".custom-select-add-save").click();
+    await expect(page.locator(".custom-select-add-trigger")).toHaveCount(0);
+    await page.getByRole("option", { name: /Otra/i }).click();
+    await page.locator("#tipo-otra").fill("Audiencia de imputacion");
+    await page.getByRole("button", { name: "Guardar tipo de audiencia en la lista" }).click();
     await expect(page.locator("#tipo-audiencia")).toContainText("Audiencia de imputación");
     await expect(page.locator(".toast")).toContainText("ya existe en los tipos de audiencia");
 
     await page.locator("#juzgado").click();
-    await page.locator(".custom-select-add-trigger").click();
+    await expect(page.locator(".custom-select-add-trigger")).toHaveCount(0);
+    await page.getByRole("option", { name: /Otra/i }).click();
     await page
-      .locator(".custom-select-add-input")
+      .locator("#juzgado-otra")
       .fill("Tribunal Superior del Distrito Judicial de Valledupar Sala Penal");
-    await page.locator(".custom-select-add-save").click();
+    await page.getByRole("button", { name: "Guardar juzgado en la lista" }).click();
     await expect(page.locator("#juzgado")).toContainText(
       "Tribunal Superior del Distrito Judicial de Valledupar - Sala Penal"
     );
     await expect(page.locator(".toast")).toContainText("ya existe en la lista de juzgados");
 
-    // Agregar juzgado nuevo real y luego eliminarlo de la lista
+    // Agregar juzgado nuevo real desde "Otra" y luego eliminarlo de la lista
     await page.locator("#juzgado").click();
-    await page.locator(".custom-select-add-trigger").click();
-    await page.locator(".custom-select-add-input").fill("Juzgado 2 Penal");
-    await page.locator(".custom-select-add-save").click();
+    await page.getByRole("option", { name: /Otra/i }).click();
+    await page.locator("#juzgado-otra").fill("Juzgado 2 Penal");
+    await page.getByRole("button", { name: "Guardar juzgado en la lista" }).click();
     await expect(page.locator("#juzgado")).toContainText("Juzgado 2 Penal");
     await expect(page.locator(".toast")).toContainText("agregado a la lista de juzgados");
 
@@ -1243,9 +1264,9 @@ test.describe("Lokus UI smoke checks", () => {
 
     // Agregar juzgado dispara cargarResumenAprendizaje(): el panel oculto no debe reaparecer
     await page.locator("#juzgado").click();
-    await page.locator(".custom-select-add-trigger").click();
-    await page.locator(".custom-select-add-input").fill("Juzgado Prueba Zombie");
-    await page.locator(".custom-select-add-save").click();
+    await page.getByRole("option", { name: /Otra/i }).click();
+    await page.locator("#juzgado-otra").fill("Juzgado Prueba Zombie");
+    await page.getByRole("button", { name: "Guardar juzgado en la lista" }).click();
     await expect(clarifyPanel).toBeHidden();
 
     // 4) También se oculta si cambia el defensor de la planilla activa
@@ -1307,13 +1328,14 @@ test.describe("Lokus UI smoke checks", () => {
     );
     expect(discardCalls.length).toBe(1);
 
-    // 5) En config_ia: 2 interruptores (con rollback al cancelar), toast en top-layer, métricas y perfiles sintéticos
+    // 5) En config_ia: 2 interruptores claros (con rollback al cancelar), toast en top-layer, KPIs, consolidación y perfiles resumidos
     await page.locator(".ai-config-trigger").click();
+    await expect(page.locator(".ia-status-banner")).toContainText("Conectado");
     const chkConsolidacion = page.getByRole("checkbox", {
-      name: /Consolidación periódica automática con IA/i,
+      name: /Organizar memoria automáticamente/i,
     });
     const chkResumen = page.getByRole("checkbox", {
-      name: /Inyectar resumen consolidado al extraer/i,
+      name: /Usar resúmenes aprendidos al autocompletar/i,
     });
     await expect(chkConsolidacion).toBeVisible();
     await expect(chkConsolidacion).toBeChecked();
@@ -1327,7 +1349,7 @@ test.describe("Lokus UI smoke checks", () => {
     await expect(chkConsolidacion).toBeChecked();
 
     await chkResumen.uncheck();
-    await page.getByRole("button", { name: "Guardar" }).click();
+    await page.getByRole("button", { name: "Guardar cambios" }).click();
     const savedCfg = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.guardarConfig);
     expect(savedCfg.length).toBe(1);
     expect(savedCfg[0].config.consolidacion_ia_activa).toBe(true);
@@ -1336,27 +1358,31 @@ test.describe("Lokus UI smoke checks", () => {
     await page.locator(".ai-config-trigger").click();
     await expect(chkResumen).not.toBeChecked();
 
-    await page.locator("summary.ia-diag-summary").click();
+    await page.getByRole("tab", { name: /Aprendizaje y memoria/i }).click();
+    const kpiStrip = page.locator(".ia-kpi-strip");
+    await expect(kpiStrip).toContainText("Resúmenes creados");
+    await expect(kpiStrip).toContainText("Listo para resumir");
+
+    await page.locator("summary.ia-tech-summary").click();
     const metricsRow = page.locator(".ia-diag-metrics-row");
-    await expect(metricsRow).toContainText("Consolidaciones");
     await expect(metricsRow).toContainText("Presión global");
     await expect(metricsRow).toContainText("1.45");
-    await expect(metricsRow).toContainText("Resp. aclarac.");
+    await expect(metricsRow).toContainText("Resp. a preguntas");
 
-    const btnConsDef = page.getByRole("button", { name: "Consolidar defensor" });
-    const btnConsGen = page.getByRole("button", { name: "Consolidar general (*)" });
+    const btnConsDef = page.getByRole("button", { name: "Consolidar perfil del defensor" });
+    const btnConsGen = page.getByRole("button", { name: "Consolidar reglas generales" });
     await expect(btnConsDef).toBeEnabled();
     await expect(btnConsGen).toBeEnabled();
 
     await btnConsGen.click();
+    const panelAprendizaje = page.locator("#ia-panel-aprendizaje");
     await expect(
-      page.getByRole("heading", { level: 3, name: "Perfiles sintéticos consolidados" })
+      page.getByRole("heading", { level: 3, name: "Perfiles resumidos" })
     ).toBeVisible();
-    await expect(page.locator(".ia-diag-details")).toContainText("General (transversal)");
-    await expect(page.locator(".ia-diag-details")).toContainText(
-      "Criterio transversal consolidado"
-    );
+    await expect(panelAprendizaje).toContainText("General (todos los defensores)");
+    await expect(panelAprendizaje).toContainText("Criterio transversal consolidado");
     await expect(metricsRow).toContainText("0.29");
+    await expect(kpiStrip).toContainText("Memoria al día");
 
     // El toast debe renderizarse por encima de <dialog> abierto (Top Layer)
     const toastLocator = page.locator(".toast");
@@ -1372,7 +1398,7 @@ test.describe("Lokus UI smoke checks", () => {
     expect(toastOnTop).toBe(true);
 
     await btnConsDef.click();
-    await expect(page.locator(".ia-diag-details")).toContainText("Dr. Carlos Mendoza");
+    await expect(panelAprendizaje).toContainText("Dr. Carlos Mendoza");
 
     const consCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.consolidarMemoriaIa);
     expect(consCalls.length).toBe(2);
@@ -1386,7 +1412,8 @@ test.describe("Lokus UI smoke checks", () => {
         await page.getByRole("button", { name: "Cambiar tema" }).click();
         await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
         await page.locator(".ai-config-trigger").click();
-        await page.locator("summary.ia-diag-summary").click();
+        await page.getByRole("tab", { name: /Aprendizaje y memoria/i }).click();
+        await page.locator("summary.ia-tech-summary").click();
       }
       const dlgOverflow = await page.evaluate(() => {
         const docOver = document.documentElement.scrollWidth > document.documentElement.clientWidth;
@@ -1619,7 +1646,7 @@ test.describe("Lokus UI smoke checks", () => {
     expect(errors).toEqual([]);
   });
 
-  test("IA en 'Otra' ofrece botón + directo y prellena 'Agregar nuevo' en Juzgado y Tipo", async ({
+  test("IA en 'Otra', plantilla rápida desde catálogo base/usuario y alta unificada con +", async ({
     page,
   }) => {
     const errors = [];
@@ -1649,16 +1676,17 @@ test.describe("Lokus UI smoke checks", () => {
     );
     await expect(page.locator("#tipo-audiencia")).toContainText("Otra");
     await expect(page.locator("#tipo-otra")).toHaveValue("Audiencia de revocatoria de medida");
-
-    // Abrir "Agregar nuevo juzgado..." dentro del select prellena con el texto actual de "Otra"
-    await page.locator("#juzgado").click();
-    await page.locator(".custom-select-add-trigger").click();
-    await expect(page.locator(".custom-select-add-input")).toHaveValue(
-      "Juzgado Promiscuo Municipal de La Paz"
+    await expect(page.locator(".otra-inline-block").first()).toContainText(
+      "Solo para esta audiencia, o pulsa + para guardarlo en tu lista."
     );
+
+    // Ya no existe pie duplicado "Agregar nuevo..." dentro del selector
+    await page.locator("#juzgado").click();
+    await expect(page.locator(".custom-select-add-trigger")).toHaveCount(0);
+    await expect(page.locator(".custom-select-template-hint")).toBeVisible();
     await page.locator("#juzgado").click();
 
-    // Cero desbordamiento horizontal en tema oscuro y claro con .otra-inline-row visible
+    // Cero desbordamiento horizontal en tema oscuro y claro con .otra-inline-block visible
     for (const theme of ["dark", "light"]) {
       if (theme === "light") {
         await page.getByRole("button", { name: "Cambiar tema" }).click();
@@ -1667,7 +1695,7 @@ test.describe("Lokus UI smoke checks", () => {
       const overflow = await page.evaluate(
         () => document.documentElement.scrollWidth > document.documentElement.clientWidth
       );
-      expect(overflow, `overflow con .otra-inline-row en tema ${theme}`).toBe(false);
+      expect(overflow, `overflow con .otra-inline-block en tema ${theme}`).toBe(false);
     }
 
     // Botón + junto a #juzgado-otra agrega a la lista y lo selecciona inmediatamente
@@ -1685,6 +1713,57 @@ test.describe("Lokus UI smoke checks", () => {
     );
     await expect(page.locator("#tipo-otra")).toHaveCount(0);
     await expect(page.locator(".toast")).toContainText("agregado a los tipos de audiencia");
+
+    // Usar un juzgado base como plantilla copia su texto en "Otra" y preselecciona el número
+    await page.locator("#juzgado").click();
+    await page
+      .getByRole("button", {
+        name: "Usar Juzgado 1 Promiscuo Municipal de Agustín Codazzi como plantilla",
+      })
+      .click();
+    const juzgadoOtraInput = page.locator("#juzgado-otra");
+    await expect(juzgadoOtraInput).toHaveValue("Juzgado 1 Promiscuo Municipal de Agustín Codazzi");
+    await expect(juzgadoOtraInput).toBeFocused();
+    await page.keyboard.type("10");
+    await expect(juzgadoOtraInput).toHaveValue(
+      "Juzgado 10 Promiscuo Municipal de Agustín Codazzi"
+    );
+    await page.getByRole("button", { name: "Guardar juzgado en la lista" }).click();
+    await expect(page.locator("#juzgado")).toContainText(
+      "Juzgado 10 Promiscuo Municipal de Agustín Codazzi"
+    );
+
+    // También funciona usando un juzgado guardado por el usuario como plantilla
+    await page.locator("#juzgado").click();
+    await page
+      .getByRole("button", {
+        name: "Usar Juzgado 10 Promiscuo Municipal de Agustín Codazzi como plantilla",
+      })
+      .click();
+    await expect(juzgadoOtraInput).toHaveValue(
+      "Juzgado 10 Promiscuo Municipal de Agustín Codazzi"
+    );
+    await expect(juzgadoOtraInput).toBeFocused();
+    await page.keyboard.type("11");
+    await expect(juzgadoOtraInput).toHaveValue(
+      "Juzgado 11 Promiscuo Municipal de Agustín Codazzi"
+    );
+
+    // Usar un tipo de audiencia base como plantilla copia en #tipo-otra
+    await page.locator("#tipo-audiencia").click();
+    await page
+      .getByRole("button", { name: "Usar Audiencia de imputación como plantilla" })
+      .click();
+    await expect(page.locator("#tipo-audiencia")).toContainText("Otra");
+    await expect(page.locator("#tipo-otra")).toHaveValue("Audiencia de imputación");
+
+    // Buscar un juzgado inexistente permite pasarlo directo a "Otra"
+    await page.locator("#juzgado").click();
+    await page.locator(".custom-select-search-input").fill("Juzgado Especializado de Prueba");
+    await page
+      .getByRole("button", { name: 'Usar "Juzgado Especializado de Prueba" en Otra' })
+      .click();
+    await expect(juzgadoOtraInput).toHaveValue("Juzgado Especializado de Prueba");
 
     expect(errors).toEqual([]);
   });

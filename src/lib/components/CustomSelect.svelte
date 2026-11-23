@@ -1,5 +1,5 @@
 <script>
-  import { ChevronDown, Check, Search, X, Plus, Trash2 } from "@lucide/svelte";
+  import { ChevronDown, Check, Search, X, Copy, Trash2 } from "@lucide/svelte";
 
   let {
     id = "",
@@ -10,11 +10,8 @@
     searchable = true,
     compact = false,
     invalid = false,
-    allowAdd = false,
-    addButtonLabel = "Agregar nuevo a la lista...",
-    addPlaceholder = "Escribe el nuevo nombre...",
-    defaultAddValue = "",
-    onAddOption = undefined,
+    onUseAsTemplate = undefined,
+    templateHint = "",
     onDeleteOption = undefined,
     onchange = undefined,
   } = $props();
@@ -22,11 +19,8 @@
   let open = $state(false);
   let searchQuery = $state("");
   let highlightedIndex = $state(0);
-  let addingNew = $state(false);
-  let newOptionText = $state("");
   let containerEl = $state(null);
   let searchInputEl = $state(null);
-  let newOptionInputEl = $state(null);
 
   function normalizarTexto(s) {
     return String(s || "")
@@ -41,7 +35,7 @@
     const out = [];
     for (const opt of options) {
       if (typeof opt === "string") {
-        out.push({ value: opt, label: opt, deletable: false });
+        out.push({ value: opt, label: opt, deletable: false, templateable: false });
       } else if (opt && typeof opt === "object") {
         const val = opt.value ?? "";
         const lbl = String(opt.label ?? val);
@@ -49,6 +43,7 @@
           value: val,
           label: lbl,
           deletable: Boolean(opt.deletable),
+          templateable: Boolean(opt.templateable),
         });
       }
     }
@@ -77,8 +72,6 @@
     open = !open;
     if (open) {
       searchQuery = "";
-      addingNew = false;
-      newOptionText = "";
       const currentIdx = normalizedOptions.findIndex((o) => o.value === value);
       highlightedIndex = currentIdx >= 0 ? currentIdx : 0;
       if (searchable) {
@@ -93,34 +86,13 @@
     value = opt.value;
     open = false;
     searchQuery = "";
-    addingNew = false;
-    newOptionText = "";
     onchange?.(opt.value);
   }
 
-  function startAddingNew() {
-    addingNew = true;
-    newOptionText = searchQuery.trim() || String(defaultAddValue || "").trim();
-    setTimeout(() => {
-      newOptionInputEl?.focus();
-    }, 15);
-  }
-
-  async function confirmAddNew() {
-    const limpio = newOptionText.trim().replace(/\s+/g, " ");
-    if (!limpio) return;
-    const resultado = onAddOption ? await onAddOption(limpio) : limpio;
-    if (resultado === null || resultado === false) return;
-    const finalValor =
-      typeof resultado === "string" && resultado.trim()
-        ? resultado.trim()
-        : limpio;
-    value = finalValor;
-    addingNew = false;
-    newOptionText = "";
-    searchQuery = "";
+  function handleUseAsTemplate(texto) {
     open = false;
-    onchange?.(finalValor);
+    searchQuery = "";
+    onUseAsTemplate?.(texto);
   }
 
   async function handleDeleteOption(opt) {
@@ -246,9 +218,27 @@
         </div>
       {/if}
 
+      {#if onUseAsTemplate && templateHint}
+        <div class="custom-select-template-hint">
+          <Copy size={11} aria-hidden="true" />
+          <span>{templateHint}</span>
+        </div>
+      {/if}
+
       <div class="custom-select-list scroller" onwheel={contenerWheelEnLista}>
         {#if filteredOptions.length === 0}
-          <div class="custom-select-empty">Sin coincidencias</div>
+          <div class="custom-select-empty">
+            <span>Sin coincidencias</span>
+            {#if onUseAsTemplate && searchQuery.trim()}
+              <button
+                type="button"
+                class="custom-select-empty-action"
+                onclick={() => handleUseAsTemplate(searchQuery.trim())}
+              >
+                Usar "{searchQuery.trim()}" en Otra
+              </button>
+            {/if}
+          </div>
         {:else}
           {#each filteredOptions as opt, idx}
             {@const isSelected = value === opt.value}
@@ -276,86 +266,42 @@
                   </span>
                 {/if}
               </button>
-              {#if opt.deletable && onDeleteOption}
-                <button
-                  type="button"
-                  class="custom-select-delete-btn"
-                  title="Eliminar '{opt.label}' de mi lista"
-                  aria-label="Eliminar {opt.label}"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteOption(opt);
-                  }}
-                >
-                  <Trash2 size={13} />
-                </button>
+              {#if (opt.templateable && onUseAsTemplate) || (opt.deletable && onDeleteOption)}
+                <div class="custom-select-row-actions">
+                  {#if opt.templateable && onUseAsTemplate}
+                    <button
+                      type="button"
+                      class="custom-select-template-btn"
+                      title="Usar '{opt.label}' como plantilla en Otra"
+                      aria-label="Usar {opt.label} como plantilla"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        handleUseAsTemplate(opt.value);
+                      }}
+                    >
+                      <Copy size={13} />
+                    </button>
+                  {/if}
+                  {#if opt.deletable && onDeleteOption}
+                    <button
+                      type="button"
+                      class="custom-select-delete-btn"
+                      title="Eliminar '{opt.label}' de mi lista"
+                      aria-label="Eliminar {opt.label}"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteOption(opt);
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  {/if}
+                </div>
               {/if}
             </div>
           {/each}
         {/if}
       </div>
-
-      {#if allowAdd && onAddOption}
-        <div class="custom-select-footer">
-          {#if addingNew}
-            <div class="custom-select-add-form">
-              <input
-                type="text"
-                class="custom-select-add-input"
-                bind:this={newOptionInputEl}
-                bind:value={newOptionText}
-                placeholder={addPlaceholder}
-                autocorrect="off"
-                spellcheck="false"
-                onkeydown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    confirmAddNew();
-                  } else if (e.key === "Escape") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    addingNew = false;
-                  }
-                }}
-              />
-              <button
-                type="button"
-                class="btn btn-solid custom-select-add-save"
-                disabled={!newOptionText.trim()}
-                onclick={confirmAddNew}
-              >
-                Guardar
-              </button>
-              <button
-                type="button"
-                class="clear-search-btn"
-                title="Cancelar"
-                aria-label="Cancelar"
-                onclick={() => {
-                  addingNew = false;
-                  newOptionText = "";
-                }}
-              >
-                <X size={14} />
-              </button>
-            </div>
-          {:else}
-            <button
-              type="button"
-              class="custom-select-add-trigger"
-              onclick={startAddingNew}
-            >
-              <Plus size={14} strokeWidth={2.2} />
-              <span>
-                {searchQuery.trim()
-                  ? `Agregar "${searchQuery.trim()}" a la lista`
-                  : addButtonLabel}
-              </span>
-            </button>
-          {/if}
-        </div>
-      {/if}
     </div>
   {/if}
 </div>

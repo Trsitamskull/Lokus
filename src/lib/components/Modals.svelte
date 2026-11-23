@@ -1,9 +1,6 @@
 <script>
   import {
     Sparkles,
-    SlidersHorizontal,
-    Eye,
-    EyeOff,
     X,
     UserCheck,
     History,
@@ -21,18 +18,11 @@
     FileSpreadsheet,
     Palette,
     Check,
-    Activity,
-    ChevronDown,
-    RefreshCw,
   } from "@lucide/svelte";
   import AutocompleteInput from "./AutocompleteInput.svelte";
+  import ConfigIaModal from "./ConfigIaModal.svelte";
   import CustomSelect from "./CustomSelect.svelte";
-  import {
-    COLORES_CARPETA,
-    MODELOS_GEMINI,
-    MODELOS_OPENAI,
-    generarNombrePlanilla,
-  } from "../constants.js";
+  import { COLORES_CARPETA, generarNombrePlanilla } from "../constants.js";
 
   let {
     modalActivo = $bindable(null),
@@ -139,17 +129,10 @@
   let sugerenciaNombreEditar = $derived(generarNombrePlanilla(archivoEditarDefensor));
 
   let dialogEl = $state(null);
-  let consolidandoAmbito = $state("");
 
   $effect(() => {
     if (modalActivo && dialogEl && !dialogEl.open) {
       dialogEl.showModal();
-    }
-  });
-
-  $effect(() => {
-    if (!consolidandoIa) {
-      consolidandoAmbito = "";
     }
   });
 
@@ -228,9 +211,11 @@
     bind:this={dialogEl}
     class={modalActivo === "defensores" || modalActivo === "portabilidad"
       ? "modal-wide"
-      : ["crear", "crear_carpeta", "mover_archivo", "editar_archivo"].includes(modalActivo)
-        ? "modal-overflow-visible"
-        : ""}
+      : modalActivo === "config_ia"
+        ? "modal-ai-config"
+        : ["crear", "crear_carpeta", "mover_archivo", "editar_archivo"].includes(modalActivo)
+          ? "modal-overflow-visible"
+          : ""}
     aria-labelledby="dialog-heading"
     oncancel={(e) => {
       const until = Number(dialogEl?.dataset.blockCancelUntil || 0);
@@ -1083,467 +1068,22 @@
       </div>
 
     {:else if modalActivo === "config_ia"}
-      <div class="modal-header">
-        <h2 id="dialog-heading" class="modal-title">
-          <SlidersHorizontal size={15} />
-          <span>Proveedor de Inteligencia Artificial</span>
-        </h2>
-        <button
-          type="button"
-          class="mini-icon-btn"
-          aria-label="Cerrar"
-          onclick={() => (modalActivo = null)}
-        >
-          <X size={15} />
-        </button>
-      </div>
-      <div class="modal-body scroller">
-        <div class="field-group">
-          <span class="field-label">Proveedor</span>
-          <div class="segmented-control" role="radiogroup" aria-label="Proveedor de IA">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={settings.provider === "openai"}
-              class="segmented-option {settings.provider === 'openai' ? 'is-si' : ''}"
-              onclick={() => (settings.provider = "openai")}
-            >
-              <span>OpenAI</span>
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={settings.provider === "gemini"}
-              class="segmented-option {settings.provider === 'gemini' ? 'is-si' : ''}"
-              onclick={() => (settings.provider = "gemini")}
-            >
-              <span>Google Gemini</span>
-            </button>
-          </div>
-        </div>
-
-        {#if settings.provider === "openai"}
-          <div class="field-group">
-            <div class="field-header">
-              <label class="field-label" for="openai-model">Modelo de OpenAI</label>
-              <span class="shortcut-hint">Selecciona uno o escríbelo abajo</span>
-            </div>
-            <div class="model-presets-wrap">
-              {#each MODELOS_OPENAI as m}
-                <button
-                  type="button"
-                  class="preset-btn {settings.openai_model === m ? 'active' : ''}"
-                  onclick={() => (settings.openai_model = m)}
-                >
-                  {m}
-                </button>
-              {/each}
-            </div>
-            <input
-              id="openai-model"
-              type="text"
-              class="input"
-              bind:value={settings.openai_model}
-              autocorrect="off"
-              autocapitalize="none"
-              spellcheck="false"
-            />
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="openai-key">
-              Clave API de OpenAI {aiStatus.has_openai_key ? `(${aiStatus.masked_openai_key} — guardada)` : ""}
-            </label>
-            <div class="input-with-icon">
-              <input
-                id="openai-key"
-                type={mostrarOpenAiKey ? "text" : "password"}
-                class="input has-trailing"
-                bind:value={nuevaOpenAiKey}
-                autocomplete="new-password"
-                autocorrect="off"
-                autocapitalize="none"
-                spellcheck="false"
-                placeholder={aiStatus.has_openai_key ? "Deja vacío para conservar la clave actual" : "sk-..."}
-              />
-              <button
-                type="button"
-                class="password-reveal-btn"
-                aria-pressed={mostrarOpenAiKey}
-                aria-label="Mostrar u ocultar clave"
-                onclick={() => (mostrarOpenAiKey = !mostrarOpenAiKey)}
-              >
-                {#if mostrarOpenAiKey}
-                  <EyeOff size={14} />
-                {:else}
-                  <Eye size={14} />
-                {/if}
-              </button>
-            </div>
-          </div>
-        {:else}
-          <div class="field-group">
-            <div class="field-header">
-              <label class="field-label" for="gemini-model">Modelo de Google Gemini</label>
-              <span class="shortcut-hint">Selecciona uno o escríbelo abajo</span>
-            </div>
-            <div class="model-presets-wrap">
-              {#each MODELOS_GEMINI as m}
-                <button
-                  type="button"
-                  class="preset-btn {settings.gemini_model === m ? 'active' : ''}"
-                  onclick={() => (settings.gemini_model = m)}
-                >
-                  {m}
-                </button>
-              {/each}
-            </div>
-            <input
-              id="gemini-model"
-              type="text"
-              class="input"
-              bind:value={settings.gemini_model}
-              autocorrect="off"
-              autocapitalize="none"
-              spellcheck="false"
-            />
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="gemini-key">
-              Clave API de Gemini {aiStatus.has_gemini_key ? `(${aiStatus.masked_gemini_key} — guardada)` : ""}
-            </label>
-            <div class="input-with-icon">
-              <input
-                id="gemini-key"
-                type={mostrarGeminiKey ? "text" : "password"}
-                class="input has-trailing"
-                bind:value={nuevaGeminiKey}
-                autocomplete="new-password"
-                autocorrect="off"
-                autocapitalize="none"
-                spellcheck="false"
-                placeholder={aiStatus.has_gemini_key ? "Deja vacío para conservar la clave actual" : "AIza..."}
-              />
-              <button
-                type="button"
-                class="password-reveal-btn"
-                aria-pressed={mostrarGeminiKey}
-                aria-label="Mostrar u ocultar clave"
-                onclick={() => (mostrarGeminiKey = !mostrarGeminiKey)}
-              >
-                {#if mostrarGeminiKey}
-                  <EyeOff size={14} />
-                {:else}
-                  <Eye size={14} />
-                {/if}
-              </button>
-            </div>
-          </div>
-        {/if}
-
-        <div class="ia-config-toggles">
-          <label class="delete-archive-check">
-            <input type="checkbox" bind:checked={settings.consolidacion_ia_activa} />
-            <div>
-              <strong>Consolidación periódica automática con IA</strong>
-              <div class="shortcut-hint">
-                Sintetiza en segundo plano patrones acumulados y reglas redundantes cuando el sistema detecta presión estadística.
-              </div>
-            </div>
-          </label>
-
-          <label class="delete-archive-check">
-            <input type="checkbox" bind:checked={settings.usar_resumen_consolidado} />
-            <div>
-              <strong>Inyectar resumen consolidado al extraer</strong>
-              <div class="shortcut-hint">
-                Incluye el perfil sintético general y del defensor activo en el contexto enviado al modelo de IA.
-              </div>
-            </div>
-          </label>
-        </div>
-
-        <details class="ia-diag-details">
-          <summary class="ia-diag-summary">
-            <span class="ia-diag-summary-left">
-              <Activity size={13} />
-              <span>Diagnóstico técnico de autoaprendizaje</span>
-            </span>
-            <span class="ia-diag-summary-badges">
-              {#if diagnosticoIa}
-                <span class="ia-diag-pill">
-                  {(diagnosticoIa.reglas_por_estado?.activa ?? 0) +
-                    (diagnosticoIa.reglas_por_estado?.prueba ?? 0)} activas
-                </span>
-                {#if diagnosticoIa.drift_campos_activos?.length > 0}
-                  <span class="ia-diag-pill is-warn">
-                    Drift ({diagnosticoIa.drift_campos_activos.length})
-                  </span>
-                {/if}
-              {/if}
-              <ChevronDown size={13} class="ia-diag-chevron" />
-            </span>
-          </summary>
-
-          <div class="ia-diag-body">
-            <div class="ia-diag-toolbar">
-              <span class="shortcut-hint">Telemetría local anonimizada para inspección técnica</span>
-              <div class="ia-diag-actions">
-                {#if defensorArchivo.trim()}
-                  <button
-                    type="button"
-                    class="btn btn-subtle ia-diag-refresh-btn"
-                    disabled={consolidandoIa || !aiStatus.configured}
-                    onclick={() => {
-                      consolidandoAmbito = "defensor";
-                      onConsolidarMemoriaIa?.(defensorArchivo.trim());
-                    }}
-                    title={!aiStatus.configured
-                      ? "Configura una clave API de IA para consolidar"
-                      : `Consolidar memoria de IA para ${defensorArchivo.trim()}`}
-                  >
-                    <span>
-                      {consolidandoIa && consolidandoAmbito === "defensor"
-                        ? "Consolidando..."
-                        : "Consolidar defensor"}
-                    </span>
-                  </button>
-                {/if}
-                <button
-                  type="button"
-                  class="btn btn-subtle ia-diag-refresh-btn"
-                  disabled={consolidandoIa || !aiStatus.configured}
-                  onclick={() => {
-                    consolidandoAmbito = "general";
-                    onConsolidarMemoriaIa?.("*");
-                  }}
-                  title={!aiStatus.configured
-                    ? "Configura una clave API de IA para consolidar"
-                    : "Consolidar memoria general transversal (*)"}
-                >
-                  <span>
-                    {consolidandoIa && consolidandoAmbito === "general"
-                      ? "Consolidando..."
-                      : "Consolidar general (*)"}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  class="btn btn-subtle ia-diag-refresh-btn"
-                  disabled={cargandoDiagnosticoIa || consolidandoIa}
-                  onclick={() => onRefrescarDiagnosticoIa?.()}
-                >
-                  <RefreshCw size={12} />
-                  <span>{cargandoDiagnosticoIa ? "Cargando..." : "Actualizar"}</span>
-                </button>
-              </div>
-            </div>
-
-            {#if !diagnosticoIa}
-              <p class="ia-diag-empty">
-                {cargandoDiagnosticoIa
-                  ? "Cargando métricas de aprendizaje..."
-                  : "Aún no hay telemetría registrada en esta sesión."}
-              </p>
-            {:else}
-              <div class="ia-diag-metrics-row">
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Aciertos</span>
-                  <span class="ia-diag-metric-value">{diagnosticoIa.aciertos_totales}</span>
-                </div>
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Correcciones</span>
-                  <span class="ia-diag-metric-value">{diagnosticoIa.correcciones_totales}</span>
-                </div>
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Anclas pos.</span>
-                  <span class="ia-diag-metric-value">{diagnosticoIa.ejemplos_positivos_totales}</span>
-                </div>
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Inducciones LLM</span>
-                  <span class="ia-diag-metric-value">{diagnosticoIa.llamadas_induccion_llm_total}</span>
-                </div>
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Cola clúster</span>
-                  <span class="ia-diag-metric-value">
-                    {diagnosticoIa.clusters_pendientes}/{diagnosticoIa.clusters_listos}
-                  </span>
-                </div>
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Perfiles def.</span>
-                  <span class="ia-diag-metric-value">{diagnosticoIa.perfiles_defensores ?? 0}</span>
-                </div>
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Mapa conex.</span>
-                  <span class="ia-diag-metric-value">{diagnosticoIa.conexiones_grafo ?? 0}</span>
-                </div>
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Consolidaciones</span>
-                  <span class="ia-diag-metric-value">{diagnosticoIa.consolidaciones_totales ?? 0}</span>
-                </div>
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Presión global</span>
-                  <span class="ia-diag-metric-value">
-                    {(diagnosticoIa.presion_consolidacion_global ?? 0).toFixed(2)}
-                  </span>
-                </div>
-                <div class="ia-diag-metric-box">
-                  <span class="ia-diag-metric-label">Resp. aclarac.</span>
-                  <span class="ia-diag-metric-value">
-                    {Math.round((diagnosticoIa.tasa_respuesta_aclaraciones ?? 1) * 100)}%
-                  </span>
-                </div>
-              </div>
-
-              {#if diagnosticoIa.drift_campos_activos?.length > 0}
-                <div class="ia-diag-drift-banner" role="status">
-                  <AlertTriangle size={13} />
-                  <span>
-                    Deriva detectada (Page-Hinkley) en:
-                    <strong>{diagnosticoIa.drift_campos_activos.join(", ")}</strong>
-                  </span>
-                </div>
-              {/if}
-
-              {#if diagnosticoIa.metricas_por_campo?.length > 0}
-                <div class="ia-diag-section">
-                  <h3 class="ia-diag-subtitle">Fiabilidad por campo</h3>
-                  <div class="ia-diag-table-wrap">
-                    <table class="ia-diag-table">
-                      <thead>
-                        <tr>
-                          <th>Campo</th>
-                          <th>Eval.</th>
-                          <th>Aciertos</th>
-                          <th>EWMA</th>
-                          <th>Conf. q10</th>
-                          <th>Estado</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {#each diagnosticoIa.metricas_por_campo as m}
-                          <tr>
-                            <td>{m.campo}</td>
-                            <td class="num">{m.evaluaciones}</td>
-                            <td class="num">{m.aciertos}</td>
-                            <td class="num">{Math.round((m.precision_ewma ?? 0) * 100)}%</td>
-                            <td class="num">{Math.round((m.confianza_q10 ?? 0) * 100)}%</td>
-                            <td>
-                              {#if m.drift_activo}
-                                <span class="ia-diag-pill is-warn">Drift</span>
-                              {:else}
-                                <span class="ia-diag-pill is-ok">Estable</span>
-                              {/if}
-                            </td>
-                          </tr>
-                        {/each}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              {/if}
-
-              {#if diagnosticoIa.metricas_por_modelo?.length > 0}
-                <div class="ia-diag-section">
-                  <h3 class="ia-diag-subtitle">Modelos evaluados</h3>
-                  <div class="ia-diag-chips">
-                    {#each diagnosticoIa.metricas_por_modelo as mod}
-                      <span class="ia-diag-pill">
-                        {mod.clave}: {Math.round((mod.precision_media ?? 0) * 100)}% ({mod.aciertos}/{mod.evaluaciones})
-                      </span>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-
-              {#if diagnosticoIa.preferencias_estilo}
-                <div class="ia-diag-section">
-                  <h3 class="ia-diag-subtitle">Heurísticas adaptables y alias</h3>
-                  <div class="ia-diag-chips">
-                    <span class="ia-diag-pill">
-                      Causas sec.: {Math.round((diagnosticoIa.preferencias_estilo.incluir_causas_secundarias_prob ?? 0) * 100)}%
-                    </span>
-                    <span class="ia-diag-pill">
-                      Reprogramada: {Math.round((diagnosticoIa.preferencias_estilo.incluir_reprogramacion_prob ?? 0) * 100)}%
-                    </span>
-                    <span class="ia-diag-pill">
-                      "Se fija" &rarr; NO: {Math.round((diagnosticoIa.preferencias_estilo.se_fija_aplazamiento_prob ?? 0) * 100)}%
-                    </span>
-                    <span class="ia-diag-pill">
-                      Instalada &rarr; SI: {Math.round((diagnosticoIa.preferencias_estilo.instalada_reprogramada_si_prob ?? 0) * 100)}%
-                    </span>
-                    <span class="ia-diag-pill">
-                      Alias validados: {diagnosticoIa.alias_validados?.length ?? 0}
-                    </span>
-                    <span class="ia-diag-pill">
-                      Patrones inferidos: {diagnosticoIa.patrones_abreviacion?.length ?? 0}
-                    </span>
-                  </div>
-                </div>
-              {/if}
-
-              {#if diagnosticoIa.perfiles_sinteticos?.length > 0}
-                <div class="ia-diag-section">
-                  <h3 class="ia-diag-subtitle">Perfiles sintéticos consolidados</h3>
-                  <ul class="ia-diag-rules-list">
-                    {#each diagnosticoIa.perfiles_sinteticos as p}
-                      <li class="ia-diag-rule-item">
-                        <div class="ia-diag-rule-head">
-                          <span class="ia-diag-pill {p.ambito === '*' ? 'is-ok' : ''}">
-                            {p.ambito === "*" ? "General (transversal)" : (p.nombre_mostrar || p.ambito)}
-                          </span>
-                          <span class="ia-diag-rule-meta">
-                            v{p.version ?? 1}{p.ultima_actualizacion ? ` · ${p.ultima_actualizacion.slice(0, 10)}` : ""}
-                          </span>
-                        </div>
-                        <p class="ia-diag-rule-text">{p.resumen}</p>
-                      </li>
-                    {/each}
-                  </ul>
-                </div>
-              {/if}
-
-              {#if diagnosticoIa.reglas_destacadas?.length > 0}
-                <div class="ia-diag-section">
-                  <h3 class="ia-diag-subtitle">Reglas en memoria ({diagnosticoIa.reglas_destacadas.length})</h3>
-                  <ul class="ia-diag-rules-list">
-                    {#each diagnosticoIa.reglas_destacadas as r}
-                      <li class="ia-diag-rule-item">
-                        <div class="ia-diag-rule-head">
-                          <span
-                            class="ia-diag-pill {r.estado === 'activa'
-                              ? 'is-ok'
-                              : r.estado === 'cuarentena'
-                                ? 'is-err'
-                                : r.estado === 'prueba'
-                                  ? 'is-warn'
-                                  : ''}"
-                          >
-                            {r.estado}
-                          </span>
-                          <span class="ia-diag-rule-meta">
-                            {r.campo_objetivo} · q10={Math.round((r.confianza_q10 ?? 0) * 100)}% · {r.aciertos_directos}/{r.impresiones}
-                          </span>
-                        </div>
-                        <p class="ia-diag-rule-text">{r.regla}</p>
-                      </li>
-                    {/each}
-                  </ul>
-                </div>
-              {/if}
-            {/if}
-          </div>
-        </details>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
-          Cancelar
-        </button>
-        <button type="button" class="btn btn-solid" onclick={onGuardarConfigIa}>
-          Guardar
-        </button>
-      </div>
+      <ConfigIaModal
+        bind:settings
+        {aiStatus}
+        bind:nuevaOpenAiKey
+        bind:nuevaGeminiKey
+        bind:mostrarOpenAiKey
+        bind:mostrarGeminiKey
+        {diagnosticoIa}
+        {cargandoDiagnosticoIa}
+        {defensorArchivo}
+        {consolidandoIa}
+        {onRefrescarDiagnosticoIa}
+        {onConsolidarMemoriaIa}
+        {onGuardarConfigIa}
+        onCerrar={() => (modalActivo = null)}
+      />
 
     {:else if modalActivo === "confirmar_sin_hora"}
       <div class="modal-header">

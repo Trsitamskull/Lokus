@@ -70,6 +70,8 @@
   let clarifyInputEl = $state(null);
   let guardandoJuzgadoOtra = $state(false);
   let guardandoTipoOtra = $state(false);
+  let juzgadoOtraInputEl = $state(null);
+  let tipoOtraInputEl = $state(null);
   let fechaTouched = $state(false);
   let horaTouched = $state(false);
   let intentoEnviar = $state(false);
@@ -116,6 +118,35 @@
     if (ok !== false) {
       notaAclaracion = "";
     }
+  }
+
+  function enfocarCampoOtra(getInputEl, seleccionarNumero = true) {
+    setTimeout(() => {
+      const el = getInputEl();
+      if (!el) return;
+      el.focus();
+      const val = el.value || "";
+      if (seleccionarNumero) {
+        const match = /\b\d+\b/.exec(val);
+        if (match) {
+          el.setSelectionRange(match.index, match.index + match[0].length);
+          return;
+        }
+      }
+      el.setSelectionRange(val.length, val.length);
+    }, 15);
+  }
+
+  function usarJuzgadoComoPlantilla(nombre) {
+    juzgadoSeleccionado = "Otra";
+    juzgadoOtra = String(nombre || "").trim();
+    enfocarCampoOtra(() => juzgadoOtraInputEl, true);
+  }
+
+  function usarTipoComoPlantilla(nombre) {
+    tipoSeleccionado = "Otra";
+    tipoOtra = String(nombre || "").trim();
+    enfocarCampoOtra(() => tipoOtraInputEl, true);
   }
 
   async function guardarJuzgadoDesdeOtra() {
@@ -398,49 +429,55 @@
 
   let opcionesJuzgado = $derived.by(() => {
     const vistos = new Set();
-    const lista = [{ value: "", label: "Sin especificar (dejar vacío)" }];
+    const lista = [
+      { value: "", label: "Sin especificar (dejar vacío)", templateable: false },
+      {
+        value: "Otra",
+        label: "Otra (escribir nuevo o usar solo aquí)",
+        templateable: false,
+      },
+    ];
     for (const j of juzgadosGuardados) {
       const k = normalizarClaveCatalogo(j);
       if (k && k !== "otra" && !vistos.has(k)) {
         vistos.add(k);
-        lista.push({ value: j.trim(), label: j.trim(), deletable: true });
+        lista.push({ value: j.trim(), label: j.trim(), deletable: true, templateable: true });
       }
     }
     for (const j of JUZGADOS_BASE) {
       const k = normalizarClaveCatalogo(j);
       if (k && k !== "otra" && !vistos.has(k)) {
         vistos.add(k);
-        lista.push({ value: j.trim(), label: j.trim(), deletable: false });
+        lista.push({ value: j.trim(), label: j.trim(), deletable: false, templateable: true });
       }
     }
-    lista.push({
-      value: "Otra",
-      label: "Otra (especificar solo para este registro)",
-    });
     return lista;
   });
 
   let opcionesTipoAudiencia = $derived.by(() => {
     const vistos = new Set();
-    const lista = [{ value: "", label: "Sin especificar (dejar vacío)" }];
+    const lista = [
+      { value: "", label: "Sin especificar (dejar vacío)", templateable: false },
+      {
+        value: "Otra",
+        label: "Otra (escribir nuevo o usar solo aquí)",
+        templateable: false,
+      },
+    ];
     for (const t of tiposGuardados) {
       const k = normalizarClaveCatalogo(t);
       if (k && k !== "otra" && !vistos.has(k)) {
         vistos.add(k);
-        lista.push({ value: t.trim(), label: t.trim(), deletable: true });
+        lista.push({ value: t.trim(), label: t.trim(), deletable: true, templateable: true });
       }
     }
     for (const t of TIPOS_AUDIENCIA) {
       const k = normalizarClaveCatalogo(t);
       if (k && k !== "otra" && !vistos.has(k)) {
         vistos.add(k);
-        lista.push({ value: t.trim(), label: t.trim(), deletable: false });
+        lista.push({ value: t.trim(), label: t.trim(), deletable: false, templateable: true });
       }
     }
-    lista.push({
-      value: "Otra",
-      label: "Otra (especificar solo para este registro)",
-    });
     return lista;
   });
 
@@ -702,32 +739,38 @@
           options={opcionesJuzgado}
           placeholder="Sin especificar (opcional)..."
           searchPlaceholder="Filtrar por municipio o juzgado (ej: Valledupar 2 Circuito)..."
-          allowAdd={true}
-          addButtonLabel="Agregar nuevo juzgado a la lista..."
-          addPlaceholder="Nombre del nuevo juzgado o despacho..."
-          defaultAddValue={juzgadoSeleccionado === "Otra" ? juzgadoOtra : ""}
-          onAddOption={onAgregarJuzgado}
+          templateHint='Pulsa copiar en cualquier opción para usarla como plantilla en "Otra"'
+          onUseAsTemplate={usarJuzgadoComoPlantilla}
           onDeleteOption={onEliminarJuzgado}
+          onchange={(v) => {
+            if (v === "Otra") enfocarCampoOtra(() => juzgadoOtraInputEl, false);
+          }}
         />
         {#if juzgadoSeleccionado === "Otra"}
-          <div class="otra-inline-row">
-            <input
-              id="juzgado-otra"
-              type="text"
-              class="input"
-              bind:value={juzgadoOtra}
-              placeholder="Especificar juzgado solo para este registro..."
-            />
-            <button
-              type="button"
-              class="btn btn-subtle otra-add-btn"
-              disabled={!juzgadoOtra.trim() || guardandoJuzgadoOtra}
-              title="Guardar este juzgado en la lista y seleccionarlo"
-              aria-label="Guardar juzgado en la lista"
-              onclick={guardarJuzgadoDesdeOtra}
-            >
-              <Plus size={15} strokeWidth={2.2} />
-            </button>
+          <div class="otra-inline-block">
+            <div class="otra-inline-row">
+              <input
+                id="juzgado-otra"
+                type="text"
+                class="input"
+                bind:this={juzgadoOtraInputEl}
+                bind:value={juzgadoOtra}
+                placeholder="Escribe o edita el juzgado..."
+              />
+              <button
+                type="button"
+                class="btn btn-subtle otra-add-btn"
+                disabled={!juzgadoOtra.trim() || guardandoJuzgadoOtra}
+                title="Guardar en mi lista permanente y seleccionarlo"
+                aria-label="Guardar juzgado en la lista"
+                onclick={guardarJuzgadoDesdeOtra}
+              >
+                <Plus size={15} strokeWidth={2.2} />
+              </button>
+            </div>
+            <span class="shortcut-hint">
+              Solo para esta audiencia, o pulsa + para guardarlo en tu lista.
+            </span>
           </div>
         {/if}
       </div>
@@ -743,32 +786,38 @@
           options={opcionesTipoAudiencia}
           placeholder="Sin especificar (opcional)..."
           searchPlaceholder="Filtrar tipo de audiencia..."
-          allowAdd={true}
-          addButtonLabel="Agregar nuevo tipo de audiencia..."
-          addPlaceholder="Nombre del nuevo tipo de audiencia..."
-          defaultAddValue={tipoSeleccionado === "Otra" ? tipoOtra : ""}
-          onAddOption={onAgregarTipo}
+          templateHint='Pulsa copiar en cualquier opción para usarla como plantilla en "Otra"'
+          onUseAsTemplate={usarTipoComoPlantilla}
           onDeleteOption={onEliminarTipo}
+          onchange={(v) => {
+            if (v === "Otra") enfocarCampoOtra(() => tipoOtraInputEl, false);
+          }}
         />
         {#if tipoSeleccionado === "Otra"}
-          <div class="otra-inline-row">
-            <input
-              id="tipo-otra"
-              type="text"
-              class="input"
-              bind:value={tipoOtra}
-              placeholder="Escriba el tipo de audiencia..."
-            />
-            <button
-              type="button"
-              class="btn btn-subtle otra-add-btn"
-              disabled={!tipoOtra.trim() || guardandoTipoOtra}
-              title="Guardar este tipo de audiencia en la lista y seleccionarlo"
-              aria-label="Guardar tipo de audiencia en la lista"
-              onclick={guardarTipoDesdeOtra}
-            >
-              <Plus size={15} strokeWidth={2.2} />
-            </button>
+          <div class="otra-inline-block">
+            <div class="otra-inline-row">
+              <input
+                id="tipo-otra"
+                type="text"
+                class="input"
+                bind:this={tipoOtraInputEl}
+                bind:value={tipoOtra}
+                placeholder="Escribe o edita el tipo de audiencia..."
+              />
+              <button
+                type="button"
+                class="btn btn-subtle otra-add-btn"
+                disabled={!tipoOtra.trim() || guardandoTipoOtra}
+                title="Guardar en mi lista permanente y seleccionarlo"
+                aria-label="Guardar tipo de audiencia en la lista"
+                onclick={guardarTipoDesdeOtra}
+              >
+                <Plus size={15} strokeWidth={2.2} />
+              </button>
+            </div>
+            <span class="shortcut-hint">
+              Solo para esta audiencia, o pulsa + para guardarlo en tu lista.
+            </span>
           </div>
         {/if}
       </div>
