@@ -1,6 +1,6 @@
 [package]
 name = "lokus-audiencias"
-version = "5.2.0"
+version = "5.2.1"
 description = "Gestor de Audiencias Judiciales - Sistema Profesional en Rust + Tauri"
 authors = ["Jose David Bustamante Sánchez"]
 edition = "2021"

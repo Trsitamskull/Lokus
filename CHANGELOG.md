@@ -1,5 +1,12 @@
 # Historial de Versiones (Lokus)
 
+## [5.2.1] - 2026-11-23
+
+### Corrección de errores (Bugs)
+- **Acciones finales siempre visibles en móvil:** Se ajustó el bloque final del formulario para que los botones `Limpiar` y `Registrar audiencia` se mantengan visibles al fondo en pantallas pequeñas, sin quedar ocultos al terminar el scroll.
+- **Acciones finales lado a lado en celular:** En anchos móviles estrechos, `Limpiar` y `Registrar audiencia` ahora se muestran juntos en dos columnas, mejorando velocidad de uso sin saturar la vista.
+- **Alta de defensores más robusta:** Al guardar defensores ahora se normalizan espacios en el nombre, se bloquea el envío vacío con mensaje claro y se muestra un error comprensible cuando la app corre fuera del runtime nativo (Tauri no disponible).
+
 ## [5.2.0] - 2026-11-23
 
 ### Corrección de errores (Bugs)
