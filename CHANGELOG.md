@@ -1,5 +1,19 @@
 # Historial de Versiones (Lokus)
 
+## [5.3.0] - 2026-11-24
+
+### Nuevas funciones
+- **Versión nativa para Android (ARM64 APK y AAB):** Soporte móvil completo con almacenamiento persistente privado en el dispositivo (`app_data_dir`), guardado directo de planillas `.xlsx`, respaldos `.lokus` y reportes de aprendizaje en `Descargas/Lokus/` mediante `MediaStore` con hoja de compartir (`FileProvider`), navegación paso a paso con el botón **Atrás** de Android, menú táctil `⋮` en carpetas/planillas y respaldo nativo de portapapeles (`ClipboardManager`).
+- **Herramienta de ingesta y consolidación de autoaprendizaje (`lokus_ingestar`, formato `5`):** Nuevo motor y CLI para consolidar archivos JSON de múltiples usuarios y fechas con reemplazo monotónico por fuente, deduplicación cruzada de paquetes `.lokus`, filtro automático de cuarentena (typos, fugas `[PROCESADO]`, reglas retiradas o contradictorias) y ledger de control (`ingesta_ledger.json`).
+
+### Mejoras con datos reales
+- **Catálogos y accesos rápidos actualizados:** Se incorporaron `19` juzgados frecuentes (`Valledupar`, `Aguachica`, `Chiriguaná`, `El Paso`) y `9` tipos de audiencia nuevos; además, en los botones rápidos de hora se reemplazó `4:00 PM` por `7:30 AM`.
+- **Extracción con IA más precisa:** Traducción de `EMP` a *elementos materiales probatorios*, atribución al `Juez` en constancias de no notificación al procesado, protección de *"abogado"* genérico frente a `Defensor Confianza`, conversión `MPAL` → `Municipal` conservando `CTO` y `PCTO`, tolerancia a ceros a la izquierda (`Juzgado 06` → `Juzgado 6`) y reconocimiento directo de los nuevos tipos de audiencia.
+- **Anonimizador reforzado y base inicial preentrenada:** Protección de municipios y términos jurídicos frente a falsos positivos de `[PROCESADO]` y base inicial preentrenada con `12` reglas limpias (`3` fijas + `9` aprendidas), `16` correcciones de referencia y `20` alias validados.
+
+### Corrección de errores y pulido móvil
+- **Interfaz móvil limpia en 375px–390px:** Cabecera móvil en 2 bandas con marca `Lokus`, estado vacío centrado en *Registros*, enlace `Ver todos →` en una sola línea, filtros de ancho completo en *Estadísticas*, scroll táctil fluido en desplegables (`AutocompleteInput`) y árbol de planillas, ajuste seguro con teclado virtual IME y protección nula en `EstadisticasView`.
+
 ## [5.2.1] - 2026-11-23
 
 ### Corrección de errores (Bugs)
