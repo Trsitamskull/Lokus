@@ -46,15 +46,15 @@ use crate::uso_catalogos::{
 
 pub const NOMBRE_ARCHIVO_MEMORIA: &str = "ia_aprendizaje.json";
 /// Máximo de correcciones conservadas localmente (se descartan primero las más antiguas).
-pub const MAX_CORRECCIONES: usize = 300;
+pub const MAX_CORRECCIONES: usize = 1000;
 /// Máximo de aciertos ancla conservados localmente en búfer circular anonimizado.
-pub const MAX_ACIERTOS_EJEMPLOS: usize = 200;
+pub const MAX_ACIERTOS_EJEMPLOS: usize = 600;
 /// Máximo de reglas aprendidas activas en memoria local.
-pub const MAX_REGLAS: usize = 60;
+pub const MAX_REGLAS: usize = 150;
 /// Máximo de reglas inyectadas en el prompt de extracción.
-pub const MAX_REGLAS_PROMPT: usize = 5;
+pub const MAX_REGLAS_PROMPT: usize = 8;
 /// Máximo de ejemplos similares inyectados en el prompt de extracción.
-pub const MAX_EJEMPLOS_PROMPT: usize = 3;
+pub const MAX_EJEMPLOS_PROMPT: usize = 5;
 
 /// Prior bayesiano escéptico Beta(1, 3): 25% de confianza media inicial antes de evidencia.
 pub const PRIOR_BETA_ALPHA: f64 = 1.0;
@@ -82,9 +82,11 @@ const MAX_CLUSTERS_COLA: usize = 80;
 /// Tope máximo de consolidaciones almacenadas en historial.
 const MAX_CONSOLIDACIONES_HISTORIAL: usize = 12;
 /// Tope aproximado de caracteres para el lote enviado al Consolidador LLM.
-const MAX_CHARS_LOTE_CONSOLIDACION: usize = 8000;
-const MAX_CHARS_RESUMEN_GENERAL: usize = 320;
-const MAX_CHARS_RESUMEN_DEFENSOR: usize = 380;
+const MAX_CHARS_LOTE_CONSOLIDACION: usize = 16000;
+const MAX_CHARS_RESUMEN_GENERAL: usize = 900;
+const MAX_CHARS_RESUMEN_DEFENSOR: usize = 1200;
+/// Tope máximo de ítems activos del Playbook ACE por ámbito (general `"*"` o cada defensor).
+const MAX_PLAYBOOK_ITEMS_AMBITO: usize = 30;
 const DEFAULT_SEMILLA_RNG: u64 = 0x5EED_CAFE_BABE_0001;
 pub const VERSION_FORMATO: u32 = 5;
 const PALABRAS_VACIAS_NOMBRE: [&str; 7] = ["de", "del", "la", "las", "los", "y", "san"];
@@ -741,10 +743,75 @@ pub struct SugerenciaBuildInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
+pub struct PlaybookItem {
+    pub id: String,
+    /// `"siglas_y_despachos" | "criterios_realizada_motivo" | "estilo_observaciones" | "trampas_frecuentes"`
+    pub seccion: String,
+    /// `"*"` o clave normalizada de defensor
+    pub ambito: String,
+    pub texto: String,
+    pub util: u32,
+    pub danino: u32,
+    pub activo: bool,
+    pub creado: String,
+    pub ultima_actualizacion: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct HechoSemantico {
+    pub id: String,
+    pub ambito: String,
+    pub categoria: String,
+    pub clave: String,
+    pub contenido: String,
+    pub confianza: f64,
+    pub activo: bool,
+    pub origen: String,
+    pub ultima_actualizacion: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct TelemetriaEficienciaIa {
+    pub extracciones_con_telemetria: u32,
+    pub autoverificaciones_disparadas: u32,
+    pub autoverificaciones_con_cambio: u32,
+    pub tokens_entrada_total: u64,
+    pub tokens_cacheados_total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct AccionPlaybookConsolidacion {
+    /// `"agregar" | "reforzar" | "retirar"`
+    pub tipo_accion: String,
+    pub item_id: String,
+    pub seccion: String,
+    pub texto: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct AccionHechoConsolidacion {
+    /// `"agregar" | "invalidar"`
+    pub tipo_accion: String,
+    pub clave: String,
+    pub categoria: String,
+    pub contenido: String,
+    pub confianza: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct ResultadoConsolidacionIa {
     pub acciones_reglas: Vec<AccionConsolidacionInput>,
     pub resumen_actualizado: String,
     pub sugerencias_build: Vec<SugerenciaBuildInput>,
+    #[serde(default)]
+    pub acciones_playbook: Vec<AccionPlaybookConsolidacion>,
+    #[serde(default)]
+    pub acciones_hechos: Vec<AccionHechoConsolidacion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -791,6 +858,10 @@ pub struct LoteConsolidacion {
     pub watermark_ids: Vec<String>,
     pub snapshot_extracciones: u32,
     pub telemetria_disparo: TelemetriaDisparoConsolidacion,
+    #[serde(default)]
+    pub playbook_ambito: Vec<PlaybookItem>,
+    #[serde(default)]
+    pub hechos_ambito: Vec<HechoSemantico>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -813,6 +884,10 @@ pub struct InspeccionFusionIa {
     pub perfiles_nuevos_o_actualizados: usize,
     pub consolidaciones_nuevas: usize,
     pub defensores_nuevos: usize,
+    #[serde(default)]
+    pub playbook_items_nuevos_o_actualizados: usize,
+    #[serde(default)]
+    pub hechos_nuevos_o_actualizados: usize,
     pub ya_sincronizado: bool,
 }
 
@@ -828,6 +903,14 @@ pub struct ResultadoFusionIa {
     pub perfiles_actualizados: usize,
     pub consolidaciones_nuevas: usize,
     pub defensores_nuevos: usize,
+    #[serde(default)]
+    pub playbook_items_nuevos: usize,
+    #[serde(default)]
+    pub playbook_items_actualizados: usize,
+    #[serde(default)]
+    pub hechos_nuevos: usize,
+    #[serde(default)]
+    pub hechos_actualizados: usize,
     pub cambios_totales: usize,
 }
 
@@ -888,6 +971,12 @@ pub struct MemoriaAprendizaje {
     pub contadores_por_instancia: BTreeMap<String, ContadoresInstanciaIa>,
     #[serde(default)]
     pub instancias_sincronizadas: Vec<String>,
+    #[serde(default)]
+    pub playbook_items: Vec<PlaybookItem>,
+    #[serde(default)]
+    pub hechos_semanticos: Vec<HechoSemantico>,
+    #[serde(default)]
+    pub telemetria_eficiencia: TelemetriaEficienciaIa,
 }
 
 impl Default for MemoriaAprendizaje {
@@ -922,6 +1011,9 @@ impl Default for MemoriaAprendizaje {
             instancia_id: String::new(),
             contadores_por_instancia: BTreeMap::new(),
             instancias_sincronizadas: Vec::new(),
+            playbook_items: Vec::new(),
+            hechos_semanticos: Vec::new(),
+            telemetria_eficiencia: TelemetriaEficienciaIa::default(),
         }
     }
 }
@@ -1054,6 +1146,12 @@ pub struct DiagnosticoAprendizaje {
     pub tasa_respuesta_aclaraciones: f64,
     #[serde(default)]
     pub defensores_resumen: Vec<ResumenDefensorExport>,
+    #[serde(default)]
+    pub playbook_items: Vec<PlaybookItem>,
+    #[serde(default)]
+    pub hechos_semanticos: Vec<HechoSemantico>,
+    #[serde(default)]
+    pub telemetria_eficiencia: TelemetriaEficienciaIa,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1105,6 +1203,12 @@ pub struct PaqueteExportacion {
     pub correcciones: Vec<CorreccionIa>,
     #[serde(default)]
     pub ejemplos_aciertos: Vec<EjemploPositivo>,
+    #[serde(default)]
+    pub playbook_items: Vec<PlaybookItem>,
+    #[serde(default)]
+    pub hechos_semanticos: Vec<HechoSemantico>,
+    #[serde(default)]
+    pub telemetria_eficiencia: TelemetriaEficienciaIa,
 }
 
 pub(crate) fn memoria_base_embebida() -> &'static MemoriaAprendizaje {
@@ -1354,6 +1458,418 @@ pub(crate) fn obtener_resumenes_consolidados_prompt(
     };
 
     (general, especifico)
+}
+
+const SECCIONES_PLAYBOOK_ORDEN: [(&str, &str); 4] = [
+    ("siglas_y_despachos", "Siglas y despachos"),
+    ("criterios_realizada_motivo", "Criterios SI/NO y motivos"),
+    ("estilo_observaciones", "Estilo de observaciones"),
+    ("trampas_frecuentes", "Trampas frecuentes"),
+];
+
+pub(crate) fn normalizar_seccion_playbook(raw: &str) -> String {
+    match normalizar_texto_sin_tildes(raw).as_str() {
+        "siglas y despachos" | "siglas_y_despachos" | "siglas" | "despachos" | "juzgados" => {
+            "siglas_y_despachos".to_string()
+        }
+        "criterios realizada motivo"
+        | "criterios_realizada_motivo"
+        | "criterios si no y motivos"
+        | "criterios"
+        | "realizada"
+        | "motivo" => "criterios_realizada_motivo".to_string(),
+        "estilo observaciones"
+        | "estilo_observaciones"
+        | "estilo de observaciones"
+        | "observaciones"
+        | "estilo" => "estilo_observaciones".to_string(),
+        "trampas frecuentes"
+        | "trampas_frecuentes"
+        | "trampas"
+        | "errores"
+        | "errores a evitar" => "trampas_frecuentes".to_string(),
+        _ => "trampas_frecuentes".to_string(),
+    }
+}
+
+fn normalizar_clave_hecho(raw: &str) -> String {
+    normalizar_texto_sin_tildes(raw)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn es_texto_playbook_duplicado(a: &str, b: &str) -> bool {
+    let na = normalizar_texto_sin_tildes(a);
+    let nb = normalizar_texto_sin_tildes(b);
+    !na.is_empty() && (na == nb || es_misma_regla(a, b) || similitud_textos(a, b) >= 0.80)
+}
+
+fn upsert_hecho_semantico(
+    memoria: &mut MemoriaAprendizaje,
+    ambito: &str,
+    categoria: &str,
+    clave_raw: &str,
+    contenido_raw: &str,
+    confianza: f64,
+    origen: &str,
+    ahora: &str,
+) -> bool {
+    let amb = alcance_canonico(ambito);
+    let contenido = recortar_sin_elipsis(contenido_raw, 240);
+    if contenido.chars().count() < 8 {
+        return false;
+    }
+    let cat = {
+        let c = normalizar_texto_sin_tildes(categoria);
+        if c.is_empty() {
+            "criterio".to_string()
+        } else {
+            c
+        }
+    };
+    let clave = {
+        let k = normalizar_clave_hecho(clave_raw);
+        if k.is_empty() {
+            let toks: Vec<String> = tokenizar_judicial(&contenido).into_iter().take(4).collect();
+            if toks.is_empty() {
+                format!("{}_general", cat)
+            } else {
+                format!("{}_{}", cat, toks.join("_"))
+            }
+        } else {
+            k
+        }
+    };
+
+    for h in &mut memoria.hechos_semanticos {
+        if alcance_canonico(&h.ambito) == amb
+            && normalizar_clave_hecho(&h.clave) == clave
+            && h.activo
+        {
+            h.activo = false;
+            h.ultima_actualizacion = ahora.to_string();
+        }
+    }
+
+    memoria.hechos_semanticos.push(HechoSemantico {
+        id: generar_id_unico("hecho"),
+        ambito: amb,
+        categoria: cat,
+        clave,
+        contenido,
+        confianza: confianza.clamp(0.1, 1.0),
+        activo: true,
+        origen: origen.to_string(),
+        ultima_actualizacion: ahora.to_string(),
+    });
+    true
+}
+
+fn aplicar_accion_playbook(
+    memoria: &mut MemoriaAprendizaje,
+    amb_norm: &str,
+    acc: &AccionPlaybookConsolidacion,
+    ahora: &str,
+) -> bool {
+    let tipo = acc.tipo_accion.trim().to_lowercase();
+    let seccion = normalizar_seccion_playbook(&acc.seccion);
+    let texto = recortar_sin_elipsis(&acc.texto, 220);
+    let item_id = acc.item_id.trim();
+
+    match tipo.as_str() {
+        "agregar" => {
+            if texto.chars().count() < 8 {
+                return false;
+            }
+            if let Some(exist) = memoria.playbook_items.iter_mut().find(|it| {
+                alcance_canonico(&it.ambito) == amb_norm
+                    && it.activo
+                    && es_texto_playbook_duplicado(&it.texto, &texto)
+            }) {
+                exist.util = exist.util.saturating_add(1);
+                exist.ultima_actualizacion = ahora.to_string();
+                return true;
+            }
+
+            let activos_en_ambito: Vec<usize> = memoria
+                .playbook_items
+                .iter()
+                .enumerate()
+                .filter(|(_, it)| alcance_canonico(&it.ambito) == amb_norm && it.activo)
+                .map(|(i, _)| i)
+                .collect();
+            if activos_en_ambito.len() >= MAX_PLAYBOOK_ITEMS_AMBITO {
+                if let Some(&idx_peor) = activos_en_ambito.iter().min_by(|&&a, &&b| {
+                    let ia = &memoria.playbook_items[a];
+                    let ib = &memoria.playbook_items[b];
+                    let score_a = ia.util as i64 - ia.danino as i64;
+                    let score_b = ib.util as i64 - ib.danino as i64;
+                    score_a
+                        .cmp(&score_b)
+                        .then_with(|| ia.ultima_actualizacion.cmp(&ib.ultima_actualizacion))
+                }) {
+                    memoria.playbook_items[idx_peor].activo = false;
+                    memoria.playbook_items[idx_peor].ultima_actualizacion = ahora.to_string();
+                }
+            }
+
+            memoria.playbook_items.push(PlaybookItem {
+                id: generar_id_unico("pb"),
+                seccion,
+                ambito: amb_norm.to_string(),
+                texto,
+                util: 1,
+                danino: 0,
+                activo: true,
+                creado: ahora.to_string(),
+                ultima_actualizacion: ahora.to_string(),
+            });
+            true
+        }
+        "reforzar" => {
+            let idx_enc = if !item_id.is_empty() {
+                memoria
+                    .playbook_items
+                    .iter()
+                    .position(|it| alcance_canonico(&it.ambito) == amb_norm && it.id == item_id)
+            } else {
+                None
+            }
+            .or_else(|| {
+                if texto.chars().count() < 8 {
+                    None
+                } else {
+                    memoria.playbook_items.iter().position(|it| {
+                        alcance_canonico(&it.ambito) == amb_norm
+                            && es_texto_playbook_duplicado(&it.texto, &texto)
+                    })
+                }
+            });
+            if let Some(idx) = idx_enc {
+                let it = &mut memoria.playbook_items[idx];
+                it.util = it.util.saturating_add(1);
+                it.activo = true;
+                it.ultima_actualizacion = ahora.to_string();
+                true
+            } else {
+                false
+            }
+        }
+        "retirar" => {
+            let idx_enc = if !item_id.is_empty() {
+                memoria
+                    .playbook_items
+                    .iter()
+                    .position(|it| alcance_canonico(&it.ambito) == amb_norm && it.id == item_id)
+            } else {
+                None
+            }
+            .or_else(|| {
+                if texto.chars().count() < 8 {
+                    None
+                } else {
+                    memoria.playbook_items.iter().position(|it| {
+                        alcance_canonico(&it.ambito) == amb_norm
+                            && it.activo
+                            && es_texto_playbook_duplicado(&it.texto, &texto)
+                    })
+                }
+            });
+            if let Some(idx) = idx_enc {
+                let it = &mut memoria.playbook_items[idx];
+                it.activo = false;
+                it.danino = it.danino.saturating_add(1);
+                it.ultima_actualizacion = ahora.to_string();
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Renderiza para el prefijo estático cacheable `system`:
+/// 1) Playbook general (`"*"`) a partir de `playbook_items` activos agrupados por sección (o fallback a `perfiles_sinteticos["*"]`),
+/// 2) Playbook del defensor a partir de `playbook_items` activos del defensor (o fallback a `perfiles_sinteticos[def]`),
+/// 3) Lista de `hechos_semanticos` activos (general + defensor, con precedencia de `local` sobre `base`).
+pub fn formatear_playbook_y_hechos_para_prompt(
+    base: &MemoriaAprendizaje,
+    local: &MemoriaAprendizaje,
+    defensor: Option<&str>,
+) -> (Option<String>, Option<String>, Vec<String>) {
+    let def_clave = defensor.map(normalizar_clave_defensor).unwrap_or_default();
+    let (fallback_gen, fallback_def) = obtener_resumenes_consolidados_prompt(base, local, defensor);
+
+    let renderizar_playbook_ambito = |ambito_obj: &str, max_chars: usize| -> Option<String> {
+        let mut ids_en_local: BTreeSet<String> = BTreeSet::new();
+        let mut textos_en_local: Vec<(String, String)> = Vec::new();
+        let mut activos: Vec<PlaybookItem> = Vec::new();
+
+        for it in &local.playbook_items {
+            if alcance_canonico(&it.ambito) != ambito_obj {
+                continue;
+            }
+            if !it.id.trim().is_empty() {
+                ids_en_local.insert(it.id.clone());
+            }
+            let sec_norm = normalizar_seccion_playbook(&it.seccion);
+            let txt_norm = normalizar_texto_sin_tildes(&it.texto);
+            if !txt_norm.is_empty() {
+                textos_en_local.push((sec_norm.clone(), txt_norm));
+            }
+            if it.activo && !it.texto.trim().is_empty() {
+                let mut clon = it.clone();
+                clon.seccion = sec_norm;
+                activos.push(clon);
+            }
+        }
+
+        for it in &base.playbook_items {
+            if alcance_canonico(&it.ambito) != ambito_obj || !it.activo || it.texto.trim().is_empty()
+            {
+                continue;
+            }
+            if !it.id.trim().is_empty() && ids_en_local.contains(&it.id) {
+                continue;
+            }
+            let sec_norm = normalizar_seccion_playbook(&it.seccion);
+            let txt_norm = normalizar_texto_sin_tildes(&it.texto);
+            if textos_en_local
+                .iter()
+                .any(|(s, t)| s == &sec_norm && (t == &txt_norm || es_misma_regla(t, &txt_norm)))
+            {
+                continue;
+            }
+            let mut clon = it.clone();
+            clon.seccion = sec_norm;
+            activos.push(clon);
+        }
+
+        if activos.is_empty() {
+            return None;
+        }
+
+        let mut bloques: Vec<String> = Vec::new();
+        let mut total_chars = 0usize;
+        for (clave_sec, titulo_sec) in SECCIONES_PLAYBOOK_ORDEN {
+            let mut items_sec: Vec<&PlaybookItem> = activos
+                .iter()
+                .filter(|it| it.seccion == clave_sec)
+                .collect();
+            if items_sec.is_empty() {
+                continue;
+            }
+            items_sec.sort_by(|a, b| {
+                let sa = a.util as i64 - a.danino as i64;
+                let sb = b.util as i64 - b.danino as i64;
+                sb.cmp(&sa)
+                    .then_with(|| b.ultima_actualizacion.cmp(&a.ultima_actualizacion))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            let mut lineas = vec![format!("[{}]", titulo_sec)];
+            for it in items_sec {
+                let linea = format!("- {}", colapsar_espacios(&it.texto));
+                if total_chars + linea.chars().count() + 12 > max_chars && !bloques.is_empty() {
+                    break;
+                }
+                total_chars += linea.chars().count() + 1;
+                lineas.push(linea);
+            }
+            if lineas.len() > 1 {
+                bloques.push(lineas.join("\n"));
+            }
+        }
+
+        if bloques.is_empty() {
+            None
+        } else {
+            Some(bloques.join("\n"))
+        }
+    };
+
+    let playbook_general =
+        renderizar_playbook_ambito("*", MAX_CHARS_RESUMEN_GENERAL).or(fallback_gen);
+    let playbook_defensor = if def_clave.is_empty() {
+        None
+    } else {
+        renderizar_playbook_ambito(&def_clave, MAX_CHARS_RESUMEN_DEFENSOR).or(fallback_def)
+    };
+
+    // Hechos semánticos activos (general + defensor, precedencia local incluso para tombstones)
+    let mut claves_local: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut ids_local: BTreeSet<String> = BTreeSet::new();
+    let mut hechos_activos: Vec<HechoSemantico> = Vec::new();
+
+    let ambito_aplica = |amb: &str| -> bool {
+        let a = alcance_canonico(amb);
+        a == "*" || (!def_clave.is_empty() && coincide_alcance_defensor(&a, &def_clave))
+    };
+
+    for h in &local.hechos_semanticos {
+        if !ambito_aplica(&h.ambito) {
+            continue;
+        }
+        let amb = alcance_canonico(&h.ambito);
+        let key = normalizar_clave_hecho(&h.clave);
+        if !h.id.trim().is_empty() {
+            ids_local.insert(h.id.clone());
+        }
+        if !key.is_empty() {
+            claves_local.insert((amb.clone(), key));
+        }
+        if h.activo && !h.contenido.trim().is_empty() {
+            let mut clon = h.clone();
+            clon.ambito = amb;
+            hechos_activos.push(clon);
+        }
+    }
+    for h in &base.hechos_semanticos {
+        if !h.activo || h.contenido.trim().is_empty() || !ambito_aplica(&h.ambito) {
+            continue;
+        }
+        let amb = alcance_canonico(&h.ambito);
+        let key = normalizar_clave_hecho(&h.clave);
+        if (!h.id.trim().is_empty() && ids_local.contains(&h.id))
+            || (!key.is_empty() && claves_local.contains(&(amb.clone(), key)))
+        {
+            continue;
+        }
+        let mut clon = h.clone();
+        clon.ambito = amb;
+        hechos_activos.push(clon);
+    }
+
+    hechos_activos.sort_by(|a, b| {
+        let a_def = !def_clave.is_empty() && a.ambito == def_clave;
+        let b_def = !def_clave.is_empty() && b.ambito == def_clave;
+        b_def
+            .cmp(&a_def)
+            .then_with(|| {
+                b.confianza
+                    .partial_cmp(&a.confianza)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| b.ultima_actualizacion.cmp(&a.ultima_actualizacion))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    let hechos_formateados: Vec<String> = hechos_activos
+        .into_iter()
+        .take(12)
+        .map(|h| {
+            let cont = colapsar_espacios(&h.contenido);
+            let cat = colapsar_espacios(&h.categoria);
+            if cat.is_empty() {
+                cont
+            } else {
+                format!("[{}] {}", cat, cont)
+            }
+        })
+        .collect();
+
+    (playbook_general, playbook_defensor, hechos_formateados)
 }
 
 pub(crate) fn construir_regla_v2(
@@ -1699,6 +2215,23 @@ fn normalizar_y_fusionar_defensores(memoria: &mut MemoriaAprendizaje, fusionar_c
         }
     }
 
+    for it in &mut memoria.playbook_items {
+        let amb = alcance_canonico(&it.ambito);
+        if amb != "*" {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &it.ambito);
+        }
+        it.ambito = amb;
+        it.seccion = normalizar_seccion_playbook(&it.seccion);
+    }
+
+    for h in &mut memoria.hechos_semanticos {
+        let amb = alcance_canonico(&h.ambito);
+        if amb != "*" {
+            registrar_nombre_defensor(&mut memoria.nombres_defensores, &h.ambito);
+        }
+        h.ambito = amb;
+    }
+
     if fusionar_colecciones {
         let mut reglas_fusionadas: Vec<ReglaAprendida> = Vec::with_capacity(memoria.reglas.len());
         let mut mapeo_ids_reglas: BTreeMap<String, String> = BTreeMap::new();
@@ -2036,6 +2569,18 @@ pub(crate) fn renombrar_defensor_en_memoria_struct(
             tocado = true;
         }
     }
+    for it in &mut memoria.playbook_items {
+        if coincide_alcance_defensor(&it.ambito, &clave_vieja) {
+            it.ambito = clave_nueva.clone();
+            tocado = true;
+        }
+    }
+    for h in &mut memoria.hechos_semanticos {
+        if coincide_alcance_defensor(&h.ambito, &clave_vieja) {
+            h.ambito = clave_nueva.clone();
+            tocado = true;
+        }
+    }
 
     if tocado {
         memoria
@@ -2363,6 +2908,150 @@ pub fn similitud_textos(a: &str, b: &str) -> f64 {
         .sum();
     let total = (na.len() - 1) + (nb.len() - 1);
     2.0 * interseccion as f64 / total as f64
+}
+
+fn normalizar_para_trigramas(s: &str) -> String {
+    let sin_tildes = quitar_tildes(&s.to_lowercase());
+    let mut tokens_norm: Vec<String> = Vec::new();
+    for raw in sin_tildes.split(|c: char| !c.is_alphanumeric()) {
+        if raw.is_empty() {
+            continue;
+        }
+        let chars: Vec<char> = raw.chars().collect();
+        let mut out = String::with_capacity(raw.len());
+        let mut i = 0usize;
+        while i < chars.len() {
+            if chars[i].is_ascii_digit() {
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let run: String = chars[start..i].iter().collect();
+                if run.len() <= 4 {
+                    let sin_ceros = run.trim_start_matches('0');
+                    out.push_str(if sin_ceros.is_empty() { "0" } else { sin_ceros });
+                } else {
+                    out.push_str(&run);
+                }
+            } else {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+        if !out.is_empty() {
+            tokens_norm.push(out);
+        }
+    }
+    tokens_norm.join(" ")
+}
+
+/// Coeficiente de Dice sobre trigramas de caracteres normalizados sin tildes y sin ceros a la
+/// izquierda en códigos cortos (tolerante a typos como `J01PM`/`J1PM` o `Valledupar`/`Valledpar`).
+pub fn similitud_trigramas_caracteres(a: &str, b: &str) -> f64 {
+    let sa = normalizar_para_trigramas(a);
+    let sb = normalizar_para_trigramas(b);
+    if sa.is_empty() || sb.is_empty() {
+        return 0.0;
+    }
+    if sa == sb {
+        return 1.0;
+    }
+    let na: Vec<char> = sa.chars().collect();
+    let nb: Vec<char> = sb.chars().collect();
+    if na.len() < 3 || nb.len() < 3 {
+        return similitud_textos(&sa, &sb);
+    }
+
+    let trigramas = |v: &[char]| -> BTreeMap<(char, char, char), usize> {
+        let mut mapa = BTreeMap::new();
+        for tri in v.windows(3) {
+            *mapa.entry((tri[0], tri[1], tri[2])).or_insert(0) += 1;
+        }
+        mapa
+    };
+    let ta = trigramas(&na);
+    let tb = trigramas(&nb);
+    let interseccion: usize = ta
+        .iter()
+        .filter_map(|(k, ca)| tb.get(k).map(|cb| (*ca).min(*cb)))
+        .sum();
+    let total = (na.len() - 2) + (nb.len() - 2);
+    if total == 0 {
+        0.0
+    } else {
+        (2.0 * interseccion as f64 / total as f64).clamp(0.0, 1.0)
+    }
+}
+
+fn extraer_siglas_y_codigos_entidad(texto: &str) -> BTreeSet<String> {
+    let mut set: BTreeSet<String> = extraer_siglas_cortas_juzgado(texto).into_iter().collect();
+    let norm = normalizar_para_trigramas(texto);
+    for tok in norm.split_whitespace() {
+        let tiene_letra = tok.chars().any(|c| c.is_ascii_alphabetic());
+        let tiene_digito = tok.chars().any(|c| c.is_ascii_digit());
+        if tiene_letra && tiene_digito && tok.len() >= 2 && tok.len() <= 8 {
+            set.insert(tok.to_string());
+        } else if matches!(tok, "cto" | "mpal" | "pcto" | "epms" | "inpec" | "icbf" | "uri") {
+            set.insert(tok.to_string());
+        }
+    }
+    set
+}
+
+fn bonus_coincidencia_entidades(
+    query_siglas: &BTreeSet<String>,
+    query_norm: &str,
+    texto_cand: &str,
+    tipo_cand: Option<&str>,
+    juzgado_cand: Option<&str>,
+) -> f64 {
+    let mut bonus = 0.0_f64;
+
+    if !query_siglas.is_empty() {
+        let mut cand_siglas = extraer_siglas_y_codigos_entidad(texto_cand);
+        if let Some(j) = juzgado_cand {
+            cand_siglas.extend(extraer_siglas_y_codigos_entidad(j));
+        }
+        if query_siglas.intersection(&cand_siglas).next().is_some() {
+            bonus += 0.25;
+        }
+    }
+
+    if let Some(tipo) = tipo_cand {
+        let t_norm = normalizar_para_trigramas(tipo);
+        if !t_norm.is_empty() && t_norm != "otra" {
+            let clave_corta = t_norm
+                .strip_prefix("audiencia de ")
+                .or_else(|| t_norm.strip_prefix("audiencia "))
+                .unwrap_or(&t_norm);
+            if !clave_corta.is_empty()
+                && (query_norm.contains(clave_corta)
+                    || similitud_trigramas_caracteres(query_norm, clave_corta) >= 0.45)
+            {
+                bonus += 0.15;
+            }
+        }
+    }
+
+    if let Some(juz) = juzgado_cand {
+        let j_norm = normalizar_para_trigramas(juz);
+        if j_norm.len() >= 4 {
+            let j_toks: BTreeSet<&str> = j_norm
+                .split_whitespace()
+                .filter(|w| !matches!(*w, "juzgado" | "de" | "del" | "con" | "en" | "la"))
+                .collect();
+            let q_toks: BTreeSet<&str> = query_norm.split_whitespace().collect();
+            let shared = j_toks.intersection(&q_toks).count();
+            if query_norm.contains(&j_norm)
+                || (j_toks.len() >= 2 && shared * 2 >= j_toks.len())
+                || similitud_trigramas_caracteres(query_norm, &j_norm) >= 0.45
+            {
+                bonus += 0.20;
+            }
+        }
+    }
+
+    bonus.min(0.45)
 }
 
 fn normalizar_ordinal_token(tok: &str) -> &str {
@@ -3077,6 +3766,8 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
 ) -> ContextoPromptDetalle<'a> {
     let query_tokens = tokenizar_judicial(texto_nuevo);
     let query_ngrams: BTreeSet<String> = ngramas_caracteres(texto_nuevo, 3).into_iter().collect();
+    let query_siglas = extraer_siglas_y_codigos_entidad(texto_nuevo);
+    let query_norm = normalizar_para_trigramas(texto_nuevo);
     let def_clave = defensor_actual
         .map(normalizar_clave_defensor)
         .unwrap_or_default();
@@ -3156,7 +3847,20 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
         for (pos, &orig_idx) in prueba_indices.iter().enumerate() {
             let r = todas_reglas[orig_idx];
             let trig = coincidencia_triggers(&query_tokens, &query_ngrams, r);
-            if bm25_prueba[pos] <= 0.0 && trig <= 0.0 {
+            let texto_regla_con_triggers = if r.triggers.is_empty() {
+                Cow::Borrowed(r.regla.as_str())
+            } else {
+                Cow::Owned(format!("{} {}", r.regla, r.triggers.join(" ")))
+            };
+            let sim_tri = similitud_trigramas_caracteres(texto_nuevo, &texto_regla_con_triggers);
+            let ent_bonus = bonus_coincidencia_entidades(
+                &query_siglas,
+                &query_norm,
+                &texto_regla_con_triggers,
+                None,
+                None,
+            );
+            if bm25_prueba[pos] <= 0.0 && trig <= 0.0 && sim_tri < 0.25 && ent_bonus <= 0.0 {
                 continue;
             }
             let thompson = muestrear_beta(r.alpha, r.beta, seed_base ^ (orig_idx as u64).wrapping_mul(0x9e37));
@@ -3165,7 +3869,10 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
             } else {
                 1.0
             };
-            let score = thompson * (0.5 + bm25_prueba[pos] + trig) * factor_modelo(r) * boost_def;
+            let score = thompson
+                * (0.5 + bm25_prueba[pos] + trig + sim_tri * 0.5 + ent_bonus)
+                * factor_modelo(r)
+                * boost_def;
             if score > mejor_score {
                 mejor_score = score;
                 regla_exploracion = Some((orig_idx, r));
@@ -3173,7 +3880,7 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
         }
     }
 
-    // 2) Reglas "activa" seleccionadas por BM25 + triggers + límite inferior bayesiano + MMR (lambda = 0.7)
+    // 2) Reglas "activa" seleccionadas por BM25 + triggers + trigramas + entidades + límite inferior bayesiano + MMR (lambda = 0.7)
     let activas_indices: Vec<usize> = todas_reglas
         .iter()
         .enumerate()
@@ -3211,8 +3918,25 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
                     0.0
                 };
                 let trig = coincidencia_triggers(&query_tokens, &query_ngrams, r);
+                let texto_regla_con_triggers = if r.triggers.is_empty() {
+                    Cow::Borrowed(r.regla.as_str())
+                } else {
+                    Cow::Owned(format!("{} {}", r.regla, r.triggers.join(" ")))
+                };
+                let sim_tri = similitud_trigramas_caracteres(texto_nuevo, &texto_regla_con_triggers);
+                let ent_bonus = bonus_coincidencia_entidades(
+                    &query_siglas,
+                    &query_norm,
+                    &texto_regla_con_triggers,
+                    None,
+                    None,
+                );
                 let fiabilidad = limite_inferior_bayesiano(r.alpha, r.beta);
-                let relevancia = (bm25_norm * 0.60 + trig * 0.25 + fiabilidad * 0.15)
+                let relevancia = (bm25_norm * 0.50
+                    + trig * 0.22
+                    + sim_tri * 0.13
+                    + fiabilidad * 0.15
+                    + ent_bonus * 0.25)
                     * factor_modelo(r)
                     * factor_defensor_regla(r);
                 (pos, relevancia)
@@ -3267,6 +3991,14 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
         .enumerate()
         .filter_map(|(pos, c)| {
             let sim_dice = similitud_consulta(texto_nuevo, &c.texto_original);
+            let sim_tri = similitud_trigramas_caracteres(texto_nuevo, &c.texto_original);
+            let ent_bonus = bonus_coincidencia_entidades(
+                &query_siglas,
+                &query_norm,
+                &c.texto_original,
+                Some(&c.final_usuario.tipo),
+                Some(&c.final_usuario.juzgado),
+            );
             let rel_bm25 = if max_corr_bm25 > 0.0 {
                 corr_bm25[pos] / max_corr_bm25
             } else {
@@ -3277,8 +4009,9 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
             } else {
                 1.0
             };
-            let rel = (0.7 * rel_bm25 + 0.3 * sim_dice) * boost_def;
-            if sim_dice > 0.02 || corr_bm25[pos] > 0.05 {
+            let rel = (0.55 * rel_bm25 + 0.20 * sim_dice + 0.15 * sim_tri + 0.25 * ent_bonus)
+                * boost_def;
+            if sim_dice > 0.02 || corr_bm25[pos] > 0.05 || sim_tri >= 0.25 || ent_bonus >= 0.20 {
                 Some((pos, rel))
             } else {
                 None
@@ -3360,6 +4093,14 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
         .enumerate()
         .filter_map(|(pos, e)| {
             let sim_dice = similitud_consulta(texto_nuevo, &e.texto_anonimizado);
+            let sim_tri = similitud_trigramas_caracteres(texto_nuevo, &e.texto_anonimizado);
+            let ent_bonus = bonus_coincidencia_entidades(
+                &query_siglas,
+                &query_norm,
+                &e.texto_anonimizado,
+                Some(&e.salida_anonimizada.tipo),
+                Some(&e.salida_anonimizada.juzgado),
+            );
             let rel_bm25 = if max_aciertos_bm25 > 0.0 {
                 aciertos_bm25[pos] / max_aciertos_bm25
             } else {
@@ -3370,8 +4111,10 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
             } else {
                 1.0
             };
-            let rel = (0.7 * rel_bm25 + 0.3 * sim_dice) * boost_def;
-            if sim_dice > 0.02 || aciertos_bm25[pos] > 0.05 {
+            let rel = (0.55 * rel_bm25 + 0.20 * sim_dice + 0.15 * sim_tri + 0.25 * ent_bonus)
+                * boost_def;
+            if sim_dice > 0.02 || aciertos_bm25[pos] > 0.05 || sim_tri >= 0.25 || ent_bonus >= 0.20
+            {
                 Some((pos, rel))
             } else {
                 None
@@ -3511,7 +4254,7 @@ pub fn formatear_contexto_prompt_con_detalle_para_defensor<'a>(
     {
         lineas.push("Ejemplos corregidos en textos similares:".to_string());
         for ej in &det.ejemplos_correcciones {
-            let extracto = recortar_texto(&ej.texto_original, 150);
+            let extracto = recortar_texto(&ej.texto_original, 240);
             let cambios: Vec<String> = ej
                 .campos
                 .iter()
@@ -3519,18 +4262,18 @@ pub fn formatear_contexto_prompt_con_detalle_para_defensor<'a>(
                     format!(
                         "{}: '{}' -> '{}'",
                         c.campo,
-                        recortar_texto(&c.valor_ia, 50),
-                        recortar_texto(&c.valor_usuario, 50)
+                        recortar_texto(&c.valor_ia, 70),
+                        recortar_texto(&c.valor_usuario, 70)
                     )
                 })
                 .collect();
             let nota = if !ej.nota_usuario.trim().is_empty() {
                 format!(
                     " (Aclaración del usuario: {})",
-                    recortar_texto(&ej.nota_usuario, 100)
+                    recortar_texto(&ej.nota_usuario, 150)
                 )
             } else if !ej.regla_generada.trim().is_empty() {
-                format!(" (Regla: {})", recortar_texto(&ej.regla_generada, 100))
+                format!(" (Regla: {})", recortar_texto(&ej.regla_generada, 150))
             } else {
                 String::new()
             };
@@ -3542,7 +4285,7 @@ pub fn formatear_contexto_prompt_con_detalle_para_defensor<'a>(
             ));
         }
         if let Some(pista) = det.pista_pendiente {
-            let extracto = recortar_texto(&pista.texto_original, 150);
+            let extracto = recortar_texto(&pista.texto_original, 240);
             let cambios: Vec<String> = pista
                 .campos
                 .iter()
@@ -3550,8 +4293,8 @@ pub fn formatear_contexto_prompt_con_detalle_para_defensor<'a>(
                     format!(
                         "{}: '{}' -> '{}'",
                         c.campo,
-                        recortar_texto(&c.valor_ia, 50),
-                        recortar_texto(&c.valor_usuario, 50)
+                        recortar_texto(&c.valor_ia, 70),
+                        recortar_texto(&c.valor_usuario, 70)
                     )
                 })
                 .collect();
@@ -3562,7 +4305,7 @@ pub fn formatear_contexto_prompt_con_detalle_para_defensor<'a>(
             ));
         }
         for ac in &det.ejemplos_aciertos {
-            let extracto = recortar_texto(&ac.texto_anonimizado, 150);
+            let extracto = recortar_texto(&ac.texto_anonimizado, 240);
             lineas.push(format!(
                 "- Texto similar verificado: \"{}\" => Extracción confirmada [tipo='{}', juzgado='{}', realizada='{}', motivo='{}']",
                 extracto,
@@ -5714,6 +6457,95 @@ fn similitud_bm25_normalizada(a: &str, b: &str) -> f64 {
     0.5 * (s_ab.clamp(0.0, 1.0) + s_ba.clamp(0.0, 1.0))
 }
 
+fn es_campo_critico_induccion(campo: &str) -> bool {
+    matches!(campo, "realizada" | "motivo" | "juzgado" | "tipo")
+}
+
+/// Determina si una 1.ª corrección sobre un campo crítico (`realizada`, `motivo`, `juzgado`, `tipo`)
+/// aporta señal suficientemente clara (nota explicativa del usuario o contradicción explícita)
+/// para habilitar inducción rápida en estado `"prueba"` sin desperdiciar llamadas LLM en casos triviales.
+fn correccion_tiene_senal_clara_critica(corr: &CorreccionIa, campo_principal: &str) -> bool {
+    if !es_campo_critico_induccion(campo_principal) {
+        return false;
+    }
+    let nota = colapsar_espacios(&corr.nota_usuario);
+    if nota.chars().count() >= 8 && !normalizar_texto_sin_tildes(&nota).contains("dato externo") {
+        return true;
+    }
+    if let Some(fc) = corr.campos.iter().find(|c| c.campo == campo_principal) {
+        let v_ia = normalizar_texto_sin_tildes(&fc.valor_ia);
+        let v_usr = normalizar_texto_sin_tildes(&fc.valor_usuario);
+        let txt_norm = normalizar_texto_sin_tildes(&corr.texto_original);
+        match campo_principal {
+            "motivo" => {
+                if !v_ia.is_empty() && !v_usr.is_empty() && v_ia != v_usr {
+                    let evidencia_usr = txt_norm.contains(&v_usr)
+                        || (v_usr == "defensor confianza"
+                            && (txt_norm.contains("contractual")
+                                || txt_norm.contains("confianza")
+                                || txt_norm.contains("abogado privado")))
+                        || (v_usr == "fiscalia" && txt_norm.contains("fiscal"))
+                        || (v_usr == "juez"
+                            && (txt_norm.contains("juez") || txt_norm.contains("despacho")))
+                        || (v_usr == "inpec" && txt_norm.contains("inpec"))
+                        || (v_usr == "icbf" && txt_norm.contains("icbf"))
+                        || (v_usr == "victima" && txt_norm.contains("victima"));
+                    if evidencia_usr {
+                        return true;
+                    }
+                }
+            }
+            "realizada" => {
+                if v_ia == "si" && v_usr == "no" {
+                    if crate::models::texto_indica_no_instalacion(&txt_norm)
+                        || txt_norm.contains("aplaza")
+                        || txt_norm.contains("reprogram")
+                        || txt_norm.contains("fracas")
+                    {
+                        return true;
+                    }
+                } else if v_ia == "no"
+                    && v_usr == "si"
+                    && (txt_norm.contains("se realizo sin novedad")
+                        || txt_norm.contains("se efectuo correctamente"))
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn correccion_resuelta_por_alias_local(
+    memoria: &MemoriaAprendizaje,
+    corr: &CorreccionIa,
+    def_clave: &str,
+    en_drift: bool,
+) -> bool {
+    !en_drift
+        && corr.campos.len() == 1
+        && matches!(corr.campos[0].campo.as_str(), "juzgado" | "tipo")
+        && !corr.campos[0].valor_ia.trim().is_empty()
+        && !corr.campos[0].valor_usuario.trim().is_empty()
+        && crate::estadistica_ia::resolver_alias_exacto_validado_para_defensor(
+            memoria,
+            &corr.campos[0].campo,
+            &corr.campos[0].valor_ia,
+            0.30,
+            if def_clave.is_empty() {
+                None
+            } else {
+                Some(def_clave)
+            },
+        )
+        .is_some_and(|res| {
+            normalizar_texto_sin_tildes(&res)
+                == normalizar_texto_sin_tildes(&corr.campos[0].valor_usuario)
+        })
+}
+
 fn es_firma_especifica_compartible(firma: &str) -> bool {
     !matches!(
         firma,
@@ -5826,31 +6658,18 @@ fn encolar_correccion_en_cluster(
         }
     }
 
+    let resuelto_por_alias_local =
+        correccion_resuelta_por_alias_local(memoria, corr, def_clave, en_drift);
+    let listo_en_primera_critica =
+        !resuelto_por_alias_local && correccion_tiene_senal_clara_critica(corr, &campo_principal);
+
     if let Some(idx) = indice_objetivo {
-        let resuelto_por_alias_local = !en_drift
-            && corr.campos.len() == 1
-            && matches!(corr.campos[0].campo.as_str(), "juzgado" | "tipo")
-            && !corr.campos[0].valor_ia.trim().is_empty()
-            && !corr.campos[0].valor_usuario.trim().is_empty()
-            && crate::estadistica_ia::resolver_alias_exacto_validado_para_defensor(
-                memoria,
-                &corr.campos[0].campo,
-                &corr.campos[0].valor_ia,
-                0.30,
-                if def_clave.is_empty() {
-                    None
-                } else {
-                    Some(def_clave)
-                },
-            )
-            .is_some_and(|res| {
-                normalizar_texto_sin_tildes(&res)
-                    == normalizar_texto_sin_tildes(&corr.campos[0].valor_usuario)
-            });
         // Si un alias exacto de juzgado/tipo acaba de validarse localmente en la 2.ª corrección,
         // solo escala a inducción LLM si el fallo persiste una 3.ª vez pese al alias local.
         let umbral_listo = if resuelto_por_alias_local {
             MIN_TAMANO_CLUSTER_INDUCCION + 1
+        } else if listo_en_primera_critica {
+            1
         } else {
             MIN_TAMANO_CLUSTER_INDUCCION
         };
@@ -5880,7 +6699,11 @@ fn encolar_correccion_en_cluster(
             correccion_ids: vec![corr.id.clone()],
             primera_vez: ahora.to_string(),
             ultima_vez: ahora.to_string(),
-            estado: "acumulando".to_string(),
+            estado: if listo_en_primera_critica {
+                "listo".to_string()
+            } else {
+                "acumulando".to_string()
+            },
             regla_inducida_id: String::new(),
             defensor_clave: def_clave.to_string(),
             defensores_presentes,
@@ -6231,7 +7054,7 @@ pub fn evaluar_candidato_consolidacion(
     }
     let tasa =
         memoria.llamadas_consolidacion_total as f64 / memoria.llamadas_extraccion_total.max(1) as f64;
-    if tasa > 0.06 {
+    if tasa > 0.15 {
         return None;
     }
 
@@ -6255,17 +7078,17 @@ pub fn evaluar_candidato_consolidacion(
         let Some(est) = memoria.estados_consolidacion.get(&ambito) else {
             continue;
         };
-        if est.extracciones_desde_ultima < 6 {
+        if est.extracciones_desde_ultima < 3 {
             continue;
         }
         let tiene_nota = est.notas_sin_consolidar > 0;
-        let cumple_min_corr = est.correcciones_sin_consolidar >= 3
-            || (est.correcciones_sin_consolidar >= 2 && (tiene_drift || tiene_nota));
+        let cumple_min_corr = est.correcciones_sin_consolidar >= 2
+            || (est.correcciones_sin_consolidar >= 1 && (tiene_drift || tiene_nota));
         if !cumple_min_corr {
             continue;
         }
 
-        let tau = (4.2 + 1.2 * madurez - drift_bonus).max(1.5);
+        let tau = (3.4 + 1.0 * madurez - drift_bonus).max(1.2);
         let prob = 1.0 / (1.0 + (-0.85 * (est.presion - tau)).exp());
         let margen = est.presion - tau;
 
@@ -6493,6 +7316,31 @@ pub fn preparar_lote_desde_memoria(
         .map(|e| e.extracciones_desde_ultima)
         .unwrap_or(0);
 
+    let playbook_ambito: Vec<PlaybookItem> = memoria
+        .playbook_items
+        .iter()
+        .filter(|it| it.activo && alcance_canonico(&it.ambito) == amb_norm)
+        .map(|it| {
+            let mut clon = it.clone();
+            clon.ambito = amb_norm.clone();
+            clon.seccion = normalizar_seccion_playbook(&it.seccion);
+            clon.texto = anon.aplicar(&it.texto);
+            clon
+        })
+        .collect();
+
+    let hechos_ambito: Vec<HechoSemantico> = memoria
+        .hechos_semanticos
+        .iter()
+        .filter(|h| h.activo && alcance_canonico(&h.ambito) == amb_norm)
+        .map(|h| {
+            let mut clon = h.clone();
+            clon.ambito = amb_norm.clone();
+            clon.contenido = anon.aplicar(&h.contenido);
+            clon
+        })
+        .collect();
+
     Some(LoteConsolidacion {
         ambito: amb_norm,
         nombre_ambito,
@@ -6505,6 +7353,8 @@ pub fn preparar_lote_desde_memoria(
         watermark_ids,
         snapshot_extracciones,
         telemetria_disparo: telemetria,
+        playbook_ambito,
+        hechos_ambito,
     })
 }
 
@@ -6737,6 +7587,48 @@ pub fn aplicar_consolidacion_ia_en(
             entry.resumen = resumen_recortado.clone();
             entry.version = entry.version.saturating_add(1);
             entry.ultima_actualizacion = ahora.clone();
+        }
+
+        // Aplicar acciones delta del Playbook atómico (ACE)
+        for acc_pb in &resultado.acciones_playbook {
+            let _ = aplicar_accion_playbook(&mut memoria, &amb_norm, acc_pb, &ahora);
+        }
+
+        // Aplicar acciones delta de Hechos Semánticos (Mem0)
+        for acc_h in &resultado.acciones_hechos {
+            let tipo_h = acc_h.tipo_accion.trim().to_lowercase();
+            match tipo_h.as_str() {
+                "agregar" => {
+                    let _ = upsert_hecho_semantico(
+                        &mut memoria,
+                        &amb_norm,
+                        &acc_h.categoria,
+                        &acc_h.clave,
+                        &acc_h.contenido,
+                        acc_h.confianza,
+                        "consolidacion_ia",
+                        &ahora,
+                    );
+                }
+                "invalidar" => {
+                    let clave_norm = normalizar_clave_hecho(&acc_h.clave);
+                    let cont_limpio = colapsar_espacios(&acc_h.contenido);
+                    for h in &mut memoria.hechos_semanticos {
+                        if alcance_canonico(&h.ambito) != amb_norm || !h.activo {
+                            continue;
+                        }
+                        let match_clave = !clave_norm.is_empty()
+                            && normalizar_clave_hecho(&h.clave) == clave_norm;
+                        let match_texto = cont_limpio.chars().count() >= 8
+                            && similitud_textos(&h.contenido, &cont_limpio) >= 0.80;
+                        if match_clave || match_texto {
+                            h.activo = false;
+                            h.ultima_actualizacion = ahora.clone();
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
 
         let sugerencias: Vec<SugerenciaBuild> = resultado
@@ -7362,6 +8254,7 @@ pub fn guardar_nota_aclaracion_en(
     let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
     let mut memoria = cargar_memoria_en(ruta);
     let mut defensor_corr = String::new();
+    let mut campo_principal_corr = String::new();
     let mut clave_firma = None;
     let mut corr_actualizada = None;
 
@@ -7376,12 +8269,49 @@ pub fn guardar_nota_aclaracion_en(
         if !corr.defensor_clave.trim().is_empty() {
             defensor_corr = normalizar_clave_defensor(&corr.defensor_clave);
         }
-        clave_firma = Some(clave_firma_aclaracion(corr).1);
+        let (campo_p, kf) = clave_firma_aclaracion(corr);
+        campo_principal_corr = campo_p;
+        clave_firma = Some(kf);
         corr_actualizada = Some(corr.clone());
     }
 
     if corr_actualizada.is_none() {
         return Ok((resumen_de(&memoria, false), None));
+    }
+
+    // Si la aclaración manual es suficientemente informativa (>= 12 chars y no es dato externo),
+    // persistirla como HechoSemantico activo en el ámbito del defensor (o general "*") y habilitar
+    // inducción rápida en el clúster si corresponde a un campo crítico.
+    let es_dato_externo_nota = normalizar_texto_sin_tildes(&nota_limpia).contains("dato externo");
+    if !es_dato_externo_nota && nota_limpia.chars().count() >= 12 {
+        let ahora_hecho = Local::now().to_rfc3339();
+        let ambito_hecho = if defensor_corr.is_empty() {
+            "*"
+        } else {
+            defensor_corr.as_str()
+        };
+        let clave_hecho = clave_firma
+            .as_deref()
+            .unwrap_or(campo_principal_corr.as_str());
+        let _ = upsert_hecho_semantico(
+            &mut memoria,
+            ambito_hecho,
+            &campo_principal_corr,
+            clave_hecho,
+            &nota_limpia,
+            0.90,
+            "nota_usuario",
+            &ahora_hecho,
+        );
+    }
+
+    if !es_dato_externo_nota && es_campo_critico_induccion(&campo_principal_corr) {
+        if let Some(clu) = memoria.cola_induccion.iter_mut().find(|c| {
+            c.estado == "acumulando" && c.correccion_ids.iter().any(|id| id == correccion_id)
+        }) {
+            clu.estado = "listo".to_string();
+            clu.ultima_vez = Local::now().to_rfc3339();
+        }
     }
 
     memoria.estado_aclaracion.alpha_resp += 1.0;
@@ -7552,7 +8482,17 @@ pub fn obtener_cluster_listo_para_inducir_en(ruta: &Path) -> Option<(String, Vec
             .take(4)
             .collect();
 
-        if miembros.len() >= MIN_TAMANO_CLUSTER_INDUCCION {
+        let minimo_cluster = if es_campo_critico_induccion(&cluster.campo_principal)
+            && miembros
+                .iter()
+                .any(|c| correccion_tiene_senal_clara_critica(c, &cluster.campo_principal))
+        {
+            1
+        } else {
+            MIN_TAMANO_CLUSTER_INDUCCION
+        };
+
+        if miembros.len() >= minimo_cluster {
             cluster_listo = Some((cluster.id.clone(), miembros));
             break;
         } else {
@@ -7647,9 +8587,18 @@ pub fn aplicar_analisis_cluster_en(
         };
 
         let regla_limpia = colapsar_espacios(&analisis.regla);
-        // En clúster coherente (N >= 2), entrar directamente a "prueba" desde confianza >= 0.55 para aprender en 2 veces
-        let estado_inicial = if ids_set.len() >= MIN_TAMANO_CLUSTER_INDUCCION
-            && analisis.confianza >= 0.55
+        let es_critico_senal_clara = es_campo_critico_induccion(&campo_obj)
+            && memoria
+                .correcciones
+                .iter()
+                .filter(|c| ids_set.contains(&c.id))
+                .any(|c| correccion_tiene_senal_clara_critica(c, &campo_obj));
+        // En clúster coherente (N >= 2) entra a "prueba" desde confianza >= 0.55;
+        // en 1.ª corrección de campo crítico con señal clara (nota o contradicción explícita),
+        // entra a "prueba" desde confianza >= 0.70 (protegida por evaluación bayesiana/sombra).
+        let estado_inicial = if (ids_set.len() >= MIN_TAMANO_CLUSTER_INDUCCION
+            && analisis.confianza >= 0.55)
+            || (es_critico_senal_clara && analisis.confianza >= 0.70)
         {
             "prueba"
         } else {
@@ -8540,6 +9489,54 @@ fn construir_diagnostico_desde_memoria(
         (memoria.estado_aclaracion.alpha_resp + memoria.estado_aclaracion.beta_omit).max(1e-6);
     let tasa_respuesta_aclaraciones = (memoria.estado_aclaracion.alpha_resp / denom_aclar).clamp(0.0, 1.0);
 
+    let mut playbook_items: Vec<PlaybookItem> = memoria
+        .playbook_items
+        .iter()
+        .filter(|it| it.activo && !it.texto.trim().is_empty())
+        .map(|it| {
+            let mut clon = it.clone();
+            clon.ambito = alcance_canonico(&it.ambito);
+            clon.seccion = normalizar_seccion_playbook(&it.seccion);
+            clon.texto = anon.aplicar(&it.texto);
+            clon
+        })
+        .collect();
+    playbook_items.sort_by(|a, b| {
+        (a.ambito != "*")
+            .cmp(&(b.ambito != "*"))
+            .then_with(|| a.ambito.cmp(&b.ambito))
+            .then_with(|| a.seccion.cmp(&b.seccion))
+            .then_with(|| {
+                let sa = a.util as i64 - a.danino as i64;
+                let sb = b.util as i64 - b.danino as i64;
+                sb.cmp(&sa)
+            })
+            .then_with(|| b.ultima_actualizacion.cmp(&a.ultima_actualizacion))
+    });
+
+    let mut hechos_semanticos: Vec<HechoSemantico> = memoria
+        .hechos_semanticos
+        .iter()
+        .filter(|h| h.activo && !h.contenido.trim().is_empty())
+        .map(|h| {
+            let mut clon = h.clone();
+            clon.ambito = alcance_canonico(&h.ambito);
+            clon.contenido = anon.aplicar(&h.contenido);
+            clon
+        })
+        .collect();
+    hechos_semanticos.sort_by(|a, b| {
+        (a.ambito != "*")
+            .cmp(&(b.ambito != "*"))
+            .then_with(|| a.ambito.cmp(&b.ambito))
+            .then_with(|| {
+                b.confianza
+                    .partial_cmp(&a.confianza)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| b.ultima_actualizacion.cmp(&a.ultima_actualizacion))
+    });
+
     DiagnosticoAprendizaje {
         aciertos_totales: memoria.aciertos,
         correcciones_totales: memoria.correcciones.len(),
@@ -8565,6 +9562,9 @@ fn construir_diagnostico_desde_memoria(
         perfiles_sinteticos,
         tasa_respuesta_aclaraciones,
         defensores_resumen,
+        playbook_items,
+        hechos_semanticos,
+        telemetria_eficiencia: memoria.telemetria_eficiencia.clone(),
     }
 }
 
@@ -8959,6 +9959,29 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             .map(|c| anonimizar_registro_consolidacion(c, &anon_global))
             .collect();
 
+        let playbook_items_anon: Vec<PlaybookItem> = memoria
+            .playbook_items
+            .iter()
+            .map(|it| {
+                let mut clon = it.clone();
+                clon.ambito = alcance_canonico(&it.ambito);
+                clon.seccion = normalizar_seccion_playbook(&it.seccion);
+                clon.texto = anon_global.aplicar(&it.texto);
+                clon
+            })
+            .collect();
+
+        let hechos_semanticos_anon: Vec<HechoSemantico> = memoria
+            .hechos_semanticos
+            .iter()
+            .map(|h| {
+                let mut clon = h.clone();
+                clon.ambito = alcance_canonico(&h.ambito);
+                clon.contenido = anon_global.aplicar(&h.contenido);
+                clon
+            })
+            .collect();
+
         let paquete = PaqueteExportacion {
             app: "Lokus".to_string(),
             version_app: env!("CARGO_PKG_VERSION").to_string(),
@@ -8998,6 +10021,9 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             reglas: reglas_anonimizadas,
             correcciones: correcciones_anonimizadas,
             ejemplos_aciertos: ejemplos_aciertos_anon,
+            playbook_items: playbook_items_anon,
+            hechos_semanticos: hechos_semanticos_anon,
+            telemetria_eficiencia: memoria.telemetria_eficiencia.clone(),
         };
         let json = serde_json::to_string_pretty(&paquete)
             .map_err(|e| format!("Error preparando la exportación del aprendizaje: {}", e))?;
@@ -9093,6 +10119,9 @@ pub fn memoria_tiene_actividad(m: &MemoriaAprendizaje) -> bool {
         || !m.tabla_alias.is_empty()
         || !m.perfiles_sinteticos.is_empty()
         || !m.consolidaciones_ia.is_empty()
+        || !m.playbook_items.is_empty()
+        || !m.hechos_semanticos.is_empty()
+        || m.telemetria_eficiencia.extracciones_con_telemetria > 0
         || m.aciertos > 0
         || m.llamadas_extraccion_total > 0
         || m.llamadas_induccion_llm_total > 0
@@ -9830,6 +10859,173 @@ pub fn fusionar_memoria_ia_structs(
         }
     }
 
+    // 11. Playbook atómico (ACE): dedup por id o (ambito, seccion, texto_norm), max en util/danino, LWW en ultima_actualizacion
+    for it in &remota.playbook_items {
+        let amb_in = alcance_canonico(&it.ambito);
+        let sec_in = normalizar_seccion_playbook(&it.seccion);
+        let txt_norm_in = normalizar_texto_sin_tildes(&it.texto);
+        if txt_norm_in.is_empty() && it.id.trim().is_empty() {
+            continue;
+        }
+        let pos = if !it.id.trim().is_empty() {
+            dest.playbook_items.iter().position(|x| x.id == it.id)
+        } else {
+            None
+        }
+        .or_else(|| {
+            if txt_norm_in.is_empty() {
+                None
+            } else {
+                dest.playbook_items.iter().position(|x| {
+                    alcance_canonico(&x.ambito) == amb_in
+                        && normalizar_seccion_playbook(&x.seccion) == sec_in
+                        && normalizar_texto_sin_tildes(&x.texto) == txt_norm_in
+                })
+            }
+        });
+
+        if let Some(idx) = pos {
+            let exist = &mut dest.playbook_items[idx];
+            let antes = exist.clone();
+            exist.util = exist.util.max(it.util);
+            exist.danino = exist.danino.max(it.danino);
+            if exist.creado.is_empty() || (!it.creado.is_empty() && it.creado < exist.creado) {
+                exist.creado = it.creado.clone();
+            }
+            let ord_in = (
+                it.ultima_actualizacion.as_str(),
+                !it.activo,
+                it.texto.as_str(),
+                it.id.as_str(),
+            );
+            let ord_ex = (
+                exist.ultima_actualizacion.as_str(),
+                !exist.activo,
+                exist.texto.as_str(),
+                exist.id.as_str(),
+            );
+            if ord_in > ord_ex {
+                exist.activo = it.activo;
+                exist.seccion = sec_in;
+                if !it.texto.trim().is_empty() {
+                    exist.texto = it.texto.clone();
+                }
+                exist.ultima_actualizacion = it.ultima_actualizacion.clone();
+            }
+            if *exist != antes {
+                res.playbook_items_actualizados += 1;
+            }
+        } else {
+            let mut nuevo = it.clone();
+            nuevo.ambito = amb_in;
+            nuevo.seccion = sec_in;
+            dest.playbook_items.push(nuevo);
+            res.playbook_items_nuevos += 1;
+        }
+    }
+    dest.playbook_items.sort_by(|a, b| {
+        a.ambito
+            .cmp(&b.ambito)
+            .then_with(|| a.seccion.cmp(&b.seccion))
+            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| a.texto.cmp(&b.texto))
+    });
+
+    // 12. Hechos semánticos (Mem0): dedup por id o (ambito, clave) con LWW por ultima_actualizacion
+    for h in &remota.hechos_semanticos {
+        let amb_in = alcance_canonico(&h.ambito);
+        let clave_norm_in = normalizar_clave_hecho(&h.clave);
+        if clave_norm_in.is_empty() && h.id.trim().is_empty() {
+            continue;
+        }
+        let pos = if !h.id.trim().is_empty() {
+            dest.hechos_semanticos.iter().position(|x| x.id == h.id)
+        } else {
+            None
+        }
+        .or_else(|| {
+            if clave_norm_in.is_empty() {
+                None
+            } else {
+                dest.hechos_semanticos.iter().position(|x| {
+                    alcance_canonico(&x.ambito) == amb_in
+                        && normalizar_clave_hecho(&x.clave) == clave_norm_in
+                })
+            }
+        });
+
+        if let Some(idx) = pos {
+            let exist = &mut dest.hechos_semanticos[idx];
+            let antes = exist.clone();
+            let ord_in = (
+                h.ultima_actualizacion.as_str(),
+                !h.activo,
+                h.contenido.as_str(),
+                h.id.as_str(),
+            );
+            let ord_ex = (
+                exist.ultima_actualizacion.as_str(),
+                !exist.activo,
+                exist.contenido.as_str(),
+                exist.id.as_str(),
+            );
+            if ord_in > ord_ex {
+                exist.activo = h.activo;
+                exist.categoria = h.categoria.clone();
+                if !h.contenido.trim().is_empty() {
+                    exist.contenido = h.contenido.clone();
+                }
+                exist.confianza = h.confianza;
+                exist.origen = h.origen.clone();
+                exist.ultima_actualizacion = h.ultima_actualizacion.clone();
+            }
+            if *exist != antes {
+                res.hechos_actualizados += 1;
+            }
+        } else {
+            let mut nuevo = h.clone();
+            nuevo.ambito = amb_in;
+            dest.hechos_semanticos.push(nuevo);
+            res.hechos_nuevos += 1;
+        }
+    }
+    dest.hechos_semanticos.sort_by(|a, b| {
+        a.ambito
+            .cmp(&b.ambito)
+            .then_with(|| a.clave.cmp(&b.clave))
+            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| a.contenido.cmp(&b.contenido))
+    });
+
+    // 13. Telemetría de eficiencia IA (max por campo para evitar inflación ping-pong)
+    {
+        let antes = dest.telemetria_eficiencia.clone();
+        let t_in = &remota.telemetria_eficiencia;
+        dest.telemetria_eficiencia.extracciones_con_telemetria = dest
+            .telemetria_eficiencia
+            .extracciones_con_telemetria
+            .max(t_in.extracciones_con_telemetria);
+        dest.telemetria_eficiencia.autoverificaciones_disparadas = dest
+            .telemetria_eficiencia
+            .autoverificaciones_disparadas
+            .max(t_in.autoverificaciones_disparadas);
+        dest.telemetria_eficiencia.autoverificaciones_con_cambio = dest
+            .telemetria_eficiencia
+            .autoverificaciones_con_cambio
+            .max(t_in.autoverificaciones_con_cambio);
+        dest.telemetria_eficiencia.tokens_entrada_total = dest
+            .telemetria_eficiencia
+            .tokens_entrada_total
+            .max(t_in.tokens_entrada_total);
+        dest.telemetria_eficiencia.tokens_cacheados_total = dest
+            .telemetria_eficiencia
+            .tokens_cacheados_total
+            .max(t_in.tokens_cacheados_total);
+        if dest.telemetria_eficiencia != antes {
+            estado_interno_cambio = true;
+        }
+    }
+
     let cambios_visibles = res.reglas_nuevas
         + res.reglas_actualizadas
         + res.correcciones_nuevas
@@ -9838,7 +11034,11 @@ pub fn fusionar_memoria_ia_structs(
         + res.alias_actualizados
         + res.perfiles_actualizados
         + res.consolidaciones_nuevas
-        + res.defensores_nuevos;
+        + res.defensores_nuevos
+        + res.playbook_items_nuevos
+        + res.playbook_items_actualizados
+        + res.hechos_nuevos
+        + res.hechos_actualizados;
     res.cambios_totales = cambios_visibles + usize::from(estado_interno_cambio && cambios_visibles == 0);
     res
 }
@@ -9881,6 +11081,9 @@ pub fn inspeccionar_fusion_memoria_ia_en(
         perfiles_nuevos_o_actualizados: res.perfiles_actualizados,
         consolidaciones_nuevas: res.consolidaciones_nuevas,
         defensores_nuevos: res.defensores_nuevos,
+        playbook_items_nuevos_o_actualizados: res.playbook_items_nuevos
+            + res.playbook_items_actualizados,
+        hechos_nuevos_o_actualizados: res.hechos_nuevos + res.hechos_actualizados,
         ya_sincronizado: res.cambios_totales == 0,
     }
 }
@@ -9936,6 +11139,9 @@ pub fn memoria_desde_paquete_exportacion(paq: &PaqueteExportacion) -> MemoriaApr
     mem.correcciones = paq.correcciones.clone();
     mem.ejemplos_aciertos = paq.ejemplos_aciertos.clone();
     mem.consolidaciones_ia = paq.consolidaciones_ia.clone();
+    mem.playbook_items = paq.playbook_items.clone();
+    mem.hechos_semanticos = paq.hechos_semanticos.clone();
+    mem.telemetria_eficiencia = paq.telemetria_eficiencia.clone();
 
     mem.tabla_alias = if !paq.tabla_alias_raw.is_empty() {
         paq.tabla_alias_raw.clone()
@@ -10163,6 +11369,144 @@ pub fn obtener_diagnostico_aprendizaje() -> DiagnosticoAprendizaje {
     };
     diag.conexiones_grafo = priors.grafo.total_conexiones();
     diag
+}
+
+/// Desactiva (olvida) un hecho semántico de la memoria persistente por `id`,
+/// conservando marca temporal para evitar resurrección en fusiones LWW entre dispositivos.
+pub fn eliminar_hecho_semantico_en(
+    ruta: &Path,
+    hecho_id: &str,
+) -> Result<DiagnosticoAprendizaje, String> {
+    let id_limpio = hecho_id.trim();
+    if id_limpio.is_empty() {
+        return Err("Identificador de hecho semántico vacío.".to_string());
+    }
+    {
+        let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+        let mut memoria = cargar_memoria_en(ruta);
+        let ahora = Local::now().to_rfc3339();
+        let mut encontrado = false;
+
+        for h in &mut memoria.hechos_semanticos {
+            if h.id == id_limpio {
+                h.activo = false;
+                h.ultima_actualizacion = ahora.clone();
+                encontrado = true;
+            }
+        }
+        if !encontrado {
+            if let Some(hb) = memoria_base_embebida()
+                .hechos_semanticos
+                .iter()
+                .find(|h| h.id == id_limpio)
+            {
+                let mut tumba = hb.clone();
+                tumba.activo = false;
+                tumba.ultima_actualizacion = ahora;
+                memoria.hechos_semanticos.push(tumba);
+                encontrado = true;
+            }
+        }
+        if !encontrado {
+            return Err("No se encontró el hecho aprendido indicado.".to_string());
+        }
+        guardar_memoria_en(ruta, &memoria)?;
+    }
+    Ok(obtener_diagnostico_aprendizaje_en(ruta))
+}
+
+pub fn eliminar_hecho_semantico(hecho_id: &str) -> Result<DiagnosticoAprendizaje, String> {
+    eliminar_hecho_semantico_en(&ruta_memoria(), hecho_id)?;
+    Ok(obtener_diagnostico_aprendizaje())
+}
+
+/// Retira un ítem del Playbook atómico (ACE) por `id`, marcándolo inactivo e incrementando `danino`
+/// para evitar su reinyección o resurrección en fusiones LWW.
+pub fn eliminar_item_playbook_en(
+    ruta: &Path,
+    item_id: &str,
+) -> Result<DiagnosticoAprendizaje, String> {
+    let id_limpio = item_id.trim();
+    if id_limpio.is_empty() {
+        return Err("Identificador de ítem del Playbook vacío.".to_string());
+    }
+    {
+        let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+        let mut memoria = cargar_memoria_en(ruta);
+        let ahora = Local::now().to_rfc3339();
+        let mut encontrado = false;
+
+        for it in &mut memoria.playbook_items {
+            if it.id == id_limpio {
+                it.activo = false;
+                it.danino = it.danino.saturating_add(1);
+                it.ultima_actualizacion = ahora.clone();
+                encontrado = true;
+            }
+        }
+        if !encontrado {
+            if let Some(ib) = memoria_base_embebida()
+                .playbook_items
+                .iter()
+                .find(|it| it.id == id_limpio)
+            {
+                let mut tumba = ib.clone();
+                tumba.activo = false;
+                tumba.danino = tumba.danino.saturating_add(1);
+                tumba.ultima_actualizacion = ahora;
+                memoria.playbook_items.push(tumba);
+                encontrado = true;
+            }
+        }
+        if !encontrado {
+            return Err("No se encontró el ítem del Playbook indicado.".to_string());
+        }
+        guardar_memoria_en(ruta, &memoria)?;
+    }
+    Ok(obtener_diagnostico_aprendizaje_en(ruta))
+}
+
+pub fn eliminar_item_playbook(item_id: &str) -> Result<DiagnosticoAprendizaje, String> {
+    eliminar_item_playbook_en(&ruta_memoria(), item_id)?;
+    Ok(obtener_diagnostico_aprendizaje())
+}
+
+/// Registra telemetría de caché de prompt y autoverificación selectiva tras una extracción IA.
+pub fn registrar_telemetria_extraccion_en(
+    ruta: &Path,
+    tokens_entrada: u64,
+    tokens_cacheados: u64,
+    hubo_autoverificacion: bool,
+    autoverificacion_cambio: bool,
+) {
+    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+    let mut memoria = cargar_memoria_en(ruta);
+    let t = &mut memoria.telemetria_eficiencia;
+    t.extracciones_con_telemetria = t.extracciones_con_telemetria.saturating_add(1);
+    t.tokens_entrada_total = t.tokens_entrada_total.saturating_add(tokens_entrada);
+    t.tokens_cacheados_total = t.tokens_cacheados_total.saturating_add(tokens_cacheados);
+    if hubo_autoverificacion {
+        t.autoverificaciones_disparadas = t.autoverificaciones_disparadas.saturating_add(1);
+        if autoverificacion_cambio {
+            t.autoverificaciones_con_cambio = t.autoverificaciones_con_cambio.saturating_add(1);
+        }
+    }
+    let _ = guardar_memoria_en(ruta, &memoria);
+}
+
+pub fn registrar_telemetria_extraccion(
+    tokens_entrada: u64,
+    tokens_cacheados: u64,
+    hubo_autoverificacion: bool,
+    autoverificacion_cambio: bool,
+) {
+    registrar_telemetria_extraccion_en(
+        &ruta_memoria(),
+        tokens_entrada,
+        tokens_cacheados,
+        hubo_autoverificacion,
+        autoverificacion_cambio,
+    );
 }
 
 pub fn obtener_cluster_listo_para_inducir_ia() -> Option<(String, Vec<CorreccionIa>)> {
@@ -10463,7 +11807,7 @@ mod tests {
 
         let consulta = "Citacion a audiencia preparatoria en el Juzgado 12 CTO 3";
         let (_, elegidas) = seleccionar_contexto_para_prompt(consulta, &base, &local);
-        assert_eq!(elegidas.len(), 3);
+        assert_eq!(elegidas.len(), MAX_EJEMPLOS_PROMPT);
         let ids: Vec<&str> = elegidas.iter().map(|c| c.id.as_str()).collect();
         assert!(ids.contains(&"c1"), "ids={:?}", ids);
         assert!(ids.contains(&"c3"), "ids={:?}", ids);
@@ -10523,8 +11867,8 @@ mod tests {
             &local,
         );
         assert!(bloque.contains("APRENDIZAJE DE CORRECCIONES PREVIAS"));
-        assert_eq!(bloque.matches("- [abreviacion]").count(), 5);
-        assert_eq!(bloque.matches("- Texto similar:").count(), 3);
+        assert_eq!(bloque.matches("- [abreviacion]").count(), MAX_REGLAS_PROMPT);
+        assert_eq!(bloque.matches("- Texto similar:").count(), MAX_EJEMPLOS_PROMPT);
     }
 
     #[test]
@@ -11163,7 +12507,7 @@ mod tests {
         assert!(toks.contains(&"pm".to_string()));
         assert!(toks.contains(&"cto".to_string()));
 
-        // Verificar selección balanceada (2 correcciones + 1 acierto ancla)
+        // Verificar selección balanceada (correcciones + acierto ancla)
         let base = MemoriaAprendizaje::default();
         let mut local = MemoriaAprendizaje::default();
         let pred = audiencia_base();
@@ -11206,7 +12550,7 @@ mod tests {
             &base,
             &local,
         );
-        assert_eq!(det.ejemplos_correcciones.len(), 2);
+        assert_eq!(det.ejemplos_correcciones.len(), 3);
         assert_eq!(det.ejemplos_aciertos.len(), 1);
     }
 
@@ -12117,9 +13461,9 @@ mod tests {
         let rg_txt = rg.expect("resumen general");
         let rd_txt = rd.expect("resumen defensor");
         assert!(rg_txt.starts_with("Criterio local"));
-        assert!(rg_txt.chars().count() <= 320);
+        assert!(rg_txt.chars().count() <= MAX_CHARS_RESUMEN_GENERAL);
         assert!(rd_txt.starts_with("Perfil específico Ana"));
-        assert!(rd_txt.chars().count() <= 380);
+        assert!(rd_txt.chars().count() <= MAX_CHARS_RESUMEN_DEFENSOR);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -12458,6 +13802,7 @@ mod tests {
                 detalle: "Agregar abreviación".into(),
                 evidencia: "4 casos".into(),
             }],
+            ..Default::default()
         };
 
         let diag = aplicar_consolidacion_ia_en(&ruta, &lote, &res_cons, "openai:gpt-5-mini").unwrap();
@@ -12555,6 +13900,7 @@ mod tests {
                 acciones_reglas: Vec::new(),
                 resumen_actualizado: "Regla transversal fiscalía ausente".into(),
                 sugerencias_build: Vec::new(),
+                ..Default::default()
             },
             "openai:gpt-5-mini",
         )
@@ -14502,6 +15848,442 @@ mod tests {
         assert_eq!(dev_json.aciertos, 6);
         assert!(dev_json.fuentes_importadas.len() >= 2);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_v6_playbook_ace_hechos_semanticos_y_telemetria_eficiencia() {
+        let dir = preparar_dir("v6_playbook_hechos_tel");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+
+        // 1) Deserialización retrocompatible desde JSON v5 (sin campos v6)
+        let v5_json = r#"{"version": 5, "aciertos": 3, "reglas": [], "correcciones": []}"#;
+        let mem_v5: MemoriaAprendizaje = serde_json::from_str(v5_json).unwrap();
+        assert!(mem_v5.playbook_items.is_empty());
+        assert!(mem_v5.hechos_semanticos.is_empty());
+        assert_eq!(mem_v5.telemetria_eficiencia.extracciones_con_telemetria, 0);
+
+        // 2) Consolidación con acciones_playbook (agregar + dedup + tope 30) y acciones_hechos
+        let lote_ana = LoteConsolidacion {
+            ambito: "ana perez".into(),
+            nombre_ambito: "Dra. Ana Pérez".into(),
+            ..Default::default()
+        };
+        let res_1 = ResultadoConsolidacionIa {
+            resumen_actualizado: "Resumen retrocompatible de Ana".into(),
+            acciones_playbook: vec![
+                AccionPlaybookConsolidacion {
+                    tipo_accion: "agregar".into(),
+                    item_id: String::new(),
+                    seccion: "siglas_y_despachos".into(),
+                    texto: "J01PM corresponde a Juzgado 1 Penal Municipal de Valledupar".into(),
+                },
+                // Duplicado semántico en el mismo lote debe reforzar `util` en vez de duplicar
+                AccionPlaybookConsolidacion {
+                    tipo_accion: "agregar".into(),
+                    item_id: String::new(),
+                    seccion: "siglas_y_despachos".into(),
+                    texto: "J01PM corresponde a Juzgado 1 Penal Municipal de Valledupar".into(),
+                },
+                AccionPlaybookConsolidacion {
+                    tipo_accion: "agregar".into(),
+                    item_id: String::new(),
+                    seccion: "criterios_realizada_motivo".into(),
+                    texto: "Si se instala y suspende para continuar marcar SI".into(),
+                },
+            ],
+            acciones_hechos: vec![AccionHechoConsolidacion {
+                tipo_accion: "agregar".into(),
+                clave: "j01pm_despacho".into(),
+                categoria: "juzgado".into(),
+                contenido: "La sigla J01PM corresponde al Juzgado 1 Penal Municipal de Valledupar"
+                    .into(),
+                confianza: 0.92,
+            }],
+            ..Default::default()
+        };
+
+        let diag_1 =
+            aplicar_consolidacion_ia_en(&ruta, &lote_ana, &res_1, "openai:gpt-5-mini").unwrap();
+        assert_eq!(diag_1.playbook_items.len(), 2);
+        let item_sigla = diag_1
+            .playbook_items
+            .iter()
+            .find(|it| it.seccion == "siglas_y_despachos")
+            .unwrap();
+        assert_eq!(item_sigla.util, 2, "Duplicado semántico debe incrementar util");
+        assert_eq!(diag_1.hechos_semanticos.len(), 1);
+        assert_eq!(diag_1.hechos_semanticos[0].clave, "j01pm_despacho");
+
+        // 3) Delta reforzar + retirar en Playbook y reemplazo/invalidación de HechoSemantico
+        let id_criterio = diag_1
+            .playbook_items
+            .iter()
+            .find(|it| it.seccion == "criterios_realizada_motivo")
+            .unwrap()
+            .id
+            .clone();
+        let res_2 = ResultadoConsolidacionIa {
+            acciones_playbook: vec![
+                AccionPlaybookConsolidacion {
+                    tipo_accion: "reforzar".into(),
+                    item_id: item_sigla.id.clone(),
+                    seccion: "siglas_y_despachos".into(),
+                    texto: String::new(),
+                },
+                AccionPlaybookConsolidacion {
+                    tipo_accion: "retirar".into(),
+                    item_id: id_criterio.clone(),
+                    seccion: "criterios_realizada_motivo".into(),
+                    texto: String::new(),
+                },
+            ],
+            acciones_hechos: vec![AccionHechoConsolidacion {
+                tipo_accion: "agregar".into(),
+                clave: "j01pm_despacho".into(),
+                categoria: "juzgado".into(),
+                contenido:
+                    "J01PM corresponde al Juzgado 1 Penal Municipal con Función de Garantías"
+                        .into(),
+                confianza: 0.96,
+            }],
+            ..Default::default()
+        };
+        let diag_2 =
+            aplicar_consolidacion_ia_en(&ruta, &lote_ana, &res_2, "openai:gpt-5-mini").unwrap();
+        assert_eq!(diag_2.playbook_items.len(), 1);
+        assert_eq!(diag_2.playbook_items[0].util, 3);
+        assert_eq!(
+            diag_2.hechos_semanticos.len(),
+            1,
+            "Reemplazar hecho con misma (ambito, clave) invalida el anterior"
+        );
+        assert!(diag_2.hechos_semanticos[0].contenido.contains("Garantías"));
+
+        // Tope de 30 ítems activos por ámbito en Playbook
+        let mut lote_muchos = Vec::new();
+        for i in 0..34 {
+            lote_muchos.push(AccionPlaybookConsolidacion {
+                tipo_accion: "agregar".into(),
+                item_id: String::new(),
+                seccion: "trampas_frecuentes".into(),
+                texto: format!("Criterio diferenciado numero {} para evitar confusión {}", i, i * 17),
+            });
+        }
+        let diag_cap = aplicar_consolidacion_ia_en(
+            &ruta,
+            &lote_ana,
+            &ResultadoConsolidacionIa {
+                acciones_playbook: lote_muchos,
+                ..Default::default()
+            },
+            "openai:gpt-5-mini",
+        )
+        .unwrap();
+        assert!(
+            diag_cap.playbook_items.len() <= MAX_PLAYBOOK_ITEMS_AMBITO,
+            "Activos en ámbito no deben exceder {}: {}",
+            MAX_PLAYBOOK_ITEMS_AMBITO,
+            diag_cap.playbook_items.len()
+        );
+
+        // 4) formatear_playbook_y_hechos_para_prompt + fallback a perfiles_sinteticos
+        let mut base_mem = MemoriaAprendizaje::default();
+        base_mem.perfiles_sinteticos.insert(
+            "*".into(),
+            PerfilSinteticoDefensor {
+                ambito: "*".into(),
+                nombre_mostrar: "General".into(),
+                resumen: "Resumen base general de respaldo".into(),
+                version: 1,
+                ultima_actualizacion: "2026-01-01T00:00:00-05:00".into(),
+            },
+        );
+        let local_snap = cargar_memoria_en(&ruta);
+        let (pb_gen, pb_def, hechos_prompt) =
+            formatear_playbook_y_hechos_para_prompt(&base_mem, &local_snap, Some("Dra. Ana Pérez"));
+        assert_eq!(pb_gen.as_deref(), Some("Resumen base general de respaldo"));
+        assert!(pb_def.as_deref().unwrap_or("").contains("[Siglas y despachos]"));
+        assert!(hechos_prompt.iter().any(|h| h.contains("Garantías")));
+
+        // 5) Eliminación explícita vía funciones públicas IPC
+        let pb_id_borrar = diag_cap.playbook_items[0].id.clone();
+        let diag_tras_del_pb = eliminar_item_playbook_en(&ruta, &pb_id_borrar).unwrap();
+        assert!(!diag_tras_del_pb
+            .playbook_items
+            .iter()
+            .any(|it| it.id == pb_id_borrar));
+
+        let hecho_id_borrar = diag_cap.hechos_semanticos[0].id.clone();
+        let diag_tras_del_h = eliminar_hecho_semantico_en(&ruta, &hecho_id_borrar).unwrap();
+        assert!(diag_tras_del_h.hechos_semanticos.is_empty());
+
+        // 6) Aclaración manual >= 12 chars crea HechoSemantico activo
+        let pred = audiencia_base();
+        let mut fin = pred.clone();
+        fin.juzgado = "Juzgado 3 MPAL".into();
+        let (_, corr_opt) = registrar_resultado_con_traza_y_defensor_en(
+            &ruta,
+            "Audiencia en J3 MPAL reprogramada",
+            &pred,
+            &fin,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+        let cid = corr_opt.unwrap().id;
+        guardar_nota_aclaracion_en(
+            &ruta,
+            &cid,
+            "Conservar siempre la sigla MPAL sin expandir en despachos locales",
+        )
+        .unwrap();
+        let diag_nota = obtener_diagnostico_aprendizaje_en(&ruta);
+        assert!(
+            diag_nota
+                .hechos_semanticos
+                .iter()
+                .any(|h| h.origen == "nota_usuario" && h.contenido.contains("MPAL")),
+            "La aclaración manual debe persistirse como HechoSemantico"
+        );
+
+        // 7) Telemetría de eficiencia (caché + autoverificaciones)
+        registrar_telemetria_extraccion_en(&ruta, 1200, 900, true, true);
+        registrar_telemetria_extraccion_en(&ruta, 1000, 800, true, false);
+        let diag_tel = obtener_diagnostico_aprendizaje_en(&ruta);
+        assert_eq!(diag_tel.telemetria_eficiencia.extracciones_con_telemetria, 2);
+        assert_eq!(diag_tel.telemetria_eficiencia.tokens_entrada_total, 2200);
+        assert_eq!(diag_tel.telemetria_eficiencia.tokens_cacheados_total, 1700);
+        assert_eq!(diag_tel.telemetria_eficiencia.autoverificaciones_disparadas, 2);
+        assert_eq!(diag_tel.telemetria_eficiencia.autoverificaciones_con_cambio, 1);
+
+        // 8) Fusión idempotente y conmutativa entre dos equipos para Playbook, Hechos y Telemetría
+        let mut mem_a = MemoriaAprendizaje::default();
+        mem_a.playbook_items.push(PlaybookItem {
+            id: "pb-shared".into(),
+            seccion: "siglas_y_despachos".into(),
+            ambito: "ana perez".into(),
+            texto: "J1PM => Juzgado 1 Penal Municipal".into(),
+            util: 2,
+            danino: 0,
+            activo: true,
+            creado: "2026-01-01T10:00:00-05:00".into(),
+            ultima_actualizacion: "2026-01-02T10:00:00-05:00".into(),
+        });
+        mem_a.hechos_semanticos.push(HechoSemantico {
+            id: "h-1".into(),
+            ambito: "*".into(),
+            categoria: "motivo".into(),
+            clave: "fiscal_reemplazo".into(),
+            contenido: "Cambio de fiscal sin conocer carpeta es Fiscalía".into(),
+            confianza: 0.9,
+            activo: true,
+            origen: "consolidacion_ia".into(),
+            ultima_actualizacion: "2026-01-02T10:00:00-05:00".into(),
+        });
+        mem_a.telemetria_eficiencia = TelemetriaEficienciaIa {
+            extracciones_con_telemetria: 5,
+            autoverificaciones_disparadas: 2,
+            autoverificaciones_con_cambio: 1,
+            tokens_entrada_total: 5000,
+            tokens_cacheados_total: 3500,
+        };
+
+        let mut mem_b = MemoriaAprendizaje::default();
+        mem_b.playbook_items.push(PlaybookItem {
+            id: "pb-shared".into(),
+            seccion: "siglas_y_despachos".into(),
+            ambito: "ana perez".into(),
+            texto: "J1PM => Juzgado 1 Penal Municipal de Valledupar".into(),
+            util: 5,
+            danino: 1,
+            activo: true,
+            creado: "2026-01-01T08:00:00-05:00".into(),
+            ultima_actualizacion: "2026-01-05T10:00:00-05:00".into(),
+        });
+        mem_b.hechos_semanticos.push(HechoSemantico {
+            id: "h-2".into(),
+            ambito: "*".into(),
+            categoria: "motivo".into(),
+            clave: "fiscal_reemplazo".into(),
+            contenido: "Fiscal recién asignado que pide aplazar corresponde a Fiscalía".into(),
+            confianza: 0.95,
+            activo: true,
+            origen: "consolidacion_ia".into(),
+            ultima_actualizacion: "2026-01-06T10:00:00-05:00".into(),
+        });
+        mem_b.telemetria_eficiencia = TelemetriaEficienciaIa {
+            extracciones_con_telemetria: 3,
+            autoverificaciones_disparadas: 4,
+            autoverificaciones_con_cambio: 2,
+            tokens_entrada_total: 4000,
+            tokens_cacheados_total: 3800,
+        };
+
+        let mut ab = mem_a.clone();
+        let res_ab = fusionar_memoria_ia_structs(&mut ab, &mem_b);
+        assert!(res_ab.cambios_totales > 0);
+        // Repetir merge(ab, mem_b) debe ser 100% idempotente (0 cambios)
+        let res_rep = fusionar_memoria_ia_structs(&mut ab, &mem_b);
+        assert_eq!(res_rep.cambios_totales, 0);
+        assert_eq!(ab.playbook_items.len(), 1);
+        assert_eq!(ab.playbook_items[0].util, 5);
+        assert_eq!(ab.playbook_items[0].danino, 1);
+        assert!(ab.playbook_items[0].texto.contains("Valledupar"));
+        assert_eq!(ab.hechos_semanticos.len(), 1);
+        assert!(ab.hechos_semanticos[0].contenido.contains("recién asignado"));
+        assert_eq!(ab.telemetria_eficiencia.extracciones_con_telemetria, 5);
+        assert_eq!(ab.telemetria_eficiencia.autoverificaciones_disparadas, 4);
+        assert_eq!(ab.telemetria_eficiencia.tokens_entrada_total, 5000);
+        assert_eq!(ab.telemetria_eficiencia.tokens_cacheados_total, 3800);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_v6_trigramas_entidades_y_primera_correccion_critica() {
+        // 1) Trigramas tolerantes a typos y ceros a la izquierda
+        assert!(
+            (similitud_trigramas_caracteres("J01PM", "J1PM") - 1.0).abs() < 1e-9,
+            "J01PM y J1PM deben coincidir exactamente"
+        );
+        let sim_ciudad = similitud_trigramas_caracteres("Valledupar", "Valledpar");
+        assert!(
+            sim_ciudad >= 0.60,
+            "Valledupar vs Valledpar debe tener alta similitud de trigramas: {}",
+            sim_ciudad
+        );
+        assert!(
+            similitud_trigramas_caracteres("Audiencia preparatoria", "Lectura fallo alimentos")
+                < 0.25
+        );
+
+        // 2) Recuperación híbrida en seleccionar_contexto_detallado_para_defensor rescata typos + siglas
+        let base_vacia = MemoriaAprendizaje::default();
+        let mut local = MemoriaAprendizaje::default();
+        let mut aud_ok = audiencia_base();
+        aud_ok.juzgado = "Juzgado 1 Penal Municipal de Valledupar".into();
+        aud_ok.tipo = "Audiencia preparatoria".into();
+        local.ejemplos_aciertos.push(EjemploPositivo {
+            id: "ej-j1pm".into(),
+            registrada: "2026-01-01T10:00:00-05:00".into(),
+            proveedor: "openai".into(),
+            modelo: "gpt-5-mini".into(),
+            texto_anonimizado: "Diligencia en J1PM Valledupar preparatoria realizada sin novedad"
+                .into(),
+            salida_anonimizada: aud_ok,
+            reglas_inyectadas: Vec::new(),
+            defensor_clave: "ana perez".into(),
+        });
+        local.reglas.push(construir_regla_v2(
+            "r-j1pm".into(),
+            "juzgado".into(),
+            "J1PM en Valledupar corresponde al Juzgado 1 Penal Municipal".into(),
+            3,
+            "2026-01-01T10:00:00-05:00".into(),
+            "activa",
+            "juzgado".into(),
+            vec!["j1pm".into(), "valledupar".into()],
+            "mitigacion_modelo",
+            "*".into(),
+            0.9,
+            String::new(),
+        ));
+
+        let det_typo = seleccionar_contexto_detallado_para_defensor(
+            "J01PM Valledpar preparatori",
+            &base_vacia,
+            &local,
+            Some("openai:gpt-5-mini"),
+            Some("Dra. Ana Pérez"),
+        );
+        assert!(
+            det_typo.ejemplos_aciertos.iter().any(|e| e.id == "ej-j1pm"),
+            "Trigramas + entidades deben recuperar el ejemplo pese a typos J01PM/Valledpar"
+        );
+        assert!(
+            det_typo.reglas.iter().any(|r| r.id == "r-j1pm"),
+            "Trigramas + entidades deben recuperar la regla relevante"
+        );
+
+        // 3) Inducción desde la 1.ª corrección en campo crítico con señal clara -> estado "prueba"
+        let dir = preparar_dir("v6_primera_critica");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let mut pred_mot = audiencia_base();
+        pred_mot.realizada = "NO".into();
+        pred_mot.motivo = "Defensor Público".into();
+        let mut fin_mot = pred_mot.clone();
+        fin_mot.motivo = "Defensor Confianza".into();
+
+        registrar_resultado_con_traza_y_defensor_en(
+            &ruta,
+            "No se realizó porque el abogado contractual no se conectó a la sala virtual",
+            &pred_mot,
+            &fin_mot,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+        )
+        .unwrap();
+
+        let (cid, corrs) = obtener_cluster_listo_para_inducir_en(&ruta)
+            .expect("Contradicción explícita en campo crítico 'motivo' debe habilitar inducción en N=1");
+        assert_eq!(corrs.len(), 1);
+        let ids: Vec<String> = corrs.iter().map(|c| c.id.clone()).collect();
+        aplicar_analisis_cluster_en(
+            &ruta,
+            &cid,
+            &ids,
+            &AnalisisCorreccionIa {
+                es_error_de_ia: true,
+                tipo_error: "motivo".into(),
+                regla: "Si el abogado contractual no se conecta usar Defensor Confianza".into(),
+                confianza: 0.88,
+                necesita_aclaracion: false,
+                pregunta: String::new(),
+            },
+        )
+        .unwrap();
+        let mem_desp = cargar_memoria_en(&ruta);
+        assert_eq!(mem_desp.reglas.len(), 1);
+        assert_eq!(
+            mem_desp.reglas[0].estado, "prueba",
+            "La regla inducida en 1.ª corrección crítica debe entrar en 'prueba' protegida por evaluación bayesiana"
+        );
+
+        // 4) Nota de usuario en campo crítico `juzgado` también promueve a inducción inmediata N=1
+        let dir_nota = preparar_dir("v6_primera_nota_juzgado");
+        let ruta_nota = dir_nota.join(NOMBRE_ARCHIVO_MEMORIA);
+        let pred_j = audiencia_base();
+        let mut fin_j = pred_j.clone();
+        fin_j.juzgado = "Juzgado 3 CTO Penal".into();
+        let (_, corr_j) = registrar_resultado_en(
+            &ruta_nota,
+            "Audiencia en Juzgado 3 CTO Penal",
+            &pred_j,
+            &fin_j,
+            "openai",
+            "gpt-5-mini",
+        )
+        .unwrap();
+        // Sin nota, caso trivial de CTO sigue sin disparar en N=1
+        assert!(obtener_cluster_listo_para_inducir_en(&ruta_nota).is_none());
+        // Con nota explicativa del usuario, el clúster pasa a listo en N=1
+        guardar_nota_aclaracion_en(
+            &ruta_nota,
+            &corr_j.unwrap().id,
+            "Mantener la abreviación CTO sin expandir a Circuito",
+        )
+        .unwrap();
+        assert!(
+            obtener_cluster_listo_para_inducir_en(&ruta_nota).is_some(),
+            "Nota explicativa en campo crítico 'juzgado' debe marcar el clúster listo"
+        );
+
+        let _ = fs::remove_dir_all(&dir_nota);
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -2107,6 +2107,7 @@ mod tests {
                 tipo_habitual: "Audiencia concentrada".into(),
                 frecuencia: 3,
                 defensor_habitual: String::new(),
+                ..Default::default()
             },
         );
 

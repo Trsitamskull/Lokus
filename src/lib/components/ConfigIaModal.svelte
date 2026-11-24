@@ -10,6 +10,10 @@
     AlertTriangle,
     ChevronDown,
     Sparkles,
+    Trash2,
+    BookOpen,
+    Lightbulb,
+    Gauge,
   } from "@lucide/svelte";
   import { MODELOS_GEMINI, MODELOS_OPENAI } from "../constants.js";
 
@@ -26,14 +30,24 @@
     consolidandoIa = false,
     onRefrescarDiagnosticoIa = null,
     onConsolidarMemoriaIa = null,
+    onEliminarHechoIa = null,
+    onEliminarItemPlaybookIa = null,
     onGuardarConfigIa,
     onCerrar,
   } = $props();
 
   let tabActiva = $state("conexion");
   let consolidandoAmbito = $state("");
+  let eliminandoId = $state("");
   let tabConexionEl = $state(null);
   let tabAprendizajeEl = $state(null);
+
+  const SECCIONES_PLAYBOOK = [
+    { clave: "siglas_y_despachos", titulo: "Siglas y despachos" },
+    { clave: "criterios_realizada_motivo", titulo: "Criterios SI/NO y motivos" },
+    { clave: "estilo_observaciones", titulo: "Estilo de observaciones" },
+    { clave: "trampas_frecuentes", titulo: "Trampas frecuentes" },
+  ];
 
   $effect(() => {
     if (!consolidandoIa) {
@@ -168,6 +182,70 @@
       },
     ];
   });
+
+  function etiquetaAmbitoMemoria(ambito) {
+    const a = String(ambito || "").trim();
+    if (!a || a === "*") return "General";
+    const encontrado = (diagnosticoIa?.defensores_resumen ?? []).find(
+      (d) => d.clave === a || d.nombre === a
+    );
+    return encontrado?.nombre || a;
+  }
+
+  let playbookItemsActivos = $derived.by(() =>
+    (diagnosticoIa?.playbook_items ?? []).filter((it) => it && it.activo !== false)
+  );
+
+  let playbookPorSeccion = $derived.by(() => {
+    const items = playbookItemsActivos;
+    return SECCIONES_PLAYBOOK.map((sec) => ({
+      ...sec,
+      items: items.filter((it) => (it.seccion || "trampas_frecuentes") === sec.clave),
+    })).filter((g) => g.items.length > 0);
+  });
+
+  let hechosActivos = $derived.by(() =>
+    (diagnosticoIa?.hechos_semanticos ?? []).filter((h) => h && h.activo !== false)
+  );
+
+  let eficienciaIa = $derived.by(() => {
+    const t = diagnosticoIa?.telemetria_eficiencia ?? {};
+    const extracciones = Number(t.extracciones_con_telemetria ?? 0);
+    const tokensEntrada = Number(t.tokens_entrada_total ?? 0);
+    const tokensCacheados = Number(t.tokens_cacheados_total ?? 0);
+    const autoverifDisparadas = Number(t.autoverificaciones_disparadas ?? 0);
+    const autoverifCambios = Number(t.autoverificaciones_con_cambio ?? 0);
+    const pctCache =
+      tokensEntrada > 0 ? Math.round((tokensCacheados / tokensEntrada) * 100) : null;
+    return {
+      extracciones,
+      tokensEntrada,
+      tokensCacheados,
+      autoverifDisparadas,
+      autoverifCambios,
+      pctCache,
+    };
+  });
+
+  async function manejarEliminarItemPlaybook(itemId) {
+    if (!itemId || !onEliminarItemPlaybookIa || eliminandoId) return;
+    eliminandoId = itemId;
+    try {
+      await onEliminarItemPlaybookIa(itemId);
+    } finally {
+      eliminandoId = "";
+    }
+  }
+
+  async function manejarEliminarHecho(hechoId) {
+    if (!hechoId || !onEliminarHechoIa || eliminandoId) return;
+    eliminandoId = hechoId;
+    try {
+      await onEliminarHechoIa(hechoId);
+    } finally {
+      eliminandoId = "";
+    }
+  }
 
   function manejarKeydownTab(e) {
     if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
@@ -662,6 +740,133 @@
             </div>
           </section>
         {/if}
+
+        <section class="ia-diag-section ia-efficiency-section">
+          <h3 class="ia-diag-subtitle ia-subtitle-with-icon">
+            <Gauge size={13} />
+            <span>Eficiencia de caché y verificación</span>
+          </h3>
+          <div class="ia-diag-metrics-row">
+            <div
+              class="ia-diag-metric-box"
+              title="Tokens reutilizados desde caché: {eficienciaIa.tokensCacheados} de {eficienciaIa.tokensEntrada} tokens de entrada"
+            >
+              <span class="ia-diag-metric-label">Tokens cacheados</span>
+              <span class="ia-diag-metric-value">
+                {eficienciaIa.pctCache !== null ? `${eficienciaIa.pctCache}%` : "Sin datos"}
+              </span>
+            </div>
+            <div
+              class="ia-diag-metric-box"
+              title="Autoverificaciones disparadas en {eficienciaIa.extracciones} extracciones medidas"
+            >
+              <span class="ia-diag-metric-label">Autoverificaciones</span>
+              <span class="ia-diag-metric-value">{eficienciaIa.autoverifDisparadas}</span>
+            </div>
+            <div
+              class="ia-diag-metric-box"
+              title="Veces en que la autoverificación ajustó al menos un campo antes de mostrar el resultado"
+            >
+              <span class="ia-diag-metric-label">Corregidas por revisión</span>
+              <span class="ia-diag-metric-value">{eficienciaIa.autoverifCambios}</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="ia-diag-section ia-playbook-section">
+          <h3 class="ia-diag-subtitle ia-subtitle-with-icon">
+            <BookOpen size={13} />
+            <span>Playbook estructurado ({playbookItemsActivos.length})</span>
+          </h3>
+          {#if playbookPorSeccion.length > 0}
+            <div class="ia-playbook-groups">
+              {#each playbookPorSeccion as grupo}
+                <div class="ia-playbook-group">
+                  <h4 class="ia-playbook-group-title">
+                    {grupo.titulo} ({grupo.items.length})
+                  </h4>
+                  <ul class="ia-diag-rules-list">
+                    {#each grupo.items as it (it.id)}
+                      <li class="ia-diag-rule-item">
+                        <div class="ia-diag-rule-head">
+                          <div class="ia-diag-chips">
+                            <span class="ia-diag-pill {it.ambito === '*' ? 'is-ok' : 'is-info'}">
+                              {etiquetaAmbitoMemoria(it.ambito)}
+                            </span>
+                            <span class="ia-diag-pill is-neutral">
+                              {it.util ?? 0} útil · {it.danino ?? 0} revisar
+                            </span>
+                          </div>
+                          {#if onEliminarItemPlaybookIa}
+                            <button
+                              type="button"
+                              class="mini-icon-btn ia-item-remove-btn"
+                              aria-label="Retirar ítem del Playbook"
+                              title="Retirar este ítem del Playbook"
+                              disabled={eliminandoId === it.id || consolidandoIa}
+                              onclick={() => manejarEliminarItemPlaybook(it.id)}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          {/if}
+                        </div>
+                        <p class="ia-diag-rule-text">{it.texto}</p>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="ia-diag-empty">
+              Aún no hay ítems en el Playbook estructurado. Al consolidar correcciones se organizan por sección aquí.
+            </p>
+          {/if}
+        </section>
+
+        <section class="ia-diag-section ia-facts-section">
+          <h3 class="ia-diag-subtitle ia-subtitle-with-icon">
+            <Lightbulb size={13} />
+            <span>Hechos aprendidos ({hechosActivos.length})</span>
+          </h3>
+          {#if hechosActivos.length > 0}
+            <ul class="ia-diag-rules-list">
+              {#each hechosActivos as hecho (hecho.id)}
+                <li class="ia-diag-rule-item">
+                  <div class="ia-diag-rule-head">
+                    <div class="ia-diag-chips">
+                      <span class="ia-diag-pill {hecho.ambito === '*' ? 'is-ok' : 'is-info'}">
+                        {etiquetaAmbitoMemoria(hecho.ambito)}
+                      </span>
+                      {#if hecho.categoria}
+                        <span class="ia-diag-pill is-neutral">
+                          {etiquetaCampoDiagnostico(hecho.categoria)}
+                        </span>
+                      {/if}
+                    </div>
+                    {#if onEliminarHechoIa}
+                      <button
+                        type="button"
+                        class="mini-icon-btn ia-item-remove-btn"
+                        aria-label="Olvidar hecho aprendido"
+                        title="Olvidar este hecho"
+                        disabled={eliminandoId === hecho.id || consolidandoIa}
+                        onclick={() => manejarEliminarHecho(hecho.id)}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    {/if}
+                  </div>
+                  <p class="ia-diag-rule-text">{hecho.contenido}</p>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="ia-diag-empty">
+              Aún no hay hechos aprendidos. Responde aclaraciones o consolida la memoria para guardar criterios puntuales.
+            </p>
+          {/if}
+        </section>
 
         <section class="ia-diag-section">
           <h3 class="ia-diag-subtitle">Perfiles resumidos</h3>

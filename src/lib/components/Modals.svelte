@@ -18,6 +18,12 @@
     FileSpreadsheet,
     Palette,
     Check,
+    Cloud,
+    RefreshCw,
+    LogOut,
+    LogIn,
+    User,
+    ChevronDown,
   } from "@lucide/svelte";
   import AutocompleteInput from "./AutocompleteInput.svelte";
   import ConfigIaModal from "./ConfigIaModal.svelte";
@@ -123,6 +129,17 @@
     onRenombrarDefensorDirecto = null,
     onEliminarDefensorDirecto = null,
     onRestaurarRespaldo,
+    driveEstado = null,
+    sincronizandoDrive = false,
+    conectandoDrive = false,
+    errorDrive = "",
+    driveClientIdDraft = $bindable(""),
+    onConectarDrive = null,
+    onDesconectarDrive = null,
+    onSincronizarDrive = null,
+    onGuardarConfigDrive = null,
+    onEliminarHechoIa = null,
+    onEliminarItemPlaybookIa = null,
   } = $props();
 
   let sugerenciaNombreCrear = $derived(generarNombrePlanilla(defensorNuevoArchivo));
@@ -162,6 +179,7 @@
   }
 
   let errorLecturaImport = $state("");
+  let cuentaAvatarError = $state(false);
 
   const esAndroidImport = $derived(
     (typeof window !== "undefined" && Boolean(window.LokusAndroid)) ||
@@ -173,6 +191,23 @@
       errorLecturaImport = "";
     }
   });
+
+  $effect(() => {
+    driveEstado?.foto_url;
+    cuentaAvatarError = false;
+  });
+
+  function obtenerInicialesCuenta(est) {
+    const nombre = String(est?.nombre || "").trim();
+    const email = String(est?.email || "").trim();
+    const fuente = nombre || (email.includes("@") ? email.split("@")[0] : email);
+    if (!fuente) return "G";
+    const partes = fuente.split(/[\s._-]+/).filter(Boolean);
+    if (partes.length >= 2) {
+      return `${partes[0][0]}${partes[1][0]}`.toUpperCase();
+    }
+    return fuente.slice(0, 2).toUpperCase();
+  }
 
   async function manejarArchivoImportInput(e) {
     const file = e.currentTarget.files?.[0];
@@ -196,6 +231,23 @@
       await onAsignarDefensor(defensorPlanillaDraft);
     }
     modalActivo = null;
+  }
+
+  function formatearFechaSync(iso) {
+    if (!iso || !String(iso).trim()) return "Aún sin sincronizar";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    try {
+      return d.toLocaleString("es-CO", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return d.toISOString().slice(0, 16).replace("T", " ");
+    }
   }
 </script>
 
@@ -222,6 +274,53 @@
       {/each}
     </div>
   </div>
+{/snippet}
+
+{#snippet driveAdvancedClientId(inputId)}
+  {#if driveEstado && !driveEstado.tiene_client_id_embebido}
+    <details
+      class="ia-tech-details drive-advanced-details"
+      open={!driveEstado.client_id_configurado}
+    >
+      <summary class="ia-tech-summary">
+        <span>Configuración avanzada (Client ID de Google)</span>
+        <ChevronDown size={14} class="ia-diag-chevron" />
+      </summary>
+      <div class="drive-advanced-body">
+        <div class="field-group">
+          <label class="field-label" for={inputId}>
+            Client ID OAuth de Google
+          </label>
+          <div class="drive-client-id-row">
+            <input
+              id={inputId}
+              type="text"
+              class="input"
+              bind:value={driveClientIdDraft}
+              autocorrect="off"
+              spellcheck="false"
+              placeholder="1234567890-xxxxxxxx.apps.googleusercontent.com"
+            />
+            <button
+              type="button"
+              class="btn btn-subtle"
+              disabled={conectandoDrive}
+              onclick={() =>
+                onGuardarConfigDrive?.(
+                  Boolean(driveEstado?.auto_sync),
+                  driveClientIdDraft
+                )}
+            >
+              Guardar
+            </button>
+          </div>
+          <span class="shortcut-hint">
+            Si compilas Lokus localmente sin <code>LOKUS_GOOGLE_CLIENT_ID</code>, ingresa aquí tu Client ID de Google Cloud (alcance <code>drive.appdata</code>).
+          </span>
+        </div>
+      </div>
+    </details>
+  {/if}
 {/snippet}
 
 {#if modalActivo}
@@ -843,6 +942,134 @@
         </button>
       </div>
 
+    {:else if modalActivo === "cuenta"}
+      {@const mensajeErrorCuenta = errorDrive || driveEstado?.ultimo_error || ""}
+      <div class="modal-header">
+        <h2 id="dialog-heading" class="modal-title">
+          <User size={15} />
+          <span>Cuenta y sincronización</span>
+        </h2>
+        <button
+          type="button"
+          class="mini-icon-btn"
+          aria-label="Cerrar"
+          onclick={() => (modalActivo = null)}
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div class="modal-body scroller">
+        {#if driveEstado?.conectado}
+          <div class="ia-config-section drive-sync-section">
+            <div class="account-profile-card">
+              {#if driveEstado.foto_url && !cuentaAvatarError}
+                <img
+                  src={driveEstado.foto_url}
+                  alt=""
+                  class="account-avatar-lg"
+                  referrerpolicy="no-referrer"
+                  onerror={() => (cuentaAvatarError = true)}
+                />
+              {:else}
+                <span class="account-avatar-lg account-avatar-initials" aria-hidden="true">
+                  {obtenerInicialesCuenta(driveEstado)}
+                </span>
+              {/if}
+              <div class="account-profile-info">
+                <strong>{driveEstado.nombre || "Cuenta de Google"}</strong>
+                {#if driveEstado.email}
+                  <span class="account-profile-email">{driveEstado.email}</span>
+                {/if}
+                <span class="shortcut-hint drive-sync-time">
+                  Última sincronización: {formatearFechaSync(driveEstado.ultima_sincronizacion)}
+                </span>
+              </div>
+              <span class="tag-si">Conectado</span>
+            </div>
+
+            <p class="shortcut-hint">
+              Tus planillas Excel, carpetas, estadísticas archivadas, listas y aprendizaje de IA se respaldan y sincronizan automáticamente en la carpeta privada de Lokus dentro de tu Google Drive. Tus claves API nunca salen de este equipo.
+            </p>
+
+            {#if mensajeErrorCuenta}
+              <p class="drive-error-msg" role="alert">{mensajeErrorCuenta}</p>
+            {/if}
+
+            <label class="delete-archive-check">
+              <input
+                type="checkbox"
+                checked={Boolean(driveEstado.auto_sync)}
+                disabled={sincronizandoDrive || conectandoDrive}
+                onchange={(e) =>
+                  onGuardarConfigDrive?.(
+                    e.currentTarget.checked,
+                    driveClientIdDraft
+                  )}
+              />
+              <div>
+                <strong>Sincronización automática</strong>
+                <div class="shortcut-hint">
+                  Mantiene sincronizados tu computador y tu celular al abrir Lokus y al guardar cambios.
+                </div>
+              </div>
+            </label>
+
+            <div class="drive-actions-row">
+              <button
+                type="button"
+                class="btn btn-solid"
+                disabled={sincronizandoDrive || conectandoDrive}
+                onclick={() => onSincronizarDrive?.()}
+              >
+                <RefreshCw size={14} class={sincronizandoDrive ? "drive-spin" : ""} />
+                <span>{sincronizandoDrive ? "Sincronizando..." : "Sincronizar ahora"}</span>
+              </button>
+              <button
+                type="button"
+                class="btn btn-subtle"
+                disabled={sincronizandoDrive || conectandoDrive}
+                onclick={() => onDesconectarDrive?.()}
+              >
+                <LogOut size={14} />
+                <span>Cerrar sesión</span>
+              </button>
+            </div>
+          </div>
+        {:else}
+          <div class="ia-config-section drive-sync-section">
+            <div class="account-welcome-card">
+              <div class="account-welcome-icon" aria-hidden="true">
+                <User size={22} />
+              </div>
+              <h3 class="account-welcome-title">Inicia sesión con tu cuenta de Google</h3>
+              <p class="shortcut-hint">
+                Guarda una copia privada en tu Google Drive y ten siempre al día tus planillas, estadísticas, listas y aprendizaje de IA entre el computador y el celular.
+              </p>
+              <button
+                type="button"
+                class="btn btn-solid account-google-btn"
+                disabled={conectandoDrive}
+                onclick={() => onConectarDrive?.(driveClientIdDraft)}
+              >
+                <LogIn size={15} />
+                <span>{conectandoDrive ? "Conectando con Google..." : "Continuar con Google"}</span>
+              </button>
+            </div>
+
+            {#if mensajeErrorCuenta}
+              <p class="drive-error-msg" role="alert">{mensajeErrorCuenta}</p>
+            {/if}
+
+            {@render driveAdvancedClientId("cuenta-drive-client-id-input")}
+          </div>
+        {/if}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-subtle" onclick={() => (modalActivo = null)}>
+          Cerrar
+        </button>
+      </div>
+
     {:else if modalActivo === "portabilidad"}
       <div class="modal-header">
         <h2 id="dialog-heading" class="modal-title">
@@ -859,7 +1086,11 @@
         </button>
       </div>
       <div class="modal-body scroller">
-        <div class="segmented-control" role="tablist" aria-label="Exportar o Importar">
+        <div
+          class="segmented-control segmented-control-3"
+          role="tablist"
+          aria-label="Exportar, Importar o Google Drive"
+        >
           <button
             type="button"
             role="tab"
@@ -879,6 +1110,16 @@
           >
             <Upload size={14} />
             <span>Importar</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={portabilidadTab === "nube"}
+            class="segmented-option {portabilidadTab === 'nube' ? 'is-si' : ''}"
+            onclick={() => (portabilidadTab = "nube")}
+          >
+            <Cloud size={14} />
+            <span>Nube (Drive)</span>
           </button>
         </div>
 
@@ -927,7 +1168,7 @@
               </div>
             </label>
           </div>
-        {:else}
+        {:else if portabilidadTab === "importar"}
           <div class="field-group">
             <label class="import-drop-btn">
               <Upload size={15} />
@@ -1046,6 +1287,100 @@
               {/if}
             </div>
           {/if}
+        {:else if portabilidadTab === "nube"}
+          {@const mensajeErrorDrive = errorDrive || driveEstado?.ultimo_error || ""}
+          {#if driveEstado?.conectado}
+            <div class="ia-config-section drive-sync-section">
+              <div class="ia-status-banner drive-account-banner">
+                <span class="tag-si">Conectado</span>
+                <div class="drive-account-meta">
+                  <strong>{driveEstado.nombre || driveEstado.email || "Cuenta de Google vinculada"}</strong>
+                  {#if driveEstado.nombre && driveEstado.email}
+                    <span class="shortcut-hint">{driveEstado.email}</span>
+                  {/if}
+                  <span class="shortcut-hint drive-sync-time">
+                    Última sincronización: {formatearFechaSync(driveEstado.ultima_sincronizacion)}
+                  </span>
+                </div>
+              </div>
+
+              <p class="shortcut-hint">
+                Tus planillas Excel, carpetas, estadísticas archivadas, listas y aprendizaje de IA se guardan de forma privada en la carpeta oculta de Lokus dentro de tu Google Drive. Tus claves API nunca se suben.
+              </p>
+
+              {#if mensajeErrorDrive}
+                <p class="drive-error-msg" role="alert">{mensajeErrorDrive}</p>
+              {/if}
+
+              <label class="delete-archive-check">
+                <input
+                  type="checkbox"
+                  checked={Boolean(driveEstado.auto_sync)}
+                  disabled={sincronizandoDrive || conectandoDrive}
+                  onchange={(e) =>
+                    onGuardarConfigDrive?.(
+                      e.currentTarget.checked,
+                      driveClientIdDraft
+                    )}
+                />
+                <div>
+                  <strong>Sincronización automática</strong>
+                  <div class="shortcut-hint">
+                    Sincroniza en segundo plano al abrir Lokus y después de guardar cambios en tus planillas o aprendizaje de IA.
+                  </div>
+                </div>
+              </label>
+
+              <div class="drive-actions-row">
+                <button
+                  type="button"
+                  class="btn btn-solid"
+                  disabled={sincronizandoDrive || conectandoDrive}
+                  onclick={() => onSincronizarDrive?.()}
+                >
+                  <RefreshCw size={14} class={sincronizandoDrive ? "drive-spin" : ""} />
+                  <span>{sincronizandoDrive ? "Sincronizando..." : "Sincronizar ahora"}</span>
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-subtle"
+                  disabled={sincronizandoDrive || conectandoDrive}
+                  onclick={() => onDesconectarDrive?.()}
+                >
+                  <LogOut size={14} />
+                  <span>Desconectar cuenta</span>
+                </button>
+              </div>
+            </div>
+          {:else}
+            <div class="ia-config-section drive-sync-section">
+              <div class="drive-intro-head">
+                <Cloud size={18} />
+                <strong>Sincronización privada con Google Drive</strong>
+              </div>
+              <p class="shortcut-hint">
+                Guarda una copia privada en la carpeta oculta de Lokus dentro de tu propio Google Drive, gratis y sin subir tus claves API. Mantén sincronizados tu computador y tu celular sin perder audiencias.
+              </p>
+
+              {#if mensajeErrorDrive}
+                <p class="drive-error-msg" role="alert">{mensajeErrorDrive}</p>
+              {/if}
+
+              <div class="drive-actions-row">
+                <button
+                  type="button"
+                  class="btn btn-solid"
+                  disabled={conectandoDrive}
+                  onclick={() => onConectarDrive?.(driveClientIdDraft)}
+                >
+                  <Cloud size={14} />
+                  <span>{conectandoDrive ? "Conectando con Google..." : "Conectar cuenta de Google"}</span>
+                </button>
+              </div>
+
+              {@render driveAdvancedClientId("drive-client-id-input")}
+            </div>
+          {/if}
         {/if}
       </div>
       <div class="modal-footer">
@@ -1062,7 +1397,7 @@
             <Download size={14} />
             <span>{exportandoPaquete ? "Exportando..." : "Exportar a Descargas"}</span>
           </button>
-        {:else}
+        {:else if portabilidadTab === "importar"}
           <button
             type="button"
             class="btn btn-solid"
@@ -1141,6 +1476,8 @@
         {consolidandoIa}
         {onRefrescarDiagnosticoIa}
         {onConsolidarMemoriaIa}
+        {onEliminarHechoIa}
+        {onEliminarItemPlaybookIa}
         {onGuardarConfigIa}
         onCerrar={() => (modalActivo = null)}
       />

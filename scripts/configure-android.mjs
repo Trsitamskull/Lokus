@@ -3,10 +3,12 @@
  * Configura de forma idempotente el proyecto Android generado por `tauri android init`
  * (`src-tauri/gen/android/`) para producción:
  * - MainActivity.kt: edge-to-edge con insets reales (barras del sistema + recorte + teclado IME),
- *   botón Atrás inteligente conectado a Svelte y puente nativo `window.LokusAndroid`
- *   (Hoja de Compartir directa vía FileProvider sin duplicar en Descargas + respaldo MediaStore opcional + sincronización de tema).
+ *   botón Atrás inteligente conectado a Svelte, soporte OAuth2 PKCE por deep link
+ *   (`com.josebustamante.gestoraudiencias:/oauth2redirect` -> `window.__lokusOnGoogleAuthCallback`)
+ *   y puente nativo `window.LokusAndroid` (Hoja de Compartir directa vía FileProvider sin duplicar
+ *   en Descargas + respaldo MediaStore opcional + sincronización de tema + apertura de navegador OAuth).
  * - proguard-lokus.pro: preserva `@JavascriptInterface` bajo optimización R8 en builds release.
- * - AndroidManifest.xml: `windowSoftInputMode="adjustResize"`.
+ * - AndroidManifest.xml: `windowSoftInputMode="adjustResize"`, `launchMode="singleTask"` e `<intent-filter>` OAuth.
  * - res/xml/file_paths.xml: rutas `cache-path` y `files-path` para FileProvider.
  * - app/build.gradle.kts: firma release automática desde variables de entorno cuando estén presentes.
  */
@@ -46,6 +48,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -71,6 +74,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MainActivity : TauriActivity() {
   private var activeWebView: WebView? = null
   private var isLightTheme: Boolean = false
+  private var pendingGoogleAuthPayload: String? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge(
@@ -108,6 +112,14 @@ class MainActivity : TauriActivity() {
         }
       }
     })
+
+    handleOAuthRedirectIntent(intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    handleOAuthRedirectIntent(intent)
   }
 
   @SuppressLint("JavascriptInterface")
@@ -116,11 +128,49 @@ class MainActivity : TauriActivity() {
     activeWebView = webView
     webView.setBackgroundColor(themeBackgroundColor(isLightTheme))
     webView.addJavascriptInterface(LokusAndroidBridge(), "LokusAndroid")
+    val pending = pendingGoogleAuthPayload
+    if (pending != null) {
+      webView.postDelayed({ dispatchGoogleAuthPayload(pending) }, 500L)
+    }
   }
 
   override fun onDestroy() {
     activeWebView = null
     super.onDestroy()
+  }
+
+  private fun handleOAuthRedirectIntent(incoming: Intent?) {
+    val uri = incoming?.data ?: return
+    if (uri.scheme != "${PACKAGE_NAME}") return
+    val path = uri.path ?: ""
+    val host = uri.host ?: ""
+    if (path != "/oauth2redirect" && host != "oauth2redirect") return
+
+    val payload = JSONObject().apply {
+      put("code", uri.getQueryParameter("code") ?: "")
+      put("state", uri.getQueryParameter("state") ?: "")
+      put("error", uri.getQueryParameter("error") ?: "")
+      put("errorDescription", uri.getQueryParameter("error_description") ?: "")
+    }.toString()
+
+    // Evitar reprocesar el mismo código tras recreaciones de Activity
+    incoming.data = null
+    pendingGoogleAuthPayload = payload
+    dispatchGoogleAuthPayload(payload)
+  }
+
+  private fun dispatchGoogleAuthPayload(payloadJson: String) {
+    val wv = activeWebView ?: return
+    val quotedPayload = JSONObject.quote(payloadJson)
+    val script = "(function(){try{if(typeof window.__lokusOnGoogleAuthCallback==='function'){window.__lokusOnGoogleAuthCallback(JSON.parse(" + quotedPayload + "));return 'delivered';}return 'pending';}catch(e){return 'error';}})()"
+    runOnUiThread {
+      if (isFinishing || isDestroyed) return@runOnUiThread
+      wv.evaluateJavascript(script) { raw ->
+        if (raw == "\\"delivered\\"") {
+          pendingGoogleAuthPayload = null
+        }
+      }
+    }
   }
 
   private fun themeBackgroundColor(isLight: Boolean): Int {
@@ -221,6 +271,40 @@ class MainActivity : TauriActivity() {
     @JavascriptInterface
     fun setTheme(isLight: Boolean) {
       runOnUiThread { applySystemBarAppearance(isLight) }
+    }
+
+    @JavascriptInterface
+    fun openExternalAuthUrl(url: String): Boolean {
+      if (isFinishing || isDestroyed) return false
+      val cleanUrl = url.trim()
+      if (!cleanUrl.startsWith("https://")) return false
+      val opened = AtomicBoolean(false)
+      val latch = CountDownLatch(1)
+      runOnUiThread {
+        try {
+          val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(cleanUrl)).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+          }
+          startActivity(viewIntent)
+          opened.set(true)
+        } catch (_: Exception) {
+        } finally {
+          latch.countDown()
+        }
+      }
+      return try {
+        latch.await(2000, TimeUnit.MILLISECONDS) && opened.get()
+      } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        false
+      }
+    }
+
+    @JavascriptInterface
+    fun consumePendingGoogleAuthCallback(): String {
+      val pending = pendingGoogleAuthPayload
+      pendingGoogleAuthPayload = null
+      return pending ?: ""
     }
 
     @JavascriptInterface
@@ -373,6 +457,37 @@ function patchAndroidManifest() {
       'android:windowSoftInputMode="adjustResize"'
     );
   }
+
+  if (!xml.includes("android:launchMode=")) {
+    xml = xml.replace(
+      /(<activity\b[^>]*android:name="\.MainActivity")/,
+      '$1\n            android:launchMode="singleTask"'
+    );
+  }
+
+  // Eliminar bloque OAuth previo si existiera para garantizar idempotencia
+  xml = xml.replace(
+    /[ \t]*<!-- LOKUS_GOOGLE_OAUTH_INTENT_START -->[\s\S]*?<!-- LOKUS_GOOGLE_OAUTH_INTENT_END -->\r?\n?/g,
+    ""
+  );
+
+  const oauthIntentBlock =
+    `            <!-- LOKUS_GOOGLE_OAUTH_INTENT_START -->\n` +
+    `            <intent-filter>\n` +
+    `                <action android:name="android.intent.action.VIEW" />\n` +
+    `                <category android:name="android.intent.category.DEFAULT" />\n` +
+    `                <category android:name="android.intent.category.BROWSABLE" />\n` +
+    `                <data android:scheme="${PACKAGE_NAME}" />\n` +
+    `            </intent-filter>\n` +
+    `            <!-- LOKUS_GOOGLE_OAUTH_INTENT_END -->\n`;
+
+  if (!xml.includes(`android:scheme="${PACKAGE_NAME}"`)) {
+    if (!xml.includes("</activity>")) {
+      throw new Error("No se encontró cierre `</activity>` en AndroidManifest.xml");
+    }
+    xml = xml.replace("</activity>", `${oauthIntentBlock}        </activity>`);
+  }
+
   fs.writeFileSync(MANIFEST_PATH, xml, "utf8");
 }
 

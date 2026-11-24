@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::aprendizaje::{
-    cargar_memoria_local_snapshot, memoria_base_embebida,
-    obtener_contexto_prompt_con_traza_y_defensor, obtener_resumenes_consolidados_prompt,
-    preferencias_efectivas_con_base_para_defensor, quitar_tildes, AnalisisCorreccionIa,
-    CorreccionIa, LoteConsolidacion, MemoriaAprendizaje, PrediccionLocalResumen,
-    PreferenciasEstilo, ResultadoConsolidacionIa,
+    cargar_memoria_local_snapshot, formatear_playbook_y_hechos_para_prompt, memoria_base_embebida,
+    obtener_contexto_prompt_con_traza_y_defensor, preferencias_efectivas_con_base_para_defensor,
+    quitar_tildes, registrar_telemetria_extraccion, AnalisisCorreccionIa, CorreccionIa,
+    LoteConsolidacion, MemoriaAprendizaje, PrediccionLocalResumen, PreferenciasEstilo,
+    ResultadoConsolidacionIa,
 };
 use crate::config::{cargar_settings, guardar_settings};
 use crate::estadistica_ia::{
@@ -994,12 +994,25 @@ fn formatear_candidatos_prompt(cands: Option<&CandidatosPrompt>) -> String {
     };
     let mut bloques: Vec<String> = Vec::new();
     if let Some(ref proc_hab) = c.radicado_vinculado {
+        let mut extras: Vec<String> = Vec::new();
+        if !proc_hab.procesado_habitual.trim().is_empty() {
+            extras.push(format!("procesado={:?}", proc_hab.procesado_habitual.trim()));
+        }
+        extras.push(format!("juzgado_habitual={:?}", proc_hab.juzgado_habitual));
+        extras.push(format!("tipo_habitual={:?}", proc_hab.tipo_habitual));
+        if !proc_hab.ultima_fecha.trim().is_empty() {
+            extras.push(format!(
+                "última={} ({}, {})",
+                proc_hab.ultima_fecha.trim(),
+                proc_hab.ultima_tipo.trim(),
+                proc_hab.ultima_realizada.trim()
+            ));
+        }
         bloques.push(format!(
-            "- Proceso conocido por historial del radicado (frecuencia={}): radicado=\"{}\", juzgado_habitual=\"{}\", tipo_habitual=\"{}\". Úsalos como referencia de normalización salvo que el texto indique un cambio explícito.",
+            "- Proceso conocido en memoria por radicado (freq={}, radicado={:?}, {}). Úsalo como referencia salvo cambio explícito en el texto.",
             proc_hab.frecuencia,
             proc_hab.radicado_completo,
-            proc_hab.juzgado_habitual,
-            proc_hab.tipo_habitual
+            extras.join(", ")
         ));
     }
     if !c.siglas_resueltas.is_empty() {
@@ -1126,21 +1139,26 @@ fn construir_prompt_con_candidatos_y_catalogo(
     )
 }
 
-fn construir_prompt_con_candidatos_y_resumenes(
-    texto_preprocesado: &str,
-    current_year: i32,
-    contexto_aprendizaje: &str,
-    candidatos: Option<&CandidatosPrompt>,
+fn construir_system_prompt_extraccion(
     tipos_usuario: &[String],
+    top_juzgados_defensor: &[(String, u32)],
     resumen_general: Option<&str>,
     resumen_defensor: Option<&str>,
+    hechos_semanticos: &[String],
 ) -> String {
-    let seccion_candidatos = formatear_candidatos_prompt(candidatos);
     let catalogo_tipos = construir_catalogo_tipos_para_prompt(tipos_usuario);
-    let seccion_aprendizaje = if contexto_aprendizaje.trim().is_empty() {
+    let bloque_top_juzgados = if top_juzgados_defensor.is_empty() {
         String::new()
     } else {
-        format!("\n{}\n", contexto_aprendizaje.trim())
+        let lista: Vec<String> = top_juzgados_defensor
+            .iter()
+            .take(20)
+            .map(|(j, freq)| format!("- {} ({} usos)", j, freq))
+            .collect();
+        format!(
+            "\nDESPACHOS MÁS FRECUENTES DE ESTE DEFENSOR (priorízalos al normalizar siglas o nombres parciales):\n{}\n",
+            lista.join("\n")
+        )
     };
     let mut bloque_resumenes = String::new();
     if let Some(rg) = resumen_general.map(str::trim).filter(|s| !s.is_empty()) {
@@ -1151,16 +1169,29 @@ fn construir_prompt_con_candidatos_y_resumenes(
     }
     if let Some(rd) = resumen_defensor.map(str::trim).filter(|s| !s.is_empty()) {
         bloque_resumenes.push_str(&format!(
-            "\nPERFIL SINTÉTICO DEL DEFENSOR (ESPECÍFICO):\n{}\n",
+            "\nPLAYBOOK / PERFIL SINTÉTICO DEL DEFENSOR:\n{}\n",
             rd
+        ));
+    }
+    let hechos_limpios: Vec<String> = hechos_semanticos
+        .iter()
+        .map(|h| h.trim())
+        .filter(|h| !h.is_empty())
+        .map(|h| format!("- {}", h))
+        .collect();
+    if !hechos_limpios.is_empty() {
+        bloque_resumenes.push_str(&format!(
+            "\nHECHOS SEMÁNTICOS APRENDIDOS (MEMORIA VERIFICADA):\n{}\n",
+            hechos_limpios.join("\n")
         ));
     }
 
     format!(
-        r#"Eres un asistente jurídico experto en audiencias judiciales en Colombia, optimizado con patrones reales de defensores públicos.
-Analiza el texto (que puede venir en estilo ESTRUCTURADO descriptivo o en estilo COMPACTO telegráfico) y devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
+        r#"Eres un asistente jurídico experto en audiencias judiciales en Colombia, optimizado con memoria y patrones reales de defensores públicos.
+Analiza el texto recibido (en estilo ESTRUCTURADO descriptivo o COMPACTO telegráfico) y devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
 
 {{
+  "analisis_breve": "1-2 frases breves identificando: procesado(s) vs despacho/fiscal, si se instaló o aplazó, y causa raíz vs reacción",
   "radicado": "NOMBRE_PROCESADO - NÚMERO_RADICADO (si hay ambos), solo el/los NOMBRE(S) DEL/LOS PROCESADO(S) si NO hay radicado, o solo el NÚMERO_RADICADO si no hay nombre (solo \"\" si no aparece ninguno)",
   "tipo_audiencia": "Nombre exacto del catálogo de tipos de audiencia si corresponde, o el nombre real si es distinto (o \"\" si no se menciona)",
   "fecha": "DD/MM/YYYY (o \"\" si no se menciona)",
@@ -1174,7 +1205,7 @@ Analiza el texto (que puede venir en estilo ESTRUCTURADO descriptivo o en estilo
 
 CATÁLOGO COMPLETO DE TIPOS DE AUDIENCIA DEL FORMULARIO (elige el nombre EXACTO cuando coincida, o "" si el texto no indica tipo):
 {catalogo_tipos}
-
+{bloque_top_juzgados}
 REGLAS CRÍTICAS DE EXTRACCIÓN:
 1. CAMPOS OPCIONALES AUSENTES:
    - Si un dato opcional (`tipo_audiencia`, `juzgado`, `fecha`, `hora`, `minuto`, `observaciones`) NO aparece en el texto, devuelve SIEMPRE cadena vacía `""`. Nunca escribas textos de relleno como "No especificado", "N/A", "Ninguno" ni "Sin datos".
@@ -1185,7 +1216,7 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
    - Si hay varios procesados con radicado, inclúyelos todos (ej: `"FERNANDO JULIO CASUIL Y SHARLES DE JESUS LOPEZ JIMENEZ - 20001..."`).
    - Nunca pongas el nombre del Defensor Público, juez o fiscal en `"radicado"`.
 3. FECHA Y HORA MILITAR (24h):
-   - Convierte cualquier fecha ("24 de junio", "JUNIO 24") a DD/MM/YYYY. Si no menciona el año, usa {current_year}.
+   - Convierte cualquier fecha ("24 de junio", "JUNIO 24") a DD/MM/YYYY usando el año de referencia indicado por el usuario si no aparece año en el texto.
    - Convierte horas PM a formato 24h ("09:30 am" -> hora: "09", minuto: "30"; "2:30 PM" -> hora: "14", minuto: "30"). Si no hay hora, deja "hora": "" y "minuto": "".
 4. TIPOS DE AUDIENCIA (ESTILO ESTRUCTURADO Y COMPACTO):
    - "INICIA JUICIO" o "CONTINUA JUICIO" -> "Audiencia de juicio oral"
@@ -1209,12 +1240,51 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
    - Para abreviaciones ambiguas como "CTO" / "Cto" (que puede significar Circuito o Conocimiento) o PCTO, MANTÉN la abreviación original tal cual ("Juzgado 3 Cto Penal" -> "Juzgado 3 Cto Penal"); no adivines su expansión.
 7. OBSERVACIONES:
    - Incluye fechas de reprogramación, causas secundarias o incidencias técnicas. Si no hay detalles adicionales, deja el campo vacío "".
-{bloque_resumenes}{seccion_candidatos}{seccion_aprendizaje}
-TEXTO A ANALIZAR:
-"""
-{texto_preprocesado}
-""""#
+{bloque_resumenes}"#
     )
+}
+
+fn construir_prompt_usuario_extraccion(
+    texto_preprocesado: &str,
+    current_year: i32,
+    contexto_aprendizaje: &str,
+    candidatos: Option<&CandidatosPrompt>,
+) -> String {
+    let seccion_candidatos = formatear_candidatos_prompt(candidatos);
+    let seccion_aprendizaje = if contexto_aprendizaje.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n{}\n", contexto_aprendizaje.trim())
+    };
+    format!(
+        "Año de referencia si el texto omite el año: {current_year}\n{seccion_candidatos}{seccion_aprendizaje}\nTEXTO A ANALIZAR:\n\"\"\"\n{texto_preprocesado}\n\"\"\""
+    )
+}
+
+#[allow(dead_code)]
+fn construir_prompt_con_candidatos_y_resumenes(
+    texto_preprocesado: &str,
+    current_year: i32,
+    contexto_aprendizaje: &str,
+    candidatos: Option<&CandidatosPrompt>,
+    tipos_usuario: &[String],
+    resumen_general: Option<&str>,
+    resumen_defensor: Option<&str>,
+) -> String {
+    let sys = construir_system_prompt_extraccion(
+        tipos_usuario,
+        &[],
+        resumen_general,
+        resumen_defensor,
+        &[],
+    );
+    let usr = construir_prompt_usuario_extraccion(
+        texto_preprocesado,
+        current_year,
+        contexto_aprendizaje,
+        candidatos,
+    );
+    format!("{sys}\n\n{usr}")
 }
 
 pub(crate) fn esquema_extraccion_audiencia_openai() -> Value {
@@ -1226,6 +1296,10 @@ pub(crate) fn esquema_extraccion_audiencia_openai() -> Value {
             "schema": {
                 "type": "object",
                 "properties": {
+                    "analisis_breve": {
+                        "type": "string",
+                        "description": "Razonamiento breve (1-2 frases): procesado(s) vs despacho/fiscal, si se instaló o aplazó, y causa raíz vs reacción."
+                    },
                     "radicado": {
                         "type": "string",
                         "description": "NOMBRE_PROCESADO - NÚMERO_RADICADO si hay ambos; si no hay radicado pero sí uno o varios nombres de procesados, solo los nombres; o solo el radicado si no hay nombre."
@@ -1253,6 +1327,7 @@ pub(crate) fn esquema_extraccion_audiencia_openai() -> Value {
                     "observaciones": { "type": "string" }
                 },
                 "required": [
+                    "analisis_breve",
                     "radicado",
                     "tipo_audiencia",
                     "fecha",
@@ -1273,6 +1348,10 @@ pub(crate) fn esquema_extraccion_audiencia_gemini() -> Value {
     json!({
         "type": "OBJECT",
         "properties": {
+            "analisis_breve": {
+                "type": "STRING",
+                "description": "Razonamiento breve (1-2 frases): procesado(s) vs despacho/fiscal, si se instaló o aplazó, y causa raíz vs reacción."
+            },
             "radicado": {
                 "type": "STRING",
                 "description": "NOMBRE_PROCESADO - NÚMERO_RADICADO si hay ambos; si no hay radicado pero sí uno o varios nombres de procesados, solo los nombres; o solo el radicado si no hay nombre."
@@ -1300,6 +1379,7 @@ pub(crate) fn esquema_extraccion_audiencia_gemini() -> Value {
             "observaciones": { "type": "STRING" }
         },
         "required": [
+            "analisis_breve",
             "radicado",
             "tipo_audiencia",
             "fecha",
@@ -1507,6 +1587,49 @@ pub(crate) fn esquema_consolidacion_openai() -> Value {
                         }
                     },
                     "resumen_actualizado": { "type": "string" },
+                    "acciones_playbook": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tipo_accion": {
+                                    "type": "string",
+                                    "enum": ["agregar", "reforzar", "retirar"]
+                                },
+                                "item_id": { "type": "string" },
+                                "seccion": {
+                                    "type": "string",
+                                    "enum": [
+                                        "siglas_y_despachos",
+                                        "criterios_realizada_motivo",
+                                        "estilo_observaciones",
+                                        "trampas_frecuentes"
+                                    ]
+                                },
+                                "texto": { "type": "string" }
+                            },
+                            "required": ["tipo_accion", "item_id", "seccion", "texto"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "acciones_hechos": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tipo_accion": {
+                                    "type": "string",
+                                    "enum": ["agregar", "invalidar"]
+                                },
+                                "clave": { "type": "string" },
+                                "categoria": { "type": "string" },
+                                "contenido": { "type": "string" },
+                                "confianza": { "type": "number" }
+                            },
+                            "required": ["tipo_accion", "clave", "categoria", "contenido", "confianza"],
+                            "additionalProperties": false
+                        }
+                    },
                     "sugerencias_build": {
                         "type": "array",
                         "items": {
@@ -1521,7 +1644,13 @@ pub(crate) fn esquema_consolidacion_openai() -> Value {
                         }
                     }
                 },
-                "required": ["acciones_reglas", "resumen_actualizado", "sugerencias_build"],
+                "required": [
+                    "acciones_reglas",
+                    "resumen_actualizado",
+                    "acciones_playbook",
+                    "acciones_hechos",
+                    "sugerencias_build"
+                ],
                 "additionalProperties": false
             }
         }
@@ -1595,6 +1724,47 @@ pub(crate) fn esquema_consolidacion_gemini() -> Value {
                 }
             },
             "resumen_actualizado": { "type": "STRING" },
+            "acciones_playbook": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "tipo_accion": {
+                            "type": "STRING",
+                            "enum": ["agregar", "reforzar", "retirar"]
+                        },
+                        "item_id": { "type": "STRING" },
+                        "seccion": {
+                            "type": "STRING",
+                            "enum": [
+                                "siglas_y_despachos",
+                                "criterios_realizada_motivo",
+                                "estilo_observaciones",
+                                "trampas_frecuentes"
+                            ]
+                        },
+                        "texto": { "type": "STRING" }
+                    },
+                    "required": ["tipo_accion", "item_id", "seccion", "texto"]
+                }
+            },
+            "acciones_hechos": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "tipo_accion": {
+                            "type": "STRING",
+                            "enum": ["agregar", "invalidar"]
+                        },
+                        "clave": { "type": "STRING" },
+                        "categoria": { "type": "STRING" },
+                        "contenido": { "type": "STRING" },
+                        "confianza": { "type": "NUMBER" }
+                    },
+                    "required": ["tipo_accion", "clave", "categoria", "contenido", "confianza"]
+                }
+            },
             "sugerencias_build": {
                 "type": "ARRAY",
                 "items": {
@@ -1608,8 +1778,27 @@ pub(crate) fn esquema_consolidacion_gemini() -> Value {
                 }
             }
         },
-        "required": ["acciones_reglas", "resumen_actualizado", "sugerencias_build"]
+        "required": [
+            "acciones_reglas",
+            "resumen_actualizado",
+            "acciones_playbook",
+            "acciones_hechos",
+            "sugerencias_build"
+        ]
     })
+}
+
+fn es_error_parametro_razonamiento(status: reqwest::StatusCode, msg: &str) -> bool {
+    if !matches!(status.as_u16(), 400 | 422) {
+        return false;
+    }
+    let m = msg.to_lowercase();
+    m.contains("reasoning_effort")
+        || m.contains("reasoning")
+        || m.contains("thinkingconfig")
+        || m.contains("thinking_config")
+        || m.contains("thinkingbudget")
+        || m.contains("thinking_budget")
 }
 
 async fn enviar_peticion_openai(
@@ -1618,6 +1807,7 @@ async fn enviar_peticion_openai(
     system_prompt: &str,
     prompt: &str,
     max_tokens: Option<u32>,
+    reasoning_level: Option<&str>,
     response_format: Value,
 ) -> Result<(reqwest::StatusCode, Value), String> {
     let sys = if system_prompt.trim().is_empty() {
@@ -1644,7 +1834,19 @@ async fn enviar_peticion_openai(
         body["max_completion_tokens"] = json!(mt);
     }
 
-    // Modelos clásicos soportan temperature=0.1; modelos de razonamiento (gpt-5*, o1, o3, o4) usan su temperatura por defecto
+    if let Some(lvl) = reasoning_level {
+        let m_low = model.trim().to_lowercase();
+        if m_low.starts_with("gpt-5")
+            || m_low.starts_with("gpt-6")
+            || m_low.starts_with("o1")
+            || m_low.starts_with("o3")
+            || m_low.starts_with("o4")
+        {
+            body["reasoning_effort"] = json!(lvl);
+        }
+    }
+
+    // Modelos clásicos soportan temperature=0.1; modelos de razonamiento (gpt-5*, gpt-6*, o1, o3, o4) usan su temperatura por defecto
     if model.starts_with("gpt-4") || model.starts_with("gpt-3.5") {
         body["temperature"] = json!(0.1);
     }
@@ -1665,26 +1867,94 @@ async fn enviar_peticion_openai(
     Ok((status, json_resp))
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct UsoTokensProveedor {
+    pub tokens_entrada: u64,
+    pub tokens_cacheados: u64,
+}
+
+impl UsoTokensProveedor {
+    fn acumular(&mut self, otro: UsoTokensProveedor) {
+        self.tokens_entrada = self.tokens_entrada.saturating_add(otro.tokens_entrada);
+        self.tokens_cacheados = self.tokens_cacheados.saturating_add(otro.tokens_cacheados);
+    }
+}
+
+pub(crate) fn extraer_uso_tokens_openai(json_resp: &Value) -> UsoTokensProveedor {
+    let tokens_entrada = json_resp
+        .get("usage")
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let tokens_cacheados = json_resp
+        .get("usage")
+        .and_then(|u| u.get("prompt_tokens_details"))
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    UsoTokensProveedor {
+        tokens_entrada,
+        tokens_cacheados,
+    }
+}
+
+pub(crate) fn extraer_uso_tokens_gemini(json_resp: &Value) -> UsoTokensProveedor {
+    let tokens_entrada = json_resp
+        .get("usageMetadata")
+        .and_then(|u| u.get("promptTokenCount"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let tokens_cacheados = json_resp
+        .get("usageMetadata")
+        .and_then(|u| u.get("cachedContentTokenCount"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    UsoTokensProveedor {
+        tokens_entrada,
+        tokens_cacheados,
+    }
+}
+
 async fn llamar_openai(
     api_key: &str,
     model: &str,
     system_prompt: &str,
     prompt: &str,
     max_tokens: Option<u32>,
+    reasoning_level: Option<&str>,
     response_schema: Option<Value>,
-) -> Result<Value, String> {
+) -> Result<(Value, UsoTokensProveedor), String> {
     let formato_inicial = response_schema
         .clone()
         .unwrap_or_else(|| json!({ "type": "json_object" }));
+    let mut esfuerzo_activo = reasoning_level;
     let (mut status, mut json_resp) = enviar_peticion_openai(
         api_key,
         model,
         system_prompt,
         prompt,
         max_tokens,
-        formato_inicial,
+        esfuerzo_activo,
+        formato_inicial.clone(),
     )
     .await?;
+
+    if !status.is_success() && esfuerzo_activo.is_some() {
+        let msg = json_resp["error"]["message"].as_str().unwrap_or("");
+        if es_error_parametro_razonamiento(status, msg) {
+            esfuerzo_activo = None;
+            (status, json_resp) = enviar_peticion_openai(
+                api_key,
+                model,
+                system_prompt,
+                prompt,
+                max_tokens,
+                None,
+                formato_inicial,
+            )
+            .await?;
+        }
+    }
 
     if !status.is_success() && response_schema.is_some() {
         let msg = json_resp["error"]["message"].as_str().unwrap_or("");
@@ -1695,6 +1965,7 @@ async fn llamar_openai(
                 system_prompt,
                 prompt,
                 max_tokens,
+                esfuerzo_activo,
                 json!({ "type": "json_object" }),
             )
             .await?;
@@ -1708,12 +1979,14 @@ async fn llamar_openai(
         return Err(format!("OpenAI ({}): {}", status, msg));
     }
 
+    let uso = extraer_uso_tokens_openai(&json_resp);
     let content = json_resp["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| "OpenAI no devolvió contenido en la respuesta".to_string())?;
 
-    parsear_json_limpio(content)
-        .map_err(|e| format!("No se pudo interpretar el JSON de OpenAI: {}", e))
+    let val = parsear_json_limpio(content)
+        .map_err(|e| format!("No se pudo interpretar el JSON de OpenAI: {}", e))?;
+    Ok((val, uso))
 }
 
 async fn enviar_peticion_gemini(
@@ -1722,6 +1995,7 @@ async fn enviar_peticion_gemini(
     system_prompt: &str,
     prompt: &str,
     max_tokens: Option<u32>,
+    reasoning_level: Option<&str>,
     response_schema: Option<&Value>,
 ) -> Result<(reqwest::StatusCode, Value), String> {
     let modelo_limpio = model.trim().trim_start_matches("models/");
@@ -1736,6 +2010,16 @@ async fn enviar_peticion_gemini(
     });
     if let Some(mt) = max_tokens {
         generation_config["maxOutputTokens"] = json!(mt);
+    }
+    if let Some(lvl) = reasoning_level {
+        if modelo_limpio.starts_with("gemini-2.5") {
+            let budget = if lvl == "medium" || lvl == "high" {
+                2048
+            } else {
+                512
+            };
+            generation_config["thinkingConfig"] = json!({ "thinkingBudget": budget });
+        }
     }
     if let Some(schema) = response_schema {
         generation_config["responseSchema"] = schema.clone();
@@ -1788,18 +2072,38 @@ async fn llamar_gemini(
     system_prompt: &str,
     prompt: &str,
     max_tokens: Option<u32>,
+    reasoning_level: Option<&str>,
     response_schema: Option<Value>,
-) -> Result<(Value, String), String> {
+) -> Result<(Value, String, UsoTokensProveedor), String> {
     let mut modelo_activo = model.trim().trim_start_matches("models/").to_string();
+    let mut esfuerzo_activo = reasoning_level;
     let (mut status, mut json_resp) = enviar_peticion_gemini(
         api_key,
         &modelo_activo,
         system_prompt,
         prompt,
         max_tokens,
+        esfuerzo_activo,
         response_schema.as_ref(),
     )
     .await?;
+
+    if !status.is_success() && esfuerzo_activo.is_some() {
+        let msg = json_resp["error"]["message"].as_str().unwrap_or("");
+        if es_error_parametro_razonamiento(status, msg) {
+            esfuerzo_activo = None;
+            (status, json_resp) = enviar_peticion_gemini(
+                api_key,
+                &modelo_activo,
+                system_prompt,
+                prompt,
+                max_tokens,
+                None,
+                response_schema.as_ref(),
+            )
+            .await?;
+        }
+    }
 
     // Si Google retiró el modelo para cuentas nuevas (404), usar automáticamente el modelo sugerido
     // por el propio mensaje de error de Google (o "gemini-flash-latest") y actualizar settings.json.
@@ -1814,6 +2118,7 @@ async fn llamar_gemini(
                 system_prompt,
                 prompt,
                 max_tokens,
+                esfuerzo_activo,
                 response_schema.as_ref(),
             )
             .await
@@ -1846,6 +2151,7 @@ async fn llamar_gemini(
                 system_prompt,
                 prompt,
                 max_tokens,
+                esfuerzo_activo,
                 None,
             )
             .await?;
@@ -1864,77 +2170,69 @@ async fn llamar_gemini(
         return Err(format!("Gemini ({}): {}", status, msg));
     }
 
+    let uso = extraer_uso_tokens_gemini(&json_resp);
     let content = json_resp["candidates"][0]["content"]["parts"][0]["text"]
         .as_str()
         .ok_or_else(|| "Gemini no devolvió texto en la respuesta".to_string())?;
 
     let val = parsear_json_limpio(content)
         .map_err(|e| format!("No se pudo interpretar el JSON de Gemini: {}", e))?;
-    Ok((val, modelo_activo))
+    Ok((val, modelo_activo, uso))
 }
 
 async fn consultar_json_proveedor_con_opciones(
     prompt: &str,
     system_prompt: &str,
     max_tokens: Option<u32>,
+    reasoning_level: Option<&str>,
     openai_schema: Option<Value>,
     gemini_schema: Option<Value>,
-) -> Result<(Value, String), String> {
+) -> Result<(Value, String, UsoTokensProveedor), String> {
     let settings = cargar_settings();
     if settings.provider == "gemini" {
         if settings.gemini_api_key.trim().is_empty() {
             return Err("No has configurado tu API Key de Google Gemini.".to_string());
         }
-        let (val, modelo_usado) = llamar_gemini(
+        let (val, modelo_usado, uso) = llamar_gemini(
             &settings.gemini_api_key,
             &settings.gemini_model,
             system_prompt,
             prompt,
             max_tokens,
+            reasoning_level,
             gemini_schema,
         )
         .await?;
-        Ok((val, format!("gemini:{}", modelo_usado)))
+        Ok((val, format!("gemini:{}", modelo_usado), uso))
     } else {
         if settings.openai_api_key.trim().is_empty() {
             return Err("No has configurado tu API Key de OpenAI.".to_string());
         }
-        let val = llamar_openai(
+        let (val, uso) = llamar_openai(
             &settings.openai_api_key,
             &settings.openai_model,
             system_prompt,
             prompt,
             max_tokens,
+            reasoning_level,
             openai_schema,
         )
         .await?;
-        Ok((val, format!("openai:{}", settings.openai_model.trim())))
+        Ok((val, format!("openai:{}", settings.openai_model.trim()), uso))
     }
 }
 
-async fn consultar_json_proveedor_con_esquema(
-    prompt: &str,
-    openai_schema: Option<Value>,
-    gemini_schema: Option<Value>,
-) -> Result<Value, String> {
-    let (val, _) = consultar_json_proveedor_con_opciones(
+async fn consultar_json_proveedor(prompt: &str) -> Result<Value, String> {
+    let (val, _, _) = consultar_json_proveedor_con_opciones(
         prompt,
         SYSTEM_PROMPT_EXTRACCION,
         None,
-        openai_schema,
-        gemini_schema,
-    )
-    .await?;
-    Ok(val)
-}
-
-async fn consultar_json_proveedor(prompt: &str) -> Result<Value, String> {
-    consultar_json_proveedor_con_esquema(
-        prompt,
+        Some("medium"),
         Some(esquema_analisis_openai()),
         Some(esquema_analisis_gemini()),
     )
-    .await
+    .await?;
+    Ok(val)
 }
 
 fn construir_prompt_analisis_correccion(correccion: &CorreccionIa) -> String {
@@ -2046,7 +2344,7 @@ CASOS AGRUPADOS:
 }
 
 pub(crate) fn construir_prompt_consolidacion(lote: &LoteConsolidacion) -> String {
-    let max_chars = if lote.ambito == "*" { 320 } else { 380 };
+    let max_chars = if lote.ambito == "*" { 900 } else { 1200 };
     let reglas_txt = if lote.reglas_ambito.is_empty() {
         "(Sin reglas en este ámbito)".to_string()
     } else {
@@ -2124,6 +2422,34 @@ pub(crate) fn construir_prompt_consolidacion(lote: &LoteConsolidacion) -> String
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let pb_txt = if lote.playbook_ambito.is_empty() {
+        "(Sin ítems atómicos en el Playbook actual)".to_string()
+    } else {
+        lote.playbook_ambito
+            .iter()
+            .map(|it| {
+                format!(
+                    "- id={} | seccion={} | util={} | danino={} | texto={:?}",
+                    it.id, it.seccion, it.util, it.danino, it.texto
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let hechos_txt = if lote.hechos_ambito.is_empty() {
+        "(Sin hechos semánticos activos en este ámbito)".to_string()
+    } else {
+        lote.hechos_ambito
+            .iter()
+            .map(|h| {
+                format!(
+                    "- clave={} | categoria={} | conf={:.2} | contenido={:?}",
+                    h.clave, h.categoria, h.confianza, h.contenido
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
     format!(
         r#"Consolida de forma incremental la memoria de aprendizaje para el ámbito `{}` ({}).
@@ -2133,6 +2459,12 @@ MÉTRICAS DEL ÁMBITO:
 {}
 
 PATRONES TRANSVERSALES OBSERVADOS:
+{}
+
+PLAYBOOK ATÓMICO ACTUAL (ACE):
+{}
+
+HECHOS SEMÁNTICOS ACTIVOS (MEM0):
 {}
 
 REGLAS ACTUALES DEL ÁMBITO:
@@ -2146,14 +2478,23 @@ INSTRUCCIONES:
    - `"fusionar"`: agrupa `ids_origen` de reglas locales redundantes en una redacción más clara (nunca toques reglas `base_invariante` / `base-*`).
    - `"conflicto"`: marca reglas locales obsoletas o contradictorias en `ids_origen` (requiere `confianza >= 0.75`; prohibido sobre `base_invariante`).
    - `"sintetizar"`: propone como máximo 2 reglas nuevas concisas (que no dupliquen reglas ya presentes) con `triggers` cortos útiles.
-2. `resumen_actualizado`: redacta un perfil sintético consolidado de máximo {} caracteres con los criterios duraderos más útiles de este ámbito para inyectar al prompt de extracción. No incluyas nombres propios ni números de radicado.
-3. `sugerencias_build`: si detectas jerga recurrente o entidades faltantes útiles para futuras versiones del software, inclúyelas de forma anónima; si no hay, devuelve `[]`."#,
+2. Operaciones delta atómicas en `acciones_playbook` (evita reescribir todo desde cero; conserva ítems probados):
+   - `"agregar"`: añade un nuevo ítem breve en una sección (`siglas_y_despachos`, `criterios_realizada_motivo`, `estilo_observaciones` o `trampas_frecuentes`) con `item_id: ""`.
+   - `"reforzar"`: incrementa la utilidad de un ítem existente indicando su `item_id` (y su sección).
+   - `"retirar"`: desactiva un ítem obsoleto o dañino indicando su `item_id`.
+3. Operaciones delta en `acciones_hechos` (hechos concretos y duraderos del ámbito, sin nombres de procesados ni radicados):
+   - `"agregar"`: guarda o actualiza un hecho concreto (`clave` corta única, `categoria`, `contenido`, `confianza` 0.0-1.0); si la clave ya existía, se reemplaza la versión anterior.
+   - `"invalidar"`: desactiva un hecho obsoleto indicando su `clave`.
+4. `resumen_actualizado`: redacta además un resumen consolidado retrocompatible en secciones compactas (`Siglas y despachos`, `Criterios SI/NO y motivos`, `Estilo observaciones`, `Errores a evitar`) de máximo {} caracteres conservando los criterios duraderos previos. No incluyas nombres propios ni números de radicado.
+5. `sugerencias_build`: si detectas jerga recurrente o entidades faltantes útiles para futuras versiones del software, inclúyelas de forma anónima; si no hay, devuelve `[]`."#,
         lote.ambito,
         lote.nombre_ambito,
         lote.version_resumen,
         lote.resumen_actual,
         met_txt,
         pat_txt,
+        pb_txt,
+        hechos_txt,
         reglas_txt,
         corrs_txt,
         max_chars
@@ -2164,10 +2505,11 @@ pub async fn consolidar_memoria_ia(
     lote: &LoteConsolidacion,
 ) -> Result<(ResultadoConsolidacionIa, String), String> {
     let prompt = construir_prompt_consolidacion(lote);
-    let (raw, modelo) = consultar_json_proveedor_con_opciones(
+    let (raw, modelo, _) = consultar_json_proveedor_con_opciones(
         &prompt,
         SYSTEM_PROMPT_CONSOLIDACION,
-        Some(1400),
+        Some(2000),
+        Some("medium"),
         Some(esquema_consolidacion_openai()),
         Some(esquema_consolidacion_gemini()),
     )
@@ -2638,6 +2980,123 @@ pub(crate) fn arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
     }
 }
 
+pub(crate) fn detectar_motivos_autoverificacion(
+    texto: &str,
+    raw_json: &Value,
+    candidatos: &CandidatosPrompt,
+    motor_pred: &PrediccionLocalResumen,
+) -> Vec<String> {
+    let mut motivos = Vec::new();
+    let get_s = |k: &str| {
+        raw_json
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+
+    let mut realizada_llm = get_s("se_realizo").to_uppercase();
+    if realizada_llm == "SÍ" {
+        realizada_llm = "SI".to_string();
+    }
+    if let Some(ref pred_r) = motor_pred.realizada {
+        if motor_pred.muestras_entrenamiento >= 12
+            && !motor_pred.drift_realizada
+            && motor_pred.realizada_confianza >= 0.78
+            && !realizada_llm.is_empty()
+            && realizada_llm != *pred_r
+        {
+            motivos.push(format!(
+                "Discrepancia en realización: borrador='{}' vs historial local='{}' ({:.0}%)",
+                realizada_llm,
+                pred_r,
+                motor_pred.realizada_confianza * 100.0
+            ));
+        }
+    }
+
+    let motivo_llm = get_s("motivo");
+    if realizada_llm == "NO" {
+        if let Some(ref pred_m) = motor_pred.motivo {
+            if motor_pred.muestras_entrenamiento >= 12
+                && !motor_pred.drift_motivo
+                && motor_pred.motivo_confianza >= 0.78
+                && !motivo_llm.is_empty()
+                && normalizar_clave_catalogo(&motivo_llm) != normalizar_clave_catalogo(pred_m)
+            {
+                motivos.push(format!(
+                    "Discrepancia en motivo: borrador='{}' vs historial local='{}' ({:.0}%)",
+                    motivo_llm,
+                    pred_m,
+                    motor_pred.motivo_confianza * 100.0
+                ));
+            }
+        }
+    }
+
+    if texto_indica_instalacion_efectiva(texto) && texto_indica_no_instalacion(texto) {
+        motivos.push(
+            "El texto mezcla expresiones de instalación efectiva y de suspensión/reprogramación."
+                .to_string(),
+        );
+    }
+
+    if get_s("radicado").is_empty()
+        && (extraer_procesados_sin_radicado(texto).is_some()
+            || candidatos.radicado_vinculado.is_some())
+    {
+        motivos.push(
+            "El campo radicado quedó vacío aunque el texto o la memoria aportan procesado/radicado."
+                .to_string(),
+        );
+    }
+
+    motivos
+}
+
+fn construir_prompt_verificacion_audiencia(
+    user_prompt: &str,
+    borrador_json: &Value,
+    motivos: &[String],
+) -> String {
+    let borrador_pretty =
+        serde_json::to_string_pretty(borrador_json).unwrap_or_else(|_| borrador_json.to_string());
+    format!(
+        "{}\n\nAUDITORÍA SELECTIVA DE DUDAS DETECTADAS:\nBorrador inicial:\n{}\n\nSeñales de duda detectadas para revisar con especial cuidado:\n- {}\n\nRevisa el texto original siguiendo las mismas reglas y devuelve el JSON definitivo corregido (o intacto si ya estaba bien).",
+        user_prompt,
+        borrador_pretty,
+        motivos.join("\n- ")
+    )
+}
+
+pub(crate) fn autoverificacion_modifico_campos(borrador: &Value, verificado: &Value) -> bool {
+    const CAMPOS_EXTRAIDOS: [&str; 9] = [
+        "radicado",
+        "tipo_audiencia",
+        "fecha",
+        "hora",
+        "minuto",
+        "juzgado",
+        "se_realizo",
+        "motivo",
+        "observaciones",
+    ];
+    CAMPOS_EXTRAIDOS.iter().any(|k| {
+        let a = borrador
+            .get(*k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let b = verificado
+            .get(*k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        a != b
+    })
+}
+
 pub async fn extraer_datos_audiencia_ia(texto: &str) -> Result<AiAudienciaOutput, String> {
     extraer_datos_audiencia_ia_con_defensor(texto, None).await
 }
@@ -2672,27 +3131,77 @@ pub async fn extraer_datos_audiencia_ia_con_defensor(
         &memoria_local,
         defensor,
     );
-    let (resumen_general, resumen_defensor) = if settings.usar_resumen_consolidado {
-        obtener_resumenes_consolidados_prompt(memoria_base, &memoria_local, defensor)
-    } else {
-        (None, None)
-    };
+    let motor_pred = motor.predecir_con_base_para_defensor(
+        texto,
+        memoria_base,
+        &memoria_local,
+        &priors,
+        defensor,
+    );
+    let top_juzgados = crate::excel::top_juzgados_frecuentes_defensor(
+        &priors,
+        defensor.unwrap_or(""),
+        20,
+    );
+    let (resumen_general, resumen_defensor, hechos_semanticos) =
+        if settings.usar_resumen_consolidado {
+            formatear_playbook_y_hechos_para_prompt(memoria_base, &memoria_local, defensor)
+        } else {
+            (None, None, Vec::new())
+        };
 
-    let prompt = construir_prompt_con_candidatos_y_resumenes(
+    let system_prompt = construir_system_prompt_extraccion(
+        &settings.tipos_audiencia,
+        &top_juzgados,
+        resumen_general.as_deref(),
+        resumen_defensor.as_deref(),
+        &hechos_semanticos,
+    );
+    let user_prompt = construir_prompt_usuario_extraccion(
         &texto_pre,
         current_year,
         &contexto_aprendizaje,
         Some(&candidatos),
-        &settings.tipos_audiencia,
-        resumen_general.as_deref(),
-        resumen_defensor.as_deref(),
     );
-    let raw_json = consultar_json_proveedor_con_esquema(
-        &prompt,
+    let (mut raw_json, _, mut uso_total) = consultar_json_proveedor_con_opciones(
+        &user_prompt,
+        &system_prompt,
+        None,
+        Some("low"),
         Some(esquema_extraccion_audiencia_openai()),
         Some(esquema_extraccion_audiencia_gemini()),
     )
     .await?;
+
+    let motivos_duda =
+        detectar_motivos_autoverificacion(texto, &raw_json, &candidatos, &motor_pred);
+    let hubo_autoverificacion = !motivos_duda.is_empty();
+    let mut autoverificacion_cambio = false;
+    if hubo_autoverificacion {
+        let prompt_verif =
+            construir_prompt_verificacion_audiencia(&user_prompt, &raw_json, &motivos_duda);
+        if let Ok((verificado, _, uso_verif)) = consultar_json_proveedor_con_opciones(
+            &prompt_verif,
+            &system_prompt,
+            None,
+            Some("low"),
+            Some(esquema_extraccion_audiencia_openai()),
+            Some(esquema_extraccion_audiencia_gemini()),
+        )
+        .await
+        {
+            uso_total.acumular(uso_verif);
+            autoverificacion_cambio = autoverificacion_modifico_campos(&raw_json, &verificado);
+            raw_json = verificado;
+        }
+    }
+
+    registrar_telemetria_extraccion(
+        uso_total.tokens_entrada,
+        uso_total.tokens_cacheados,
+        hubo_autoverificacion,
+        autoverificacion_cambio,
+    );
 
     Ok(arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
         texto,
@@ -2885,6 +3394,7 @@ mod tests {
                 tipo_habitual: "Audiencia de juicio oral".into(),
                 frecuencia: 4,
                 defensor_habitual: String::new(),
+                ..Default::default()
             },
         );
 
@@ -3208,6 +3718,7 @@ mod tests {
                 tipo_habitual: "Audiencia preparatoria".into(),
                 defensor_habitual: String::new(),
                 frecuencia: 2,
+                ..Default::default()
             },
         );
 
@@ -3921,6 +4432,7 @@ mod tests {
             watermark_ids: vec!["c1".into()],
             snapshot_extracciones: 6,
             telemetria_disparo: TelemetriaDisparoConsolidacion::default(),
+            ..Default::default()
         };
         let prompt_cons = construir_prompt_consolidacion(&lote);
         assert!(prompt_cons.contains("ana perez"));
@@ -3940,7 +4452,7 @@ mod tests {
         );
         assert!(prompt_ext.contains("CRITERIOS GENERALES CONSOLIDADOS (TRANSVERSALES)"));
         assert!(prompt_ext.contains("Criterio general consolidado"));
-        assert!(prompt_ext.contains("PERFIL SINTÉTICO DEL DEFENSOR (ESPECÍFICO)"));
+        assert!(prompt_ext.contains("PLAYBOOK / PERFIL SINTÉTICO DEL DEFENSOR"));
         assert!(prompt_ext.contains("Perfil sintético de Ana"));
 
         // 4) Prompt de clúster no pre-sesga literal `"necesita_aclaracion": false`
@@ -4418,5 +4930,222 @@ mod tests {
             None,
         );
         assert_eq!(out_neg.radicado, "");
+    }
+
+    #[test]
+    fn test_prompt_cacheable_analisis_breve_y_autoverificacion_selectiva() {
+        let esquema_oa = esquema_extraccion_audiencia_openai();
+        let req_oa = esquema_oa["json_schema"]["schema"]["required"]
+            .as_array()
+            .unwrap();
+        assert_eq!(req_oa[0].as_str(), Some("analisis_breve"));
+
+        let esquema_gm = esquema_extraccion_audiencia_gemini();
+        let req_gm = esquema_gm["required"].as_array().unwrap();
+        assert_eq!(req_gm[0].as_str(), Some("analisis_breve"));
+
+        let top_juzgados = vec![("Juzgado 1 Penal Municipal de Valledupar".to_string(), 18)];
+        let sys = construir_system_prompt_extraccion(
+            &[],
+            &top_juzgados,
+            Some("Regla general: distinguir causa raiz vs reaccion"),
+            Some("Siglas: J1PM => Juzgado 1 Penal Municipal de Valledupar"),
+            &["[juzgado] J01PM corresponde a Juzgado 1 Penal Municipal de Valledupar".to_string()],
+        );
+        assert!(sys.contains("DESPACHOS MÁS FRECUENTES DE ESTE DEFENSOR"));
+        assert!(sys.contains("Juzgado 1 Penal Municipal de Valledupar (18 usos)"));
+        assert!(sys.contains("PLAYBOOK / PERFIL SINTÉTICO DEL DEFENSOR"));
+        assert!(sys.contains("HECHOS SEMÁNTICOS APRENDIDOS"));
+        assert!(sys.contains("J01PM corresponde a Juzgado 1 Penal Municipal de Valledupar"));
+        assert!(!sys.contains("TEXTO A ANALIZAR"));
+
+        let mut cands = CandidatosPrompt::default();
+        cands.radicado_vinculado = Some(crate::models::ProcesoHabitual {
+            radicado_completo: "JUAN PEREZ - 200016001075202500123".into(),
+            juzgado_habitual: "Juzgado 1 Penal Municipal de Valledupar".into(),
+            tipo_habitual: "Audiencia concentrada".into(),
+            defensor_habitual: String::new(),
+            frecuencia: 3,
+            procesado_habitual: "JUAN PEREZ".into(),
+            ultima_fecha: "10/11/2026".into(),
+            ultima_tipo: "Audiencia concentrada".into(),
+            ultima_realizada: "SI".into(),
+            ultimo_motivo: String::new(),
+        });
+        let usr = construir_prompt_usuario_extraccion(
+            "Audiencia JUAN PEREZ concentrada J1PM",
+            2026,
+            "",
+            Some(&cands),
+        );
+        assert!(usr.contains("procesado=\"JUAN PEREZ\""));
+        assert!(usr.contains("última=10/11/2026"));
+
+        let pred_clara = PrediccionLocalResumen {
+            realizada: Some("NO".into()),
+            realizada_confianza: 0.92,
+            motivo: Some("Fiscalía".into()),
+            motivo_confianza: 0.89,
+            muestras_entrenamiento: 24,
+            ..Default::default()
+        };
+        let raw_coincide = json!({
+            "radicado": "JUAN PEREZ - 200016001075202500123",
+            "se_realizo": "NO",
+            "motivo": "Fiscalía"
+        });
+        assert!(
+            detectar_motivos_autoverificacion(
+                "Fiscal no compareció a audiencia",
+                &raw_coincide,
+                &cands,
+                &pred_clara
+            )
+            .is_empty()
+        );
+
+        let raw_discrepa = json!({
+            "radicado": "",
+            "se_realizo": "SI",
+            "motivo": ""
+        });
+        let dudas = detectar_motivos_autoverificacion(
+            "Se instaló audiencia pero se reprogramó por falta de traslado. Procesado: Juan Pérez.",
+            &raw_discrepa,
+            &cands,
+            &pred_clara,
+        );
+        assert!(dudas.len() >= 2, "dudas={:?}", dudas);
+    }
+
+    #[test]
+    fn test_v6_esquemas_consolidacion_playbook_hechos_usage_y_autoverificacion() {
+        use crate::aprendizaje::{HechoSemantico, PlaybookItem};
+
+        // 1) Esquemas de consolidación OpenAI (strict) y Gemini incluyen acciones_playbook y acciones_hechos
+        let oa = esquema_consolidacion_openai();
+        let props_oa = &oa["json_schema"]["schema"]["properties"];
+        assert!(props_oa.get("acciones_playbook").is_some());
+        assert!(props_oa.get("acciones_hechos").is_some());
+        assert!(props_oa.get("resumen_actualizado").is_some());
+        assert_eq!(
+            props_oa["acciones_playbook"]["items"]["properties"]["tipo_accion"]["enum"],
+            json!(["agregar", "reforzar", "retirar"])
+        );
+        assert_eq!(
+            props_oa["acciones_hechos"]["items"]["properties"]["tipo_accion"]["enum"],
+            json!(["agregar", "invalidar"])
+        );
+
+        let gm = esquema_consolidacion_gemini();
+        assert!(gm["properties"].get("acciones_playbook").is_some());
+        assert!(gm["properties"].get("acciones_hechos").is_some());
+        assert!(gm["properties"].get("resumen_actualizado").is_some());
+
+        // 2) Prompt de consolidación muestra Playbook atómico y Hechos Semánticos existentes
+        let lote = LoteConsolidacion {
+            ambito: "ana perez".into(),
+            nombre_ambito: "Dra. Ana Pérez".into(),
+            playbook_ambito: vec![PlaybookItem {
+                id: "pb-1".into(),
+                seccion: "siglas_y_despachos".into(),
+                ambito: "ana perez".into(),
+                texto: "J1PM => Juzgado 1 Penal Municipal".into(),
+                util: 3,
+                danino: 0,
+                activo: true,
+                creado: String::new(),
+                ultima_actualizacion: String::new(),
+            }],
+            hechos_ambito: vec![HechoSemantico {
+                id: "h-1".into(),
+                ambito: "ana perez".into(),
+                categoria: "juzgado".into(),
+                clave: "j1pm".into(),
+                contenido: "J1PM siempre es Valledupar".into(),
+                confianza: 0.9,
+                activo: true,
+                origen: "nota_usuario".into(),
+                ultima_actualizacion: String::new(),
+            }],
+            ..Default::default()
+        };
+        let prompt_c = construir_prompt_consolidacion(&lote);
+        assert!(prompt_c.contains("PLAYBOOK ATÓMICO ACTUAL (ACE)"));
+        assert!(prompt_c.contains("pb-1"));
+        assert!(prompt_c.contains("HECHOS SEMÁNTICOS ACTIVOS (MEM0)"));
+        assert!(prompt_c.contains("J1PM siempre es Valledupar"));
+        assert!(prompt_c.contains("acciones_playbook"));
+        assert!(prompt_c.contains("acciones_hechos"));
+
+        // 3) Captura real de usage de OpenAI y Gemini
+        let resp_oa = json!({
+            "usage": {
+                "prompt_tokens": 1850,
+                "prompt_tokens_details": { "cached_tokens": 1400 }
+            }
+        });
+        assert_eq!(
+            extraer_uso_tokens_openai(&resp_oa),
+            UsoTokensProveedor {
+                tokens_entrada: 1850,
+                tokens_cacheados: 1400
+            }
+        );
+
+        let resp_gm = json!({
+            "usageMetadata": {
+                "promptTokenCount": 2100,
+                "cachedContentTokenCount": 1650
+            }
+        });
+        assert_eq!(
+            extraer_uso_tokens_gemini(&resp_gm),
+            UsoTokensProveedor {
+                tokens_entrada: 2100,
+                tokens_cacheados: 1650
+            }
+        );
+
+        // 4) Detección de cambio en autoverificación (ignora analisis_breve, detecta cambios reales)
+        let borrador = json!({
+            "analisis_breve": "borrador 1",
+            "radicado": "JUAN PEREZ - 200016001075202500001",
+            "tipo_audiencia": "Audiencia preparatoria",
+            "fecha": "10/11/2026",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "Juzgado 1 Penal Municipal",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let mismo_razon = json!({
+            "analisis_breve": "razonamiento revisado",
+            "radicado": "JUAN PEREZ - 200016001075202500001",
+            "tipo_audiencia": "Audiencia preparatoria",
+            "fecha": "10/11/2026",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "Juzgado 1 Penal Municipal",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        assert!(!autoverificacion_modifico_campos(&borrador, &mismo_razon));
+
+        let corregido = json!({
+            "analisis_breve": "corregido",
+            "radicado": "JUAN PEREZ - 200016001075202500001",
+            "tipo_audiencia": "Audiencia preparatoria",
+            "fecha": "10/11/2026",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "Juzgado 1 Penal Municipal",
+            "se_realizo": "NO",
+            "motivo": "Fiscalía",
+            "observaciones": ""
+        });
+        assert!(autoverificacion_modifico_campos(&borrador, &corregido));
     }
 }

@@ -116,6 +116,7 @@ export const MODELOS_GEMINI = [
 ];
 
 export const MODELOS_OPENAI = [
+  "gpt-6-luna",
   "gpt-5-mini",
   "gpt-5",
   "gpt-5-nano",

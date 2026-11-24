@@ -153,6 +153,8 @@ jobs:
           fi
 
       - name: Build Android (APK firmado + AAB)
+        env:
+          LOKUS_GOOGLE_CLIENT_ID: ${{ secrets.LOKUS_GOOGLE_CLIENT_ID_ANDROID }}
         run: npx tauri android build --target aarch64 --apk --aab --ci
 
       - name: Resolver versión, verificar firma y preparar artefactos

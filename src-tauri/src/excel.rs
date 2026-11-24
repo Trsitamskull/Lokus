@@ -7,22 +7,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
-use umya_spreadsheet::{
-    reader, writer, OrientationValues, PageSetup, SheetViewValues, Spreadsheet, Worksheet,
-};
+use umya_spreadsheet::{reader, writer, PageSetup, SheetViewValues, Spreadsheet, Worksheet};
 
 use crate::models::{
-    buscar_posible_duplicado, extraer_numeros_radicado, extraer_prefijo_dane_radicado,
-    extraer_siglas_cortas_juzgado, mapear_motivo_a_indice, normalizar_clave_catalogo,
-    normalizar_clave_defensor, AudienciaInput, EstadisticasGlobales, IndicePriorsExcel,
-    MesDisponible, PlanillaResumen, ProcesoHabitual, RegistroAudiencia, ResumenDefensor,
-    ResumenMesPlanilla, ResumenPlanillaArchivada, TotalesExcel, MOTIVOS_LABELS,
+    buscar_posible_duplicado, extraer_nombre_procesado_de_radicado, extraer_numeros_radicado,
+    extraer_prefijo_dane_radicado, extraer_siglas_cortas_juzgado, mapear_motivo_a_indice,
+    normalizar_clave_catalogo, normalizar_clave_defensor, parsear_fecha_priors, AudienciaInput,
+    EstadisticasGlobales, IndicePriorsExcel, MesDisponible, PlanillaResumen, ProcesoHabitual,
+    RegistroAudiencia, ResumenDefensor, ResumenMesPlanilla, ResumenPlanillaArchivada,
+    TotalesExcel, MOTIVOS_LABELS,
 };
 
 const PLANTILLA_BYTES: &[u8] = include_bytes!("../../templates/plantilla_audiencias.xlsx");
 pub const NOMBRE_INDICE_ESTADISTICAS: &str = ".lokus_estadisticas.json";
 pub const NOMBRE_INDICE_PRIORS: &str = ".lokus_priors.json";
-const FORMATO_PRIORS_ACTUAL: u32 = 3;
+const FORMATO_PRIORS_ACTUAL: u32 = 4;
 
 pub const FILA_DEFENSOR: u32 = 8;
 pub const COL_DEFENSOR: u32 = 2; // B8
@@ -982,21 +981,9 @@ pub fn restaurar_respaldo(nombre_archivo: &str, archivo_respaldo: &str) -> Resul
 /// para evitar consultas al spooler de impresora al abrir en Windows.
 fn limpiar_printer_settings_libro(book: &mut Spreadsheet) {
     for ws in book.get_sheet_collection_mut() {
-        let actual = ws.get_page_setup();
-        let mut limpio = PageSetup::default();
-        match actual.get_orientation() {
-            OrientationValues::Landscape => {
-                limpio.set_orientation(OrientationValues::Landscape);
-            }
-            OrientationValues::Portrait => {
-                limpio.set_orientation(OrientationValues::Portrait);
-            }
-            OrientationValues::Default => {}
-        }
-        if *actual.get_scale() > 0 {
-            limpio.set_scale(*actual.get_scale());
-        }
-        ws.set_page_setup(limpio);
+        // Dejar PageSetup completamente por defecto para que umya-spreadsheet omita <pageSetup/>
+        // y Microsoft Excel en Windows no intente consultar impresoras heredadas (ej. de ONLYOFFICE).
+        ws.set_page_setup(PageSetup::default());
 
         let mut views = ws.get_sheets_views().clone();
         let mut cambio_view = false;
@@ -2148,12 +2135,13 @@ pub fn calcular_estadisticas_en(
         let ruta = carpeta.join(nombre);
         let (registros, _totales, defensor) = leer_archivo_en(&ruta)
             .map_err(|e| format!("Error leyendo '{}': {}", nombre, e))?;
-        for r in &registros {
-            acumular_registro_en_priors_con_defensor(
+        for r in registros.iter().rev() {
+            acumular_registro_en_priors_con_defensor_y_fecha(
                 &mut priors_acum,
                 &defensor,
                 &r.radicado,
                 &r.tipo,
+                &r.fecha,
                 &r.hora,
                 &r.juzgado,
                 &r.realizada,
@@ -2358,11 +2346,75 @@ fn decrementar_arista(
     }
 }
 
-pub fn acumular_registro_en_priors_con_defensor(
+fn seleccionar_habitual_en_mapa(
+    mapa: &BTreeMap<String, u32>,
+    actual: &str,
+    candidato: &str,
+    preferir_candidato_en_empate: bool,
+) -> String {
+    let max_freq = mapa.values().copied().max().unwrap_or(0);
+    if max_freq == 0 {
+        return String::new();
+    }
+    let actual_freq = if actual.is_empty() {
+        0
+    } else {
+        mapa.get(actual).copied().unwrap_or(0)
+    };
+    let cand_freq = if candidato.is_empty() {
+        0
+    } else {
+        mapa.get(candidato).copied().unwrap_or(0)
+    };
+    if actual_freq == max_freq {
+        if preferir_candidato_en_empate && cand_freq == max_freq && !candidato.is_empty() {
+            return candidato.to_string();
+        }
+        return actual.to_string();
+    }
+    if cand_freq == max_freq && !candidato.is_empty() {
+        return candidato.to_string();
+    }
+    mapa.iter()
+        .find(|(_, &freq)| freq == max_freq)
+        .map(|(k, _)| k.clone())
+        .unwrap_or_default()
+}
+
+fn incrementar_frecuencia_y_seleccionar(
+    mapa: &mut BTreeMap<String, u32>,
+    actual: &str,
+    candidato: &str,
+    preferir_candidato_en_empate: bool,
+) -> String {
+    if !candidato.is_empty() {
+        *mapa.entry(candidato.to_string()).or_insert(0) += 1;
+    }
+    seleccionar_habitual_en_mapa(mapa, actual, candidato, preferir_candidato_en_empate)
+}
+
+fn decrementar_frecuencia_y_seleccionar(
+    mapa: &mut BTreeMap<String, u32>,
+    actual: &str,
+    valor: &str,
+) -> String {
+    if !valor.is_empty() {
+        if let Some(c) = mapa.get_mut(valor) {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                mapa.remove(valor);
+            }
+        }
+    }
+    seleccionar_habitual_en_mapa(mapa, actual, "", false)
+}
+
+pub fn acumular_registro_en_priors_con_defensor_y_fecha(
     priors: &mut IndicePriorsExcel,
     defensor: &str,
     radicado: &str,
     tipo: &str,
+    fecha: &str,
     hora: &str,
     juzgado: &str,
     realizada: &str,
@@ -2380,35 +2432,105 @@ pub fn acumular_registro_en_priors_con_defensor(
     if let Some(h) = extraer_hora_num(hora) {
         *priors.horas_freq.entry(h).or_insert(0) += 1;
     }
-    if realizada.trim().eq_ignore_ascii_case("SI") {
+    let realizada_upper = realizada.trim().to_uppercase();
+    let realizada_norm = if realizada_upper == "SI" || realizada_upper == "NO" {
+        realizada_upper
+    } else {
+        String::new()
+    };
+    if realizada_norm == "SI" {
         priors.realizada_si = priors.realizada_si.saturating_add(1);
-    } else if realizada.trim().eq_ignore_ascii_case("NO") {
+    } else if realizada_norm == "NO" {
         priors.realizada_no = priors.realizada_no.saturating_add(1);
         if let Some(idx) = mapear_motivo_a_indice(motivo) {
             priors.motivos_freq[idx] = priors.motivos_freq[idx].saturating_add(1);
         }
     }
+    let motivo_norm = if realizada_norm == "SI" {
+        String::new()
+    } else if let Some(idx) = mapear_motivo_a_indice(motivo) {
+        MOTIVOS_LABELS[idx].to_string()
+    } else {
+        motivo.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+
     let def_limpio = defensor.split_whitespace().collect::<Vec<_>>().join(" ");
     let def_clave = normalizar_clave_defensor(&def_limpio);
     let rad_limpio = radicado.split_whitespace().collect::<Vec<_>>().join(" ");
+    let proc_limpio = extraer_nombre_procesado_de_radicado(&rad_limpio);
+    let fecha_nueva = parsear_fecha_priors(fecha);
 
     for num in extraer_numeros_radicado(&rad_limpio) {
         let entry = priors
             .procesos_por_numero
-            .entry(num)
+            .entry(num.clone())
             .or_insert_with(ProcesoHabitual::default);
         entry.frecuencia = entry.frecuencia.saturating_add(1);
         if !rad_limpio.is_empty() && rad_limpio.len() >= entry.radicado_completo.len() {
             entry.radicado_completo = rad_limpio.clone();
         }
-        if !juz_limpio.is_empty() {
-            entry.juzgado_habitual = juz_limpio.clone();
-        }
-        if !tipo_limpio.is_empty() {
-            entry.tipo_habitual = tipo_limpio.clone();
-        }
-        if !def_limpio.is_empty() {
-            entry.defensor_habitual = def_limpio.clone();
+
+        let fecha_actual = parsear_fecha_priors(&entry.ultima_fecha);
+        let preferir_en_empate = match (fecha_nueva, fecha_actual) {
+            (Some(d_new), Some(d_cur)) => d_new >= d_cur,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => true,
+        };
+
+        let freqs = priors.procesos_frecuencias.entry(num).or_default();
+        entry.procesado_habitual = incrementar_frecuencia_y_seleccionar(
+            &mut freqs.procesados,
+            &entry.procesado_habitual,
+            &proc_limpio,
+            preferir_en_empate,
+        );
+        entry.juzgado_habitual = incrementar_frecuencia_y_seleccionar(
+            &mut freqs.juzgados,
+            &entry.juzgado_habitual,
+            &juz_limpio,
+            preferir_en_empate,
+        );
+        entry.tipo_habitual = incrementar_frecuencia_y_seleccionar(
+            &mut freqs.tipos,
+            &entry.tipo_habitual,
+            &tipo_limpio,
+            preferir_en_empate,
+        );
+        entry.defensor_habitual = incrementar_frecuencia_y_seleccionar(
+            &mut freqs.defensores,
+            &entry.defensor_habitual,
+            &def_limpio,
+            preferir_en_empate,
+        );
+
+        match (fecha_nueva, fecha_actual) {
+            (Some(d_new), None) => {
+                entry.ultima_fecha = d_new.format("%d/%m/%Y").to_string();
+                entry.ultima_tipo = tipo_limpio.clone();
+                entry.ultima_realizada = realizada_norm.clone();
+                entry.ultimo_motivo = motivo_norm.clone();
+            }
+            (Some(d_new), Some(d_cur)) if d_new >= d_cur => {
+                entry.ultima_fecha = d_new.format("%d/%m/%Y").to_string();
+                entry.ultima_tipo = tipo_limpio.clone();
+                entry.ultima_realizada = realizada_norm.clone();
+                entry.ultimo_motivo = motivo_norm.clone();
+            }
+            (None, None) if entry.ultima_fecha.is_empty() => {
+                if entry.ultima_tipo.is_empty() && !tipo_limpio.is_empty() {
+                    entry.ultima_tipo = tipo_limpio.clone();
+                }
+                if entry.ultima_realizada.is_empty() && !realizada_norm.is_empty() {
+                    entry.ultima_realizada = realizada_norm.clone();
+                }
+                if entry.ultima_realizada == "SI" {
+                    entry.ultimo_motivo.clear();
+                } else if entry.ultimo_motivo.is_empty() && !motivo_norm.is_empty() {
+                    entry.ultimo_motivo = motivo_norm.clone();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2443,6 +2565,21 @@ pub fn acumular_registro_en_priors_con_defensor(
     }
 }
 
+pub fn acumular_registro_en_priors_con_defensor(
+    priors: &mut IndicePriorsExcel,
+    defensor: &str,
+    radicado: &str,
+    tipo: &str,
+    hora: &str,
+    juzgado: &str,
+    realizada: &str,
+    motivo: &str,
+) {
+    acumular_registro_en_priors_con_defensor_y_fecha(
+        priors, defensor, radicado, tipo, "", hora, juzgado, realizada, motivo,
+    );
+}
+
 pub fn acumular_registro_en_priors(
     priors: &mut IndicePriorsExcel,
     radicado: &str,
@@ -2452,8 +2589,8 @@ pub fn acumular_registro_en_priors(
     realizada: &str,
     motivo: &str,
 ) {
-    acumular_registro_en_priors_con_defensor(
-        priors, "", radicado, tipo, hora, juzgado, realizada, motivo,
+    acumular_registro_en_priors_con_defensor_y_fecha(
+        priors, "", radicado, tipo, "", hora, juzgado, realizada, motivo,
     );
 }
 
@@ -2497,16 +2634,52 @@ fn restar_registro_de_priors_con_defensor(
             priors.motivos_freq[idx] = priors.motivos_freq[idx].saturating_sub(1);
         }
     }
-    for num in extraer_numeros_radicado(&reg.radicado) {
+
+    let rad_limpio = reg.radicado.split_whitespace().collect::<Vec<_>>().join(" ");
+    let proc_limpio = extraer_nombre_procesado_de_radicado(&rad_limpio);
+    let def_limpio = defensor.split_whitespace().collect::<Vec<_>>().join(" ");
+    let fecha_reg = parsear_fecha_priors(&reg.fecha);
+
+    for num in extraer_numeros_radicado(&rad_limpio) {
         if let Some(p) = priors.procesos_por_numero.get_mut(&num) {
             p.frecuencia = p.frecuencia.saturating_sub(1);
             if p.frecuencia == 0 {
                 priors.procesos_por_numero.remove(&num);
+                priors.procesos_frecuencias.remove(&num);
+            } else {
+                if let Some(freqs) = priors.procesos_frecuencias.get_mut(&num) {
+                    p.procesado_habitual = decrementar_frecuencia_y_seleccionar(
+                        &mut freqs.procesados,
+                        &p.procesado_habitual,
+                        &proc_limpio,
+                    );
+                    p.juzgado_habitual = decrementar_frecuencia_y_seleccionar(
+                        &mut freqs.juzgados,
+                        &p.juzgado_habitual,
+                        &juz_limpio,
+                    );
+                    p.tipo_habitual = decrementar_frecuencia_y_seleccionar(
+                        &mut freqs.tipos,
+                        &p.tipo_habitual,
+                        &tipo_limpio,
+                    );
+                    p.defensor_habitual = decrementar_frecuencia_y_seleccionar(
+                        &mut freqs.defensores,
+                        &p.defensor_habitual,
+                        &def_limpio,
+                    );
+                }
+                if fecha_reg.is_some() && fecha_reg == parsear_fecha_priors(&p.ultima_fecha) {
+                    p.ultima_fecha.clear();
+                    p.ultima_tipo.clear();
+                    p.ultima_realizada.clear();
+                    p.ultimo_motivo.clear();
+                }
             }
         }
     }
 
-    let def_clave = normalizar_clave_defensor(defensor);
+    let def_clave = normalizar_clave_defensor(&def_limpio);
     if !def_clave.is_empty() {
         decrementar_arista(&mut priors.grafo.defensor_a_juzgados, &def_clave, &juz_limpio);
         decrementar_arista(&mut priors.grafo.defensor_a_tipos, &def_clave, &tipo_limpio);
@@ -2521,7 +2694,7 @@ fn restar_registro_de_priors_con_defensor(
             }
         }
     }
-    if let Some(prefijo) = extraer_prefijo_dane_radicado(&reg.radicado) {
+    if let Some(prefijo) = extraer_prefijo_dane_radicado(&rad_limpio) {
         decrementar_arista(
             &mut priors.grafo.prefijo_radicado_a_juzgados,
             &prefijo,
@@ -2572,12 +2745,13 @@ pub fn reconstruir_priors_en(carpeta: &Path) -> Result<IndicePriorsExcel, String
     for nombre in &nombres {
         let ruta = carpeta.join(nombre);
         if let Ok((registros, _, defensor)) = leer_archivo_en(&ruta) {
-            for r in &registros {
-                acumular_registro_en_priors_con_defensor(
+            for r in registros.iter().rev() {
+                acumular_registro_en_priors_con_defensor_y_fecha(
                     &mut priors,
                     &defensor,
                     &r.radicado,
                     &r.tipo,
+                    &r.fecha,
                     &r.hora,
                     &r.juzgado,
                     &r.realizada,
@@ -2615,11 +2789,12 @@ pub fn actualizar_priors_incremental_con_defensor_en(
         restar_registro_de_priors_con_defensor(&mut priors, defensor, ant);
     }
     if let Some(n) = nuevo {
-        acumular_registro_en_priors_con_defensor(
+        acumular_registro_en_priors_con_defensor_y_fecha(
             &mut priors,
             defensor,
             &n.radicado,
             &n.tipo,
+            &n.fecha,
             &n.hora,
             &n.juzgado,
             &n.realizada,
@@ -2629,6 +2804,35 @@ pub fn actualizar_priors_incremental_con_defensor_en(
     priors.actualizada = Local::now().to_rfc3339();
     guardar_priors_en(carpeta, &priors)?;
     Ok(priors)
+}
+
+pub fn top_juzgados_frecuentes_defensor(
+    priors: &IndicePriorsExcel,
+    defensor: &str,
+    limite: usize,
+) -> Vec<(String, u32)> {
+    if limite == 0 {
+        return Vec::new();
+    }
+    let def_clave = normalizar_clave_defensor(defensor);
+    if def_clave.is_empty() {
+        return Vec::new();
+    }
+    let mut acumulado: BTreeMap<String, u32> = BTreeMap::new();
+    for (clave_grafo, juzgados) in &priors.grafo.defensor_a_juzgados {
+        if normalizar_clave_defensor(clave_grafo) == def_clave {
+            for (juzgado, &freq) in juzgados {
+                let juz_limpio = juzgado.split_whitespace().collect::<Vec<_>>().join(" ");
+                if freq > 0 && !juz_limpio.is_empty() {
+                    *acumulado.entry(juz_limpio).or_insert(0) += freq;
+                }
+            }
+        }
+    }
+    let mut lista: Vec<(String, u32)> = acumulado.into_iter().collect();
+    lista.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    lista.truncate(limite);
+    lista
 }
 
 pub fn actualizar_priors_incremental_en(
@@ -3352,8 +3556,11 @@ mod tests {
         let ws = book.get_sheet(&0).unwrap();
         let ps = ws.get_page_setup();
         assert!(ps.get_object_data().is_none());
-        assert_eq!(*ps.get_scale(), 33);
-        assert!(matches!(ps.get_orientation(), OrientationValues::Portrait));
+        assert_eq!(*ps.get_scale(), 0);
+        assert!(matches!(
+            ps.get_orientation(),
+            umya_spreadsheet::OrientationValues::Default
+        ));
         assert_eq!(*ps.get_horizontal_dpi(), 0);
         assert_eq!(*ps.get_vertical_dpi(), 0);
         assert_eq!(*ps.get_paper_size(), 0);
@@ -3384,7 +3591,7 @@ mod tests {
             reader::xlsx::read_reader(std::io::Cursor::new(PLANTILLA_BYTES), true).unwrap();
         let mut ps = PageSetup::default();
         ps.set_scale(33);
-        ps.set_orientation(OrientationValues::Portrait);
+        ps.set_orientation(umya_spreadsheet::OrientationValues::Portrait);
         ps.set_object_data(vec![1u8, 2, 3, 4, 5]);
         {
             let ws = book.get_sheet_mut(&0).unwrap();
@@ -3498,6 +3705,8 @@ mod tests {
 
     #[test]
     fn test_descargar_y_sanear_elimina_dpi_papersize_y_page_layout_sin_printer_bin() {
+        use umya_spreadsheet::OrientationValues;
+
         let dir = preparar_temp_dir("sanear_dpi_papersize");
         let descargas = dir.join("Descargas");
         let ruta = dir.join("planilla_sin_bin_con_dpi.xlsx");
@@ -3537,8 +3746,8 @@ mod tests {
         assert_eq!(*ps_exp.get_paper_size(), 0);
         assert_eq!(*ps_exp.get_fit_to_width(), 0);
         assert_eq!(*ps_exp.get_fit_to_height(), 0);
-        assert_eq!(*ps_exp.get_scale(), 33);
-        assert!(matches!(ps_exp.get_orientation(), OrientationValues::Portrait));
+        assert_eq!(*ps_exp.get_scale(), 0);
+        assert!(matches!(ps_exp.get_orientation(), OrientationValues::Default));
         assert!(ws_exp
             .get_sheets_views()
             .get_sheet_view_list()
@@ -3550,7 +3759,10 @@ mod tests {
         let book_in = reader::xlsx::read(&ruta).unwrap();
         let ps_in = book_in.get_sheet(&0).unwrap().get_page_setup();
         assert_eq!(*ps_in.get_horizontal_dpi(), 0);
+        assert_eq!(*ps_in.get_vertical_dpi(), 0);
         assert_eq!(*ps_in.get_paper_size(), 0);
+        assert_eq!(*ps_in.get_scale(), 0);
+        assert!(matches!(ps_in.get_orientation(), OrientationValues::Default));
         assert!(book_in
             .get_sheet(&0)
             .unwrap()
@@ -3560,5 +3772,259 @@ mod tests {
             .all(|v| matches!(v.get_view(), SheetViewValues::Normal)));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_priors_v4_proceso_habitual_cronologia_frecuencia_y_migracion_v3() {
+        let mut priors = IndicePriorsExcel {
+            formato: FORMATO_PRIORS_ACTUAL,
+            ..Default::default()
+        };
+
+        // 1) Acumulación desordenada: primero fecha más nueva (20/09/2025 SI), luego más vieja en ISO y DD/MM/YYYY, luego sin fecha
+        acumular_registro_en_priors_con_defensor_y_fecha(
+            &mut priors,
+            "Dra. Ana Pérez",
+            "JUAN PEREZ - 200016001075202500555",
+            "Audiencia concentrada",
+            "20/09/2025",
+            "10:00",
+            "Juzgado 2 Penal",
+            "SI",
+            "Fiscalía", // cuando es SI, ultimo_motivo debe limpiarse
+        );
+        acumular_registro_en_priors_con_defensor_y_fecha(
+            &mut priors,
+            "Dra. Ana Pérez",
+            "JUAN PEREZ - 200016001075202500555",
+            "Audiencia de acusación",
+            "2025-08-05",
+            "09:00",
+            "Juzgado 1 Penal",
+            "NO",
+            "Fiscalía",
+        );
+        acumular_registro_en_priors_con_defensor_y_fecha(
+            &mut priors,
+            "Dra. Ana Pérez",
+            "[PROCESADO] - 200016001075202500555",
+            "Audiencia de acusación",
+            "01/08/2025",
+            "08:00",
+            "Juzgado 1 Penal",
+            "NO",
+            "Juez",
+        );
+        // Wrapper retrocompatible (fecha = "") no debe sobrescribir la fecha válida existente
+        acumular_registro_en_priors_con_defensor(
+            &mut priors,
+            "Dr. Otro Defensor",
+            "200016001075202500555",
+            "Audiencia de nulidad",
+            "11:00",
+            "Juzgado 9 Penal",
+            "NO",
+            "INPEC",
+        );
+
+        let p = priors
+            .procesos_por_numero
+            .get("200016001075202500555")
+            .unwrap();
+        assert_eq!(p.frecuencia, 4);
+        assert_eq!(p.ultima_fecha, "20/09/2025");
+        assert_eq!(p.ultima_tipo, "Audiencia concentrada");
+        assert_eq!(p.ultima_realizada, "SI");
+        assert_eq!(p.ultimo_motivo, "");
+        assert_eq!(p.juzgado_habitual, "Juzgado 1 Penal");
+        assert_eq!(p.tipo_habitual, "Audiencia de acusación");
+        assert_eq!(p.procesado_habitual, "JUAN PEREZ");
+        assert_eq!(p.defensor_habitual, "Dra. Ana Pérez");
+
+        // Empate en la misma fecha (20/09/2025) actualiza ultima_* a la audiencia entrante
+        acumular_registro_en_priors_con_defensor_y_fecha(
+            &mut priors,
+            "Dra. Ana Pérez",
+            "JUAN PEREZ - 200016001075202500555",
+            "Audiencia preparatoria",
+            "20/09/2025",
+            "15:00",
+            "Juzgado 2 Penal",
+            "NO",
+            "Usuario",
+        );
+        let p_empate = priors
+            .procesos_por_numero
+            .get("200016001075202500555")
+            .unwrap();
+        assert_eq!(p_empate.ultima_fecha, "20/09/2025");
+        assert_eq!(p_empate.ultima_tipo, "Audiencia preparatoria");
+        assert_eq!(p_empate.ultima_realizada, "NO");
+        assert_eq!(p_empate.ultimo_motivo, "Usuario");
+
+        // 2) Migración v3 -> v4 + orden cronológico en reconstruir_priors_en y calcular_estadisticas_en
+        let dir = preparar_temp_dir("priors_v4_cronologia");
+        let ruta_xlsx = dir.join("planilla.xlsx");
+        crear_copia_plantilla_en(&ruta_xlsx, Some("Dra. Ana Pérez")).unwrap();
+
+        let reg_vieja = AudienciaInput {
+            radicado: "JUAN DIAZ - 200016001075202500111".into(),
+            tipo: "Audiencia de imputación".into(),
+            fecha: "05/08/2025".into(),
+            hora: "09:00".into(),
+            juzgado: "Juzgado 4 Penal".into(),
+            realizada: "NO".into(),
+            motivo: "INPEC".into(),
+            observaciones: String::new(),
+        };
+        let reg_misma_am = AudienciaInput {
+            radicado: "JUAN DIAZ - 200016001075202500111".into(),
+            tipo: "Audiencia de acusación".into(),
+            fecha: "10/08/2025".into(),
+            hora: "09:00".into(),
+            juzgado: "Juzgado 4 Penal".into(),
+            realizada: "NO".into(),
+            motivo: "Fiscalía".into(),
+            observaciones: String::new(),
+        };
+        let reg_misma_pm = AudienciaInput {
+            radicado: "JUAN DIAZ - 200016001075202500111".into(),
+            tipo: "Audiencia concentrada".into(),
+            fecha: "10/08/2025".into(),
+            hora: "14:00".into(),
+            juzgado: "Juzgado 4 Penal".into(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+        guardar_nueva_audiencia_en(&ruta_xlsx, &reg_vieja, false).unwrap();
+        guardar_nueva_audiencia_en(&ruta_xlsx, &reg_misma_am, false).unwrap();
+        guardar_nueva_audiencia_en(&ruta_xlsx, &reg_misma_pm, true).unwrap();
+
+        // Guardar v3 en disco -> cargar_o_inicializar_priors_en debe reconstruir a v4
+        let priors_v3 = IndicePriorsExcel {
+            formato: 3,
+            total_registros: 1,
+            ..Default::default()
+        };
+        guardar_priors_en(&dir, &priors_v3).unwrap();
+
+        let p_v4 = cargar_o_inicializar_priors_en(&dir);
+        assert_eq!(p_v4.formato, 4);
+        let proc_111 = p_v4
+            .procesos_por_numero
+            .get("200016001075202500111")
+            .unwrap();
+        assert_eq!(proc_111.frecuencia, 3);
+        assert_eq!(proc_111.procesado_habitual, "JUAN DIAZ");
+        assert_eq!(proc_111.ultima_fecha, "10/08/2025");
+        assert_eq!(proc_111.ultima_tipo, "Audiencia concentrada");
+        assert_eq!(proc_111.ultima_realizada, "SI");
+        assert_eq!(proc_111.ultimo_motivo, "");
+
+        // calcular_estadisticas_en también persiste .lokus_priors.json y DEBE preservar v4 + ultima_fecha
+        calcular_estadisticas_en(&dir, None, None, None, None).unwrap();
+        let p_tras_stats = cargar_priors_en(&dir).unwrap();
+        assert_eq!(p_tras_stats.formato, 4);
+        let proc_stats = p_tras_stats
+            .procesos_por_numero
+            .get("200016001075202500111")
+            .unwrap();
+        assert_eq!(proc_stats.ultima_fecha, "10/08/2025");
+        assert_eq!(proc_stats.ultima_realizada, "SI");
+        assert_eq!(proc_stats.procesado_habitual, "JUAN DIAZ");
+
+        // 3) Edición y borrado incremental actualizan frecuencias y limpian ultima_* si coincide con la fecha borrada
+        let mut reg_edit = reg_misma_pm.clone();
+        reg_edit.fecha = "25/08/2025".into();
+        reg_edit.realizada = "NO".into();
+        reg_edit.motivo = "Juez".into();
+        let p_edit = actualizar_priors_incremental_con_defensor_en(
+            &dir,
+            "Dra. Ana Pérez",
+            Some(&reg_misma_pm),
+            Some(&reg_edit),
+        )
+        .unwrap();
+        let proc_edit = p_edit
+            .procesos_por_numero
+            .get("200016001075202500111")
+            .unwrap();
+        assert_eq!(proc_edit.ultima_fecha, "25/08/2025");
+        assert_eq!(proc_edit.ultima_realizada, "NO");
+        assert_eq!(proc_edit.ultimo_motivo, "Juez");
+
+        let p_del = actualizar_priors_incremental_con_defensor_en(
+            &dir,
+            "Dra. Ana Pérez",
+            Some(&reg_edit),
+            None,
+        )
+        .unwrap();
+        let proc_del = p_del
+            .procesos_por_numero
+            .get("200016001075202500111")
+            .unwrap();
+        assert_eq!(proc_del.frecuencia, 2);
+        assert_eq!(proc_del.ultima_fecha, "");
+        assert_eq!(proc_del.ultimo_motivo, "");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_top_juzgados_frecuentes_defensor_orden_limite_y_normalizacion() {
+        let mut priors = IndicePriorsExcel::default();
+        let mapa_ana = priors
+            .grafo
+            .defensor_a_juzgados
+            .entry("ana perez".into())
+            .or_default();
+        for i in 1..=22u32 {
+            mapa_ana.insert(format!("Juzgado {:02} Penal", i), i);
+        }
+        // Empate de frecuencia (22) para verificar desempate lexicográfico ascendente
+        mapa_ana.insert("Juzgado Alpha".into(), 22);
+        // Entradas inválidas / en cero deben filtrarse
+        mapa_ana.insert("Juzgado Cero".into(), 0);
+        mapa_ana.insert("   ".into(), 99);
+
+        // Clave adicional sin normalizar que normaliza al mismo defensor
+        priors
+            .grafo
+            .defensor_a_juzgados
+            .entry("Dra. Ana Pérez".into())
+            .or_default()
+            .insert("Juzgado Alpha".into(), 3); // 22 + 3 = 25
+
+        // Otro defensor no debe mezclarse
+        priors
+            .grafo
+            .defensor_a_juzgados
+            .entry("luis mora".into())
+            .or_default()
+            .insert("Juzgado Luis".into(), 100);
+
+        let top20 = top_juzgados_frecuentes_defensor(&priors, "Dra. Ana Pérez", 20);
+        assert_eq!(top20.len(), 20);
+        assert_eq!(top20[0], ("Juzgado Alpha".to_string(), 25));
+        assert_eq!(top20[1], ("Juzgado 22 Penal".to_string(), 22));
+        assert_eq!(top20[19], ("Juzgado 04 Penal".to_string(), 4));
+        assert!(!top20.iter().any(|(j, _)| j == "Juzgado Luis" || j == "Juzgado Cero" || j.trim().is_empty()));
+
+        // Desempate determinista cuando hay frecuencias iguales
+        priors
+            .grafo
+            .defensor_a_juzgados
+            .entry("ana perez".into())
+            .or_default()
+            .insert("Juzgado Beta".into(), 22);
+        let top_tie = top_juzgados_frecuentes_defensor(&priors, "ana perez", 5);
+        assert_eq!(top_tie[1], ("Juzgado 22 Penal".to_string(), 22));
+        assert_eq!(top_tie[2], ("Juzgado Beta".to_string(), 22));
+
+        assert!(top_juzgados_frecuentes_defensor(&priors, "Dra. Ana Pérez", 0).is_empty());
+        assert!(top_juzgados_frecuentes_defensor(&priors, "", 20).is_empty());
+        assert!(top_juzgados_frecuentes_defensor(&priors, "Desconocido", 20).is_empty());
     }
 }

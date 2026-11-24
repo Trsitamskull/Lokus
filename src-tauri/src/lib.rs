@@ -8,6 +8,7 @@ pub mod models;
 pub mod paquete;
 pub mod patrones_abreviacion;
 pub mod rutas;
+pub mod sync_drive;
 pub mod uso_catalogos;
 
 use ai::{
@@ -16,13 +17,20 @@ use ai::{
 };
 use aprendizaje::{
     aplicar_analisis_cluster_ia, aplicar_analisis_en, aplicar_consolidacion_ia,
-    combinar_resumen_con_uso, descartar_aclaracion_en, evaluar_y_preparar_consolidacion_ia,
-    exportar_aprendizaje_ia, guardar_nota_aclaracion_en, intentar_reservar_cluster_induccion,
+    combinar_resumen_con_uso, descartar_aclaracion_en, eliminar_hecho_semantico,
+    eliminar_item_playbook, evaluar_y_preparar_consolidacion_ia, exportar_aprendizaje_ia,
+    guardar_nota_aclaracion_en, intentar_reservar_cluster_induccion,
     intentar_reservar_consolidacion, liberar_cluster_induccion, liberar_consolidacion,
     marcar_dato_externo_en, migrar_defensor_en_memoria, obtener_cluster_listo_para_inducir_ia,
     obtener_diagnostico_aprendizaje, obtener_resumen_aprendizaje, preparar_lote_consolidacion_en,
     registrar_resultado_ia_completo, ruta_memoria, DiagnosticoAprendizaje,
     PrediccionLocalResumen, ResumenAprendizaje, TelemetriaDisparoConsolidacion,
+};
+use sync_drive::{
+    completar_auth_google_drive_android, conectar_google_drive_desde_token,
+    conectar_google_drive_desktop, desconectar_google_drive, guardar_config_drive_sync,
+    obtener_estado_drive_sync, preparar_auth_google_drive_android, sincronizar_google_drive,
+    EstadoDriveSync, InicioAuthAndroid, ResultadoDriveSync,
 };
 use config::{
     actualizar_config, actualizar_tema, agregar_defensor, agregar_juzgado, agregar_tipo_audiencia,
@@ -605,6 +613,70 @@ async fn cmd_obtener_estadisticas(
     ejecutar_en_hilo_io(move || obtener_estadisticas_globales(anio, mes, archivo, defensor)).await
 }
 
+#[tauri::command]
+async fn cmd_eliminar_hecho_ia(hecho_id: String) -> Result<DiagnosticoAprendizaje, String> {
+    ejecutar_en_hilo_io(move || eliminar_hecho_semantico(&hecho_id)).await
+}
+
+#[tauri::command]
+async fn cmd_eliminar_item_playbook_ia(item_id: String) -> Result<DiagnosticoAprendizaje, String> {
+    ejecutar_en_hilo_io(move || eliminar_item_playbook(&item_id)).await
+}
+
+#[tauri::command]
+async fn cmd_obtener_estado_drive() -> Result<EstadoDriveSync, String> {
+    ejecutar_en_hilo_io(|| Ok(obtener_estado_drive_sync())).await
+}
+
+#[tauri::command]
+async fn cmd_guardar_config_drive(
+    auto_sync: bool,
+    client_id_custom: Option<String>,
+) -> Result<EstadoDriveSync, String> {
+    ejecutar_en_hilo_io(move || guardar_config_drive_sync(auto_sync, client_id_custom)).await
+}
+
+#[tauri::command]
+async fn cmd_conectar_drive_desktop(
+    client_id_override: Option<String>,
+) -> Result<EstadoDriveSync, String> {
+    conectar_google_drive_desktop(client_id_override).await
+}
+
+#[tauri::command]
+async fn cmd_preparar_auth_drive_android(
+    client_id_override: Option<String>,
+) -> Result<InicioAuthAndroid, String> {
+    ejecutar_en_hilo_io(move || preparar_auth_google_drive_android(client_id_override)).await
+}
+
+#[tauri::command]
+async fn cmd_completar_auth_drive_android(
+    code: String,
+    state: String,
+) -> Result<EstadoDriveSync, String> {
+    completar_auth_google_drive_android(code, state).await
+}
+
+#[tauri::command]
+async fn cmd_conectar_drive_token(
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: Option<i64>,
+) -> Result<EstadoDriveSync, String> {
+    conectar_google_drive_desde_token(access_token, refresh_token, expires_in).await
+}
+
+#[tauri::command]
+async fn cmd_desconectar_drive() -> Result<EstadoDriveSync, String> {
+    ejecutar_en_hilo_io(desconectar_google_drive).await
+}
+
+#[tauri::command]
+async fn cmd_sincronizar_drive() -> Result<ResultadoDriveSync, String> {
+    sincronizar_google_drive().await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -659,6 +731,16 @@ pub fn run() {
             cmd_importar_paquete,
             cmd_leer_archivo_exportado,
             cmd_limpiar_archivo_exportado,
+            cmd_eliminar_hecho_ia,
+            cmd_eliminar_item_playbook_ia,
+            cmd_obtener_estado_drive,
+            cmd_guardar_config_drive,
+            cmd_conectar_drive_desktop,
+            cmd_preparar_auth_drive_android,
+            cmd_completar_auth_drive_android,
+            cmd_conectar_drive_token,
+            cmd_desconectar_drive,
+            cmd_sincronizar_drive,
         ])
         .run(tauri::generate_context!())
         .expect("error al ejecutar la aplicación Tauri");

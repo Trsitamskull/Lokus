@@ -1,5 +1,14 @@
 # Historial de Versiones (Lokus)
 
+## [5.4.0] - 2026-11-24
+
+### Nuevas funciones
+- **Cuenta de Google y sincronización automática en la nube (`drive.appdata`):** Nuevo botón de cuenta con icono de perfil en la barra superior (`Entrar → Continuar con Google`) y pestaña **Nube (Drive)** en *Portabilidad*. Respalda y sincroniza automáticamente entre computador (Windows/Linux) y celular (Android) tus planillas Excel, carpetas, estadísticas archivadas, listas, historial de uso de catálogos y memoria de aprendizaje de IA dentro de la carpeta privada oculta de tu propio Google Drive, sin subir jamás tus claves API de OpenAI/Gemini ni tokens OAuth.
+- **Memoria IA v6 y eficiencia mejorada:** Se añadieron preset `gpt-6-luna`, **Playbook estructurado** (resumible y editable por entrada), **Hechos semánticos** acumulativos con opción de olvidar, recuperación híbrida mejorada (BM25 + trigramas + entidades), inducción desde la 1.ª corrección en campos críticos, separación de prompt estático cacheable (`system` vs `user`), autoverificación selectiva, contexto habitual por proceso (`ProcesoHabitual`) y métricas reales de caché y verificación.
+
+### Corrección de errores (Bugs)
+- **Eliminación total de `<pageSetup>` heredado de ONLYOFFICE en archivos `.xlsx`:** Al crear, guardar, restaurar, descargar, importar o sincronizar planillas Excel, ahora se reinicia por completo el bloque `PageSetup` para omitir la etiqueta `<pageSetup/>` en el XML generado, evitando congelamientos prolongados al abrir planillas en Microsoft Excel en Windows.
+
 ## [5.3.1] - 2026-11-24
 
 ### Corrección de errores (Bugs)

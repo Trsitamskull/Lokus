@@ -48,6 +48,43 @@ function mockTauriInit(opts = {}) {
   let perfilesSinteticos = Array.isArray(opts?.perfilesIniciales)
     ? [...opts.perfilesIniciales]
     : [];
+  let playbookItems = Array.isArray(opts?.playbookInicial)
+    ? [...opts.playbookInicial]
+    : [
+        {
+          id: "pb-1",
+          seccion: "siglas_y_despachos",
+          ambito: "laura gomez",
+          texto: "J1PM en Valledupar equivale a Juzgado 1 Penal Municipal con Función de Control de Garantías",
+          util: 4,
+          danino: 0,
+          activo: true,
+          creado: "2026-11-24T10:00:00-05:00",
+          ultima_actualizacion: "2026-11-24T10:00:00-05:00",
+        },
+      ];
+  let hechosSemanticos = Array.isArray(opts?.hechosIniciales)
+    ? [...opts.hechosIniciales]
+    : [
+        {
+          id: "hecho-1",
+          ambito: "laura gomez",
+          categoria: "observaciones",
+          clave: "obs-no-fecha",
+          contenido: "En observaciones resumir causa principal sin repetir fecha futura si ya se indicó.",
+          confianza: 0.91,
+          activo: true,
+          origen: "aclaracion_usuario",
+          ultima_actualizacion: "2026-11-24T10:00:00-05:00",
+        },
+      ];
+  let driveConectado = Boolean(opts?.driveConectadoInicial);
+  let driveEmail = opts?.driveEmailInicial || "";
+  let driveNombre = opts?.driveNombreInicial || "";
+  let driveFotoUrl = opts?.driveFotoUrlInicial || "";
+  let driveAutoSync = opts?.driveAutoSyncInicial ?? true;
+  let driveClientIdCustom = opts?.driveClientIdInicial || "";
+  let driveUltimaSync = driveConectado ? "2026-11-24T10:00:00-05:00" : "";
 
   function normalizarCmp(v) {
     return String(v || "")
@@ -173,6 +210,15 @@ function mockTauriInit(opts = {}) {
       ],
       ultima_consolidacion: ultimaConsolidacion,
       perfiles_sinteticos: perfilesSinteticos,
+      playbook_items: playbookItems,
+      hechos_semanticos: hechosSemanticos,
+      telemetria_eficiencia: {
+        extracciones_con_telemetria: 10,
+        autoverificaciones_disparadas: 2,
+        autoverificaciones_con_cambio: 1,
+        tokens_entrada_total: 12000,
+        tokens_cacheados_total: 7200,
+      },
       tasa_respuesta_aclaraciones: 0.8,
       defensores_resumen: [
         {
@@ -224,6 +270,9 @@ function mockTauriInit(opts = {}) {
     consolidarMemoriaIa: [],
     exportarPaquete: [],
     importarPaquete: [],
+    eliminarHechoIa: [],
+    eliminarItemPlaybookIa: [],
+    drive: [],
   };
 
   window.__TAURI_INTERNALS__ = {
@@ -790,6 +839,112 @@ function mockTauriInit(opts = {}) {
             ia_consolidaciones_nuevas: 0,
           };
         }
+        case "cmd_eliminar_hecho_ia": {
+          window.__LOKUS_TEST_CALLS__.eliminarHechoIa.push(args);
+          hechosSemanticos = hechosSemanticos.filter((h) => h.id !== args.hechoId);
+          return construirDiagnostico();
+        }
+        case "cmd_eliminar_item_playbook_ia": {
+          window.__LOKUS_TEST_CALLS__.eliminarItemPlaybookIa.push(args);
+          playbookItems = playbookItems.filter((p) => p.id !== args.itemId);
+          return construirDiagnostico();
+        }
+        case "cmd_obtener_estado_drive":
+          return {
+            conectado: driveConectado,
+            email: driveEmail,
+            nombre: driveNombre,
+            foto_url: driveFotoUrl,
+            auto_sync: driveAutoSync,
+            client_id_configurado: true,
+            tiene_client_id_embebido: true,
+            client_id_custom: driveClientIdCustom,
+            ultima_sincronizacion: driveUltimaSync,
+            ultimo_error: "",
+          };
+        case "cmd_guardar_config_drive": {
+          window.__LOKUS_TEST_CALLS__.drive.push({ cmd: "guardar", args });
+          driveAutoSync = Boolean(args.autoSync);
+          if (typeof args.clientIdCustom === "string") {
+            driveClientIdCustom = args.clientIdCustom;
+          }
+          return {
+            conectado: driveConectado,
+            email: driveEmail,
+            nombre: driveNombre,
+            foto_url: driveFotoUrl,
+            auto_sync: driveAutoSync,
+            client_id_configurado: true,
+            tiene_client_id_embebido: true,
+            client_id_custom: driveClientIdCustom,
+            ultima_sincronizacion: driveUltimaSync,
+            ultimo_error: "",
+          };
+        }
+        case "cmd_conectar_drive_desktop": {
+          window.__LOKUS_TEST_CALLS__.drive.push({ cmd: "conectar", args });
+          driveConectado = true;
+          driveEmail = "defensora@gmail.com";
+          driveNombre = "Laura Gómez";
+          driveFotoUrl = "";
+          if (!driveUltimaSync) {
+            driveAutoSync = true;
+          }
+          if (args.clientIdOverride) {
+            driveClientIdCustom = args.clientIdOverride;
+          }
+          return {
+            conectado: true,
+            email: driveEmail,
+            nombre: driveNombre,
+            foto_url: driveFotoUrl,
+            auto_sync: driveAutoSync,
+            client_id_configurado: true,
+            tiene_client_id_embebido: true,
+            client_id_custom: driveClientIdCustom,
+            ultima_sincronizacion: driveUltimaSync,
+            ultimo_error: "",
+          };
+        }
+        case "cmd_desconectar_drive": {
+          window.__LOKUS_TEST_CALLS__.drive.push({ cmd: "desconectar" });
+          driveConectado = false;
+          driveEmail = "";
+          driveNombre = "";
+          driveFotoUrl = "";
+          driveUltimaSync = "";
+          return {
+            conectado: false,
+            email: "",
+            nombre: "",
+            foto_url: "",
+            auto_sync: driveAutoSync,
+            client_id_configurado: true,
+            tiene_client_id_embebido: true,
+            client_id_custom: driveClientIdCustom,
+            ultima_sincronizacion: "",
+            ultimo_error: "",
+          };
+        }
+        case "cmd_sincronizar_drive": {
+          window.__LOKUS_TEST_CALLS__.drive.push({ cmd: "sincronizar" });
+          driveUltimaSync = "2026-11-24T11:58:00-05:00";
+          return {
+            sincronizado_en: driveUltimaSync,
+            planillas_subidas: 1,
+            planillas_descargadas: 0,
+            conflictos_respaldados: 0,
+            carpetas_creadas: 0,
+            resumenes_fusionados: 0,
+            ia_subida: true,
+            ia_cambios_fusionados: 2,
+            uso_subido: true,
+            uso_instancias_fusionadas: 1,
+            config_fusionada: false,
+            sin_cambios: false,
+            resumen_mensaje: "Drive al día: 1 planilla subida · IA sincronizada (2 cambios)",
+          };
+        }
         default:
           return null;
       }
@@ -1049,7 +1204,7 @@ test.describe("Lokus UI smoke checks", () => {
     await expect(page.getByRole("heading", { level: 1, name: "Registros de la Planilla" })).toBeVisible();
 
     // Verificar modal IA y pestaña Aprendizaje y memoria
-    await page.getByRole("button", { name: /Configurar IA/i }).click();
+    await page.locator(".ai-config-trigger").click();
     await expect(
       page.getByRole("heading", { level: 2, name: "Inteligencia Artificial y Aprendizaje" })
     ).toBeVisible();
@@ -1070,7 +1225,12 @@ test.describe("Lokus UI smoke checks", () => {
     await expect(tablaCampos).toContainText("Hora");
     await expect(tablaCampos.locator(".ia-diag-pill.is-neutral")).toContainText("Sin datos");
     await expect(tablaCampos).toContainText("—");
-    await expect(page.locator(".ia-diag-rules-list")).toContainText("CTO");
+    await expect(
+      page
+        .locator(".ia-diag-section")
+        .filter({ hasText: "Reglas y abreviaciones en memoria" })
+        .locator(".ia-diag-rules-list")
+    ).toContainText("CTO");
     await expect(page.getByRole("button", { name: "Consolidar perfil del defensor" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Consolidar reglas generales" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Recargar datos" })).toBeEnabled();
@@ -1527,7 +1687,7 @@ test.describe("Lokus UI smoke checks", () => {
     await expect(kpiStrip).toContainText("Listo para resumir");
 
     await page.locator("summary.ia-tech-summary").click();
-    const metricsRow = page.locator(".ia-diag-metrics-row");
+    const metricsRow = page.locator(".ia-tech-details .ia-diag-metrics-row");
     await expect(metricsRow).toContainText("Presión global");
     await expect(metricsRow).toContainText("1.45");
     await expect(metricsRow).toContainText("Resp. a preguntas");
@@ -2150,6 +2310,121 @@ test.describe("Lokus UI smoke checks", () => {
 
     const importCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.importarPaquete);
     expect(importCalls).toHaveLength(1);
+
+    expect(errors).toEqual([]);
+  });
+
+  test("config_ia muestra preset gpt-6-luna, Playbook estructurado, hechos semánticos y eficiencia", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, { configured: true });
+    await page.goto("/");
+
+    await page.locator(".ai-config-trigger").click();
+    const dialog = page.locator("dialog[open]");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "gpt-6-luna", exact: true })).toBeVisible();
+
+    await dialog.getByRole("tab", { name: /Aprendizaje y memoria/i }).click();
+    await expect(dialog.getByText("Eficiencia de caché y verificación")).toBeVisible();
+    await expect(dialog.getByText("60%")).toBeVisible();
+    await expect(dialog.getByText(/J1PM en Valledupar equivale/)).toBeVisible();
+    await expect(dialog.getByText(/En observaciones resumir causa principal/)).toBeVisible();
+
+    await dialog.getByRole("button", { name: "Retirar ítem del Playbook" }).click();
+    await expect(dialog.getByText(/J1PM en Valledupar equivale/)).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: "Olvidar hecho aprendido" }).click();
+    await expect(dialog.getByText(/En observaciones resumir causa principal/)).toHaveCount(0);
+
+    const calls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__);
+    expect(calls.eliminarItemPlaybookIa).toHaveLength(1);
+    expect(calls.eliminarHechoIa).toHaveLength(1);
+
+    expect(errors).toEqual([]);
+  });
+
+  test("portabilidad pestaña Nube (Drive) conecta, sincroniza y desconecta cuenta", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, { configured: true });
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Exportar o importar datos" }).click();
+    const dialog = page.locator("dialog[open]");
+    await expect(dialog).toBeVisible();
+
+    await dialog.getByRole("tab", { name: /Nube \(Drive\)/i }).click();
+    await expect(dialog.getByRole("button", { name: "Conectar cuenta de Google" })).toBeVisible();
+
+    await dialog.getByRole("button", { name: "Conectar cuenta de Google" }).click();
+    await expect(dialog.getByText("defensora@gmail.com")).toBeVisible();
+
+    await dialog.getByRole("button", { name: "Sincronizar ahora" }).click();
+    await expect(dialog.getByRole("button", { name: "Desconectar cuenta" })).toBeVisible();
+
+    await dialog.getByRole("button", { name: "Desconectar cuenta" }).click();
+    await expect(dialog.getByRole("button", { name: "Conectar cuenta de Google" })).toBeVisible();
+
+    const driveCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.drive);
+    expect(driveCalls.map((c) => c.cmd)).toEqual([
+      "conectar",
+      "sincronizar",
+      "sincronizar",
+      "desconectar",
+    ]);
+
+    expect(errors).toEqual([]);
+  });
+
+  test("botón de cuenta en barra superior permite entrar con Google, muestra nombre e iniciales y cierra sesión", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, { configured: true });
+    await page.goto("/");
+
+    const btnCuenta = page.locator(".account-trigger-btn");
+    await expect(btnCuenta).toBeVisible();
+    await expect(btnCuenta).toContainText("Entrar");
+    await btnCuenta.click();
+
+    const dialog = page.locator("dialog[open]");
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByRole("heading", { level: 2, name: "Cuenta y sincronización" })
+    ).toBeVisible();
+    await expect(dialog.getByText("Configuración avanzada (Client ID de Google)")).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: "Continuar con Google" }).click();
+    await expect(dialog.getByText("Laura Gómez")).toBeVisible();
+    await expect(dialog.getByText("defensora@gmail.com")).toBeVisible();
+    await expect(btnCuenta).toContainText("Laura");
+    await expect(btnCuenta.locator(".account-avatar-initials")).toContainText("LG");
+
+    await dialog.getByRole("button", { name: "Cerrar sesión" }).click();
+    await expect(dialog.getByRole("button", { name: "Continuar con Google" })).toBeVisible();
+    await expect(btnCuenta).toContainText("Entrar");
+
+    await dialog.locator(".modal-footer").getByRole("button", { name: "Cerrar" }).click();
+    await expect(dialog).toBeHidden();
 
     expect(errors).toEqual([]);
   });

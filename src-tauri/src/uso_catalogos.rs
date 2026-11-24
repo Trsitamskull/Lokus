@@ -23,7 +23,7 @@ use crate::models::{
 };
 
 pub const NOMBRE_ARCHIVO_USO: &str = "uso_catalogos.json";
-const VERSION_USO: u32 = 1;
+const VERSION_USO: u32 = 2;
 
 static BLOQUEO_USO: Mutex<()> = Mutex::new(());
 static CONTADOR_INSTANCIA: AtomicU64 = AtomicU64::new(1);
@@ -37,6 +37,20 @@ pub struct EntradaUsoCatalogo {
     pub origen_historico: String,
     pub primera_vez: String,
     pub ultima_vez: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct UsoCatalogosInstancia {
+    pub instancia_id: String,
+    pub ultima_actualizacion: String,
+    pub total_audiencias_contabilizadas: u32,
+    pub tipos_sin_especificar: u32,
+    pub juzgados_sin_especificar: u32,
+    pub horas_sin_especificar: u32,
+    pub tipos_audiencia: BTreeMap<String, EntradaUsoCatalogo>,
+    pub juzgados: BTreeMap<String, EntradaUsoCatalogo>,
+    pub horas_exactas: BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -55,9 +69,32 @@ pub struct UsoCatalogos {
     pub tipos_audiencia: BTreeMap<String, EntradaUsoCatalogo>,
     pub juzgados: BTreeMap<String, EntradaUsoCatalogo>,
     pub horas_exactas: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub por_instancia: BTreeMap<String, UsoCatalogosInstancia>,
     pub fuentes_importadas: BTreeSet<String>,
     #[serde(default)]
     pub paquetes_importados: BTreeSet<String>,
+}
+
+impl UsoCatalogos {
+    pub fn snapshot_instancia(&self) -> UsoCatalogosInstancia {
+        let id = self.instancia_id.trim();
+        if !id.is_empty() {
+            if let Some(inst) = self.por_instancia.get(id) {
+                let mut snap = inst.clone();
+                snap.instancia_id = id.to_string();
+                return snap;
+            }
+        }
+        if self.por_instancia.is_empty() && uso_tiene_conteos_agregados(self) {
+            return construir_snapshot_desde_agregado(self, id);
+        }
+        UsoCatalogosInstancia {
+            instancia_id: id.to_string(),
+            ultima_actualizacion: self.ultima_actualizacion.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -238,33 +275,38 @@ pub fn cargar_uso_con_lock_en(ruta: &Path) -> UsoCatalogos {
     cargar_uso_sin_lock_en(ruta)
 }
 
-pub fn cargar_uso_sin_lock_en(ruta: &Path) -> UsoCatalogos {
+fn cargar_uso_y_estado_migracion_sin_lock_en(ruta: &Path) -> (UsoCatalogos, bool) {
     let Ok(contenido) = fs::read_to_string(ruta) else {
-        return UsoCatalogos {
-            version: VERSION_USO,
-            instancia_id: generar_instancia_id(),
-            ..Default::default()
-        };
-    };
-    match serde_json::from_str::<UsoCatalogos>(&contenido) {
-        Ok(mut uso) => {
-            if uso.version == 0 {
-                uso.version = VERSION_USO;
-            }
-            if uso.instancia_id.trim().is_empty() {
-                uso.instancia_id = generar_instancia_id();
-            }
-            uso
-        }
-        Err(_) => {
-            let _ = fs::rename(ruta, ruta.with_extension("json.bak"));
+        return (
             UsoCatalogos {
                 version: VERSION_USO,
                 instancia_id: generar_instancia_id(),
                 ..Default::default()
-            }
+            },
+            false,
+        );
+    };
+    match serde_json::from_str::<UsoCatalogos>(&contenido) {
+        Ok(mut uso) => {
+            let migrado = asegurar_instancia_y_por_instancia(&mut uso);
+            (uso, migrado)
+        }
+        Err(_) => {
+            let _ = fs::rename(ruta, ruta.with_extension("json.bak"));
+            (
+                UsoCatalogos {
+                    version: VERSION_USO,
+                    instancia_id: generar_instancia_id(),
+                    ..Default::default()
+                },
+                false,
+            )
         }
     }
+}
+
+pub fn cargar_uso_sin_lock_en(ruta: &Path) -> UsoCatalogos {
+    cargar_uso_y_estado_migracion_sin_lock_en(ruta).0
 }
 
 fn guardar_uso_sin_lock_en(ruta: &Path, uso: &UsoCatalogos) -> Result<(), String> {
@@ -373,7 +415,132 @@ fn acumular_campo_catalogo(
     }
 }
 
-fn restar_campo_catalogo(
+fn snapshot_esta_vacio(snap: &UsoCatalogosInstancia) -> bool {
+    snap.total_audiencias_contabilizadas == 0
+        && snap.tipos_sin_especificar == 0
+        && snap.juzgados_sin_especificar == 0
+        && snap.horas_sin_especificar == 0
+        && snap.tipos_audiencia.values().all(|e| e.conteo == 0)
+        && snap.juzgados.values().all(|e| e.conteo == 0)
+        && snap.horas_exactas.values().all(|&c| c == 0)
+}
+
+fn uso_tiene_conteos_agregados(uso: &UsoCatalogos) -> bool {
+    uso.total_audiencias_contabilizadas > 0
+        || uso.tipos_sin_especificar > 0
+        || uso.juzgados_sin_especificar > 0
+        || uso.horas_sin_especificar > 0
+        || uso.tipos_audiencia.values().any(|e| e.conteo > 0)
+        || uso.juzgados.values().any(|e| e.conteo > 0)
+        || uso.horas_exactas.values().any(|&c| c > 0)
+}
+
+fn construir_snapshot_desde_agregado(uso: &UsoCatalogos, inst_id: &str) -> UsoCatalogosInstancia {
+    let tipos_audiencia = uso
+        .tipos_audiencia
+        .iter()
+        .filter(|(_, e)| e.conteo > 0)
+        .map(|(k, e)| (k.clone(), e.clone()))
+        .collect();
+    let juzgados = uso
+        .juzgados
+        .iter()
+        .filter(|(_, e)| e.conteo > 0)
+        .map(|(k, e)| (k.clone(), e.clone()))
+        .collect();
+    let horas_exactas = uso
+        .horas_exactas
+        .iter()
+        .filter(|(_, &c)| c > 0)
+        .map(|(k, &c)| (k.clone(), c))
+        .collect();
+    UsoCatalogosInstancia {
+        instancia_id: inst_id.trim().to_string(),
+        ultima_actualizacion: uso.ultima_actualizacion.clone(),
+        total_audiencias_contabilizadas: uso.total_audiencias_contabilizadas,
+        tipos_sin_especificar: uso.tipos_sin_especificar,
+        juzgados_sin_especificar: uso.juzgados_sin_especificar,
+        horas_sin_especificar: uso.horas_sin_especificar,
+        tipos_audiencia,
+        juzgados,
+        horas_exactas,
+    }
+}
+
+fn asegurar_instancia_y_por_instancia(uso: &mut UsoCatalogos) -> bool {
+    let mut cambio = false;
+    let id_trim = uso.instancia_id.trim().to_string();
+    if id_trim.is_empty() {
+        uso.instancia_id = generar_instancia_id();
+        cambio = true;
+    } else if id_trim != uso.instancia_id {
+        uso.instancia_id = id_trim;
+        cambio = true;
+    }
+
+    if uso.por_instancia.is_empty() && uso_tiene_conteos_agregados(uso) {
+        let snap = construir_snapshot_desde_agregado(uso, &uso.instancia_id);
+        uso.por_instancia.insert(uso.instancia_id.clone(), snap);
+        cambio = true;
+    }
+
+    if uso.version < VERSION_USO {
+        uso.version = VERSION_USO;
+        cambio = true;
+    }
+    cambio
+}
+
+fn recalcular_totales_desde_instancias(uso: &mut UsoCatalogos) {
+    uso.total_audiencias_contabilizadas = 0;
+    uso.tipos_sin_especificar = 0;
+    uso.juzgados_sin_especificar = 0;
+    uso.horas_sin_especificar = 0;
+    uso.horas_exactas.clear();
+
+    uso.tipos_audiencia.retain(|_, entry| {
+        entry.conteo = 0;
+        entry.origen_historico != "otra"
+    });
+    uso.juzgados.retain(|_, entry| {
+        entry.conteo = 0;
+        entry.origen_historico != "otra"
+    });
+
+    for inst in uso.por_instancia.values() {
+        uso.total_audiencias_contabilizadas = uso
+            .total_audiencias_contabilizadas
+            .saturating_add(inst.total_audiencias_contabilizadas);
+        uso.tipos_sin_especificar = uso
+            .tipos_sin_especificar
+            .saturating_add(inst.tipos_sin_especificar);
+        uso.juzgados_sin_especificar = uso
+            .juzgados_sin_especificar
+            .saturating_add(inst.juzgados_sin_especificar);
+        uso.horas_sin_especificar = uso
+            .horas_sin_especificar
+            .saturating_add(inst.horas_sin_especificar);
+
+        for (k, v) in &inst.tipos_audiencia {
+            if v.conteo > 0 {
+                sumar_entrada_catalogo(&mut uso.tipos_audiencia, k.clone(), v);
+            }
+        }
+        for (k, v) in &inst.juzgados {
+            if v.conteo > 0 {
+                sumar_entrada_catalogo(&mut uso.juzgados, k.clone(), v);
+            }
+        }
+        for (k, &c) in &inst.horas_exactas {
+            if c > 0 {
+                let cur = uso.horas_exactas.entry(k.clone()).or_insert(0);
+                *cur = cur.saturating_add(c);
+            }
+        }
+    }
+}
+
+fn restar_campo_catalogo_en_instancia(
     mapa: &mut BTreeMap<String, EntradaUsoCatalogo>,
     sin_especificar: &mut u32,
     raw: &str,
@@ -388,7 +555,7 @@ fn restar_campo_catalogo(
     let mut eliminar = false;
     if let Some(entry) = mapa.get_mut(&clave) {
         entry.conteo = entry.conteo.saturating_sub(1);
-        if entry.conteo == 0 && entry.origen_historico == "otra" {
+        if entry.conteo == 0 {
             eliminar = true;
         }
     }
@@ -405,48 +572,71 @@ fn acumular_valores_en_uso(
     settings: &AppSettings,
     ahora: &str,
 ) {
-    uso.total_audiencias_contabilizadas = uso.total_audiencias_contabilizadas.saturating_add(1);
+    asegurar_instancia_y_por_instancia(uso);
+    let inst_id = uso.instancia_id.clone();
+    let inst = uso
+        .por_instancia
+        .entry(inst_id.clone())
+        .or_insert_with(|| UsoCatalogosInstancia {
+            instancia_id: inst_id,
+            ..Default::default()
+        });
+    inst.total_audiencias_contabilizadas = inst.total_audiencias_contabilizadas.saturating_add(1);
     acumular_campo_catalogo(
-        &mut uso.tipos_audiencia,
-        &mut uso.tipos_sin_especificar,
+        &mut inst.tipos_audiencia,
+        &mut inst.tipos_sin_especificar,
         tipo,
         |s| resolver_display_y_origen_tipo(s, settings),
         ahora,
     );
     acumular_campo_catalogo(
-        &mut uso.juzgados,
-        &mut uso.juzgados_sin_especificar,
+        &mut inst.juzgados,
+        &mut inst.juzgados_sin_especificar,
         juzgado,
         |s| resolver_display_y_origen_juzgado(s, settings),
         ahora,
     );
     if let Some(hh_mm) = normalizar_hora_hh_mm(hora) {
-        *uso.horas_exactas.entry(hh_mm).or_insert(0) += 1;
+        let c = inst.horas_exactas.entry(hh_mm).or_insert(0);
+        *c = c.saturating_add(1);
     } else {
-        uso.horas_sin_especificar = uso.horas_sin_especificar.saturating_add(1);
+        inst.horas_sin_especificar = inst.horas_sin_especificar.saturating_add(1);
     }
+    inst.ultima_actualizacion = ahora.to_string();
     uso.ultima_actualizacion = ahora.to_string();
+    recalcular_totales_desde_instancias(uso);
 }
 
 fn restar_audiencia_de_uso(uso: &mut UsoCatalogos, reg: &AudienciaInput, ahora: &str) {
-    uso.total_audiencias_contabilizadas = uso.total_audiencias_contabilizadas.saturating_sub(1);
-    restar_campo_catalogo(&mut uso.tipos_audiencia, &mut uso.tipos_sin_especificar, &reg.tipo);
-    restar_campo_catalogo(
-        &mut uso.juzgados,
-        &mut uso.juzgados_sin_especificar,
-        &reg.juzgado,
-    );
-    if let Some(hh_mm) = normalizar_hora_hh_mm(&reg.hora) {
-        if let Some(c) = uso.horas_exactas.get_mut(&hh_mm) {
-            *c = c.saturating_sub(1);
-            if *c == 0 {
-                uso.horas_exactas.remove(&hh_mm);
+    asegurar_instancia_y_por_instancia(uso);
+    let inst_id = uso.instancia_id.clone();
+    if let Some(inst) = uso.por_instancia.get_mut(&inst_id) {
+        inst.total_audiencias_contabilizadas =
+            inst.total_audiencias_contabilizadas.saturating_sub(1);
+        restar_campo_catalogo_en_instancia(
+            &mut inst.tipos_audiencia,
+            &mut inst.tipos_sin_especificar,
+            &reg.tipo,
+        );
+        restar_campo_catalogo_en_instancia(
+            &mut inst.juzgados,
+            &mut inst.juzgados_sin_especificar,
+            &reg.juzgado,
+        );
+        if let Some(hh_mm) = normalizar_hora_hh_mm(&reg.hora) {
+            if let Some(c) = inst.horas_exactas.get_mut(&hh_mm) {
+                *c = c.saturating_sub(1);
+                if *c == 0 {
+                    inst.horas_exactas.remove(&hh_mm);
+                }
             }
+        } else {
+            inst.horas_sin_especificar = inst.horas_sin_especificar.saturating_sub(1);
         }
-    } else {
-        uso.horas_sin_especificar = uso.horas_sin_especificar.saturating_sub(1);
+        inst.ultima_actualizacion = ahora.to_string();
     }
     uso.ultima_actualizacion = ahora.to_string();
+    recalcular_totales_desde_instancias(uso);
 }
 
 fn sincronizar_listas_usuario_en_uso(uso: &mut UsoCatalogos, settings: &AppSettings, ahora: &str) {
@@ -549,10 +739,10 @@ pub fn asegurar_uso_inicializado_en(
     settings: &AppSettings,
 ) -> UsoCatalogos {
     let _guard = BLOQUEO_USO.lock().unwrap_or_else(|e| e.into_inner());
-    let mut uso = cargar_uso_sin_lock_en(ruta_uso);
+    let (mut uso, migrado) = cargar_uso_y_estado_migracion_sin_lock_en(ruta_uso);
     let ahora = Local::now().to_rfc3339();
     let cambio = inicializar_uso_si_falta(&mut uso, carpeta_archivos, settings, &ahora);
-    if cambio || !ruta_uso.exists() {
+    if cambio || migrado || !ruta_uso.exists() {
         let _ = guardar_uso_sin_lock_en(ruta_uso, &uso);
     }
     uso
@@ -727,14 +917,24 @@ pub fn confirmar_uso_exportado_en(
     let _guard = BLOQUEO_USO.lock().unwrap_or_else(|e| e.into_inner());
     let falta_archivo = !ruta_uso.exists();
     let mut uso = cargar_uso_sin_lock_en(ruta_uso);
+    let migrado = asegurar_instancia_y_por_instancia(&mut uso);
     let id_limpio = instancia_id_exportada.trim();
-    let necesita_persistir_id = !id_limpio.is_empty() && (falta_archivo || uso.instancia_id != id_limpio);
+    let necesita_persistir_id =
+        !id_limpio.is_empty() && (falta_archivo || uso.instancia_id != id_limpio);
     if necesita_persistir_id {
+        let id_anterior = uso.instancia_id.clone();
+        if !id_anterior.is_empty() && id_anterior != id_limpio {
+            if let Some(mut old_inst) = uso.por_instancia.remove(&id_anterior) {
+                old_inst.instancia_id = id_limpio.to_string();
+                fusionar_instancia_max(&mut uso.por_instancia, &old_inst);
+                recalcular_totales_desde_instancias(&mut uso);
+            }
+        }
         uso.instancia_id = id_limpio.to_string();
     }
     let habia_pendientes = uso.pendientes_compartir > 0;
     uso.pendientes_compartir = 0;
-    if habia_pendientes || necesita_persistir_id {
+    if habia_pendientes || necesita_persistir_id || migrado {
         guardar_uso_sin_lock_en(ruta_uso, &uso)?;
     }
     Ok(())
@@ -784,22 +984,165 @@ fn sumar_entrada_catalogo(
     }
 }
 
+fn origen_prioridad(origen: &str) -> u8 {
+    match origen {
+        "predeterminado" => 3,
+        "lista_usuario" => 2,
+        "otra" => 1,
+        _ => 0,
+    }
+}
+
 fn max_entrada_catalogo(
     dest: &mut BTreeMap<String, EntradaUsoCatalogo>,
     clave: String,
     src: &EntradaUsoCatalogo,
 ) {
-    let entry = dest.entry(clave).or_insert_with(|| src.clone());
+    let Some(entry) = dest.get_mut(&clave) else {
+        dest.insert(clave, src.clone());
+        return;
+    };
     if src.conteo > entry.conteo {
         entry.conteo = src.conteo;
     }
-    if entry.origen_historico != "predeterminado" && src.origen_historico == "predeterminado" {
-        entry.origen_historico = "predeterminado".to_string();
+    let prio_src = origen_prioridad(&src.origen_historico);
+    let prio_ent = origen_prioridad(&entry.origen_historico);
+    if prio_src > prio_ent {
+        entry.origen_historico = src.origen_historico.clone();
         entry.nombre_display = src.nombre_display.clone();
-    } else if entry.origen_historico == "otra" && src.origen_historico == "lista_usuario" {
-        entry.origen_historico = "lista_usuario".to_string();
-        entry.nombre_display = src.nombre_display.clone();
+    } else if prio_src == prio_ent {
+        let score_src = (
+            puntaje_calidad_display(&src.nombre_display),
+            src.nombre_display.as_str(),
+        );
+        let score_ent = (
+            puntaje_calidad_display(&entry.nombre_display),
+            entry.nombre_display.as_str(),
+        );
+        if score_src > score_ent {
+            entry.nombre_display = src.nombre_display.clone();
+        }
     }
+    if entry.primera_vez.is_empty()
+        || (!src.primera_vez.is_empty() && src.primera_vez < entry.primera_vez)
+    {
+        entry.primera_vez = src.primera_vez.clone();
+    }
+    if !src.ultima_vez.is_empty()
+        && (entry.ultima_vez.is_empty() || src.ultima_vez > entry.ultima_vez)
+    {
+        entry.ultima_vez = src.ultima_vez.clone();
+    }
+}
+
+fn normalizar_snapshot_para_merge(snap: &UsoCatalogosInstancia) -> UsoCatalogosInstancia {
+    UsoCatalogosInstancia {
+        instancia_id: snap.instancia_id.trim().to_string(),
+        ultima_actualizacion: snap.ultima_actualizacion.clone(),
+        total_audiencias_contabilizadas: snap.total_audiencias_contabilizadas,
+        tipos_sin_especificar: snap.tipos_sin_especificar,
+        juzgados_sin_especificar: snap.juzgados_sin_especificar,
+        horas_sin_especificar: snap.horas_sin_especificar,
+        tipos_audiencia: snap
+            .tipos_audiencia
+            .iter()
+            .filter(|(_, e)| e.conteo > 0)
+            .map(|(k, e)| (k.clone(), e.clone()))
+            .collect(),
+        juzgados: snap
+            .juzgados
+            .iter()
+            .filter(|(_, e)| e.conteo > 0)
+            .map(|(k, e)| (k.clone(), e.clone()))
+            .collect(),
+        horas_exactas: snap
+            .horas_exactas
+            .iter()
+            .filter(|(_, &c)| c > 0)
+            .map(|(k, &c)| (k.clone(), c))
+            .collect(),
+    }
+}
+
+fn fusionar_instancia_max(
+    mapa: &mut BTreeMap<String, UsoCatalogosInstancia>,
+    snap: &UsoCatalogosInstancia,
+) -> bool {
+    let snap_norm = normalizar_snapshot_para_merge(snap);
+    if snap_norm.instancia_id.is_empty() || snapshot_esta_vacio(&snap_norm) {
+        return false;
+    }
+    let inst_id = snap_norm.instancia_id.clone();
+    let entry = mapa
+        .entry(inst_id.clone())
+        .or_insert_with(|| UsoCatalogosInstancia {
+            instancia_id: inst_id,
+            ..Default::default()
+        });
+    let prev = entry.clone();
+
+    if !snap_norm.ultima_actualizacion.is_empty()
+        && (entry.ultima_actualizacion.is_empty()
+            || snap_norm.ultima_actualizacion > entry.ultima_actualizacion)
+    {
+        entry.ultima_actualizacion = snap_norm.ultima_actualizacion.clone();
+    }
+    entry.total_audiencias_contabilizadas = entry
+        .total_audiencias_contabilizadas
+        .max(snap_norm.total_audiencias_contabilizadas);
+    entry.tipos_sin_especificar = entry
+        .tipos_sin_especificar
+        .max(snap_norm.tipos_sin_especificar);
+    entry.juzgados_sin_especificar = entry
+        .juzgados_sin_especificar
+        .max(snap_norm.juzgados_sin_especificar);
+    entry.horas_sin_especificar = entry
+        .horas_sin_especificar
+        .max(snap_norm.horas_sin_especificar);
+
+    for (k, v) in &snap_norm.tipos_audiencia {
+        max_entrada_catalogo(&mut entry.tipos_audiencia, k.clone(), v);
+    }
+    for (k, v) in &snap_norm.juzgados {
+        max_entrada_catalogo(&mut entry.juzgados, k.clone(), v);
+    }
+    for (k, &v) in &snap_norm.horas_exactas {
+        let cur = entry.horas_exactas.entry(k.clone()).or_insert(0);
+        *cur = (*cur).max(v);
+    }
+
+    *entry != prev
+}
+
+/// Fusiona de manera idempotente y conmutativa el snapshot de una instancia remota
+/// usando `max` por instancia y recalculando los agregados globales.
+/// Devuelve `Ok(false)` sin escribir en disco si el snapshot está vacío, no tiene `instancia_id`
+/// o no aporta ningún incremento nuevo.
+pub fn fusionar_snapshot_instancia_en(
+    config_dir: &Path,
+    snap: &UsoCatalogosInstancia,
+) -> Result<bool, String> {
+    let inst_id = snap.instancia_id.trim();
+    if inst_id.is_empty() || snapshot_esta_vacio(snap) {
+        return Ok(false);
+    }
+
+    let _guard = BLOQUEO_USO.lock().unwrap_or_else(|e| e.into_inner());
+    let ruta_uso = config_dir.join(NOMBRE_ARCHIVO_USO);
+    let mut local = cargar_uso_sin_lock_en(&ruta_uso);
+    asegurar_instancia_y_por_instancia(&mut local);
+
+    if !fusionar_instancia_max(&mut local.por_instancia, snap) {
+        return Ok(false);
+    }
+
+    if inst_id != local.instancia_id {
+        local.fuentes_importadas.insert(inst_id.to_string());
+    }
+    recalcular_totales_desde_instancias(&mut local);
+    local.ultima_actualizacion = Local::now().to_rfc3339();
+    guardar_uso_sin_lock_en(&ruta_uso, &local)?;
+    Ok(true)
 }
 
 /// Fusiona o restaura los contadores de uso incluidos en una copia portable `.lokus`.
@@ -815,6 +1158,7 @@ pub fn fusionar_uso_importado_en(
 ) -> Result<UsoCatalogos, String> {
     let _guard = BLOQUEO_USO.lock().unwrap_or_else(|e| e.into_inner());
     let mut local = cargar_uso_sin_lock_en(ruta_uso);
+    asegurar_instancia_y_por_instancia(&mut local);
     let ahora = Local::now().to_rfc3339();
     inicializar_uso_si_falta(&mut local, carpeta_archivos, settings, &ahora);
 
@@ -834,9 +1178,11 @@ pub fn fusionar_uso_importado_en(
         if local.total_audiencias_contabilizadas == 0
             && local.tipos_audiencia.is_empty()
             && local.juzgados.is_empty()
+            && local.por_instancia.is_empty()
         {
             let id_local = local.instancia_id.clone();
             local = paq.clone();
+            local.version = VERSION_USO;
             if !paq.instancia_id.is_empty() {
                 local.fuentes_importadas.insert(paq.instancia_id.clone());
                 local.paquetes_importados.insert(firma_paquete);
@@ -844,32 +1190,34 @@ pub fn fusionar_uso_importado_en(
             if !id_local.is_empty() {
                 local.instancia_id = id_local;
             }
+            if local.por_instancia.is_empty() && uso_tiene_conteos_agregados(paq) {
+                let paq_id = if !paq.instancia_id.trim().is_empty() {
+                    paq.instancia_id.trim().to_string()
+                } else {
+                    "legacy-import".to_string()
+                };
+                let snap = construir_snapshot_desde_agregado(paq, &paq_id);
+                local.por_instancia.insert(paq_id, snap);
+            }
+            recalcular_totales_desde_instancias(&mut local);
             local.sembrado_inicial = true;
             if local.sembrado_en.is_empty() {
                 local.sembrado_en = ahora.clone();
             }
         } else if es_misma_fuente {
             if modo_conflicto == "reemplazar" {
-                local.total_audiencias_contabilizadas = local
-                    .total_audiencias_contabilizadas
-                    .max(paq.total_audiencias_contabilizadas);
-                local.tipos_sin_especificar =
-                    local.tipos_sin_especificar.max(paq.tipos_sin_especificar);
-                local.juzgados_sin_especificar = local
-                    .juzgados_sin_especificar
-                    .max(paq.juzgados_sin_especificar);
-                local.horas_sin_especificar =
-                    local.horas_sin_especificar.max(paq.horas_sin_especificar);
-                for (k, v) in &paq.tipos_audiencia {
-                    max_entrada_catalogo(&mut local.tipos_audiencia, k.clone(), v);
+                if !paq.por_instancia.is_empty() {
+                    for snap in paq.por_instancia.values() {
+                        fusionar_instancia_max(&mut local.por_instancia, snap);
+                    }
+                } else if uso_tiene_conteos_agregados(paq) {
+                    let paq_id = paq.instancia_id.trim();
+                    if !paq_id.is_empty() {
+                        let snap = construir_snapshot_desde_agregado(paq, paq_id);
+                        fusionar_instancia_max(&mut local.por_instancia, &snap);
+                    }
                 }
-                for (k, v) in &paq.juzgados {
-                    max_entrada_catalogo(&mut local.juzgados, k.clone(), v);
-                }
-                for (k, &v) in &paq.horas_exactas {
-                    let e = local.horas_exactas.entry(k.clone()).or_insert(0);
-                    *e = (*e).max(v);
-                }
+                recalcular_totales_desde_instancias(&mut local);
                 local.paquetes_importados.insert(firma_paquete);
             } else if (!ya_importado_paquete || modo_conflicto == "conservar_ambas")
                 && !planillas_nuevas_rel.is_empty()
@@ -897,29 +1245,29 @@ pub fn fusionar_uso_importado_en(
                 local.paquetes_importados.insert(firma_paquete);
             }
         } else {
-            local.total_audiencias_contabilizadas = local
-                .total_audiencias_contabilizadas
-                .saturating_add(paq.total_audiencias_contabilizadas);
-            local.tipos_sin_especificar = local
-                .tipos_sin_especificar
-                .saturating_add(paq.tipos_sin_especificar);
-            local.juzgados_sin_especificar = local
-                .juzgados_sin_especificar
-                .saturating_add(paq.juzgados_sin_especificar);
-            local.horas_sin_especificar = local
-                .horas_sin_especificar
-                .saturating_add(paq.horas_sin_especificar);
-            local.pendientes_compartir = local
-                .pendientes_compartir
-                .saturating_add(paq.pendientes_compartir);
-            for (k, v) in &paq.tipos_audiencia {
-                sumar_entrada_catalogo(&mut local.tipos_audiencia, k.clone(), v);
+            let mut hubo_cambio_instancia = false;
+            if !paq.por_instancia.is_empty() {
+                for snap in paq.por_instancia.values() {
+                    if fusionar_instancia_max(&mut local.por_instancia, snap) {
+                        hubo_cambio_instancia = true;
+                    }
+                }
+            } else if uso_tiene_conteos_agregados(paq) {
+                let src_id = if !paq.instancia_id.trim().is_empty() {
+                    paq.instancia_id.trim().to_string()
+                } else {
+                    format!("legacy-import-{}", local.fuentes_importadas.len() + 1)
+                };
+                let snap = construir_snapshot_desde_agregado(paq, &src_id);
+                if fusionar_instancia_max(&mut local.por_instancia, &snap) {
+                    hubo_cambio_instancia = true;
+                }
             }
-            for (k, v) in &paq.juzgados {
-                sumar_entrada_catalogo(&mut local.juzgados, k.clone(), v);
-            }
-            for (k, &v) in &paq.horas_exactas {
-                *local.horas_exactas.entry(k.clone()).or_insert(0) += v;
+            recalcular_totales_desde_instancias(&mut local);
+            if hubo_cambio_instancia && !ya_importado_paquete {
+                local.pendientes_compartir = local
+                    .pendientes_compartir
+                    .saturating_add(paq.pendientes_compartir);
             }
             if !paq.instancia_id.trim().is_empty() {
                 local.fuentes_importadas.insert(paq.instancia_id.clone());
@@ -1450,5 +1798,332 @@ mod tests {
         assert_eq!(u4.pendientes_compartir, 0);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_migracion_v1_sin_por_instancia_y_snapshot() {
+        let dir = preparar_dir("migracion_v1");
+        let carpeta_excel = dir.join("archivos");
+        let config_dir = dir.join("config");
+        let ruta_uso = config_dir.join(NOMBRE_ARCHIVO_USO);
+        fs::create_dir_all(&carpeta_excel).unwrap();
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let v1_json = r#"{
+            "version": 1,
+            "instancia_id": "inst-v1-a",
+            "sembrado_inicial": true,
+            "sembrado_en": "2025-08-01T10:00:00-05:00",
+            "ultima_actualizacion": "2025-08-10T10:00:00-05:00",
+            "total_audiencias_contabilizadas": 3,
+            "pendientes_compartir": 1,
+            "tipos_sin_especificar": 1,
+            "juzgados_sin_especificar": 0,
+            "horas_sin_especificar": 1,
+            "tipos_audiencia": {
+                "audiencia concentrada": {
+                    "nombre_display": "Audiencia concentrada",
+                    "conteo": 2,
+                    "origen_historico": "predeterminado",
+                    "primera_vez": "2025-08-01T10:00:00-05:00",
+                    "ultima_vez": "2025-08-10T10:00:00-05:00"
+                }
+            },
+            "juzgados": {
+                "juzgado 1 penal": {
+                    "nombre_display": "Juzgado 1 Penal",
+                    "conteo": 3,
+                    "origen_historico": "otra",
+                    "primera_vez": "2025-08-01T10:00:00-05:00",
+                    "ultima_vez": "2025-08-10T10:00:00-05:00"
+                }
+            },
+            "horas_exactas": {
+                "09:00": 2
+            },
+            "fuentes_importadas": [],
+            "paquetes_importados": []
+        }"#;
+        fs::write(&ruta_uso, v1_json).unwrap();
+
+        let settings = AppSettings::default();
+        let uso = asegurar_uso_inicializado_en(&ruta_uso, &carpeta_excel, &settings);
+        assert_eq!(uso.version, VERSION_USO);
+        assert_eq!(uso.instancia_id, "inst-v1-a");
+        assert_eq!(uso.total_audiencias_contabilizadas, 3);
+        let inst = uso.por_instancia.get("inst-v1-a").unwrap();
+        assert_eq!(inst.total_audiencias_contabilizadas, 3);
+        assert_eq!(inst.tipos_sin_especificar, 1);
+        assert_eq!(inst.horas_sin_especificar, 1);
+        assert_eq!(inst.horas_exactas.get("09:00").copied(), Some(2));
+        assert_eq!(uso.snapshot_instancia(), *inst);
+
+        // El archivo en disco quedó persistido como v2
+        let raw_disco = fs::read_to_string(&ruta_uso).unwrap();
+        let en_disco: UsoCatalogos = serde_json::from_str(&raw_disco).unwrap();
+        assert_eq!(en_disco.version, 2);
+        assert!(en_disco.por_instancia.contains_key("inst-v1-a"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_fusionar_snapshot_instancia_idempotente_conmutativo_y_vacio() {
+        let dir1 = preparar_dir("snap_sync_1");
+        let dir2 = preparar_dir("snap_sync_2");
+        let cfg1 = dir1.join("config");
+        let cfg2 = dir2.join("config");
+        fs::create_dir_all(&cfg1).unwrap();
+        fs::create_dir_all(&cfg2).unwrap();
+
+        let make_snap = |id: &str, ts: &str, total: u32, tipo_count: u32, juz_disp: &str, h: &str| {
+            let primera = "2025-08-01T08:00:00Z";
+            let mut tipos = BTreeMap::new();
+            tipos.insert(
+                "audiencia concentrada".to_string(),
+                EntradaUsoCatalogo {
+                    nombre_display: "Audiencia concentrada".into(),
+                    conteo: tipo_count,
+                    origen_historico: "predeterminado".into(),
+                    primera_vez: primera.into(),
+                    ultima_vez: ts.into(),
+                },
+            );
+            let mut juzgados = BTreeMap::new();
+            juzgados.insert(
+                "juzgado especial".to_string(),
+                EntradaUsoCatalogo {
+                    nombre_display: juz_disp.into(),
+                    conteo: total,
+                    origen_historico: "otra".into(),
+                    primera_vez: primera.into(),
+                    ultima_vez: ts.into(),
+                },
+            );
+            let mut horas = BTreeMap::new();
+            horas.insert(h.to_string(), total);
+            UsoCatalogosInstancia {
+                instancia_id: id.into(),
+                ultima_actualizacion: ts.into(),
+                total_audiencias_contabilizadas: total,
+                tipos_sin_especificar: total.saturating_sub(tipo_count),
+                juzgados_sin_especificar: 0,
+                horas_sin_especificar: 0,
+                tipos_audiencia: tipos,
+                juzgados,
+                horas_exactas: horas,
+            }
+        };
+
+        // Snapshot vacío o sin instancia_id -> Ok(false) sin crear archivo
+        let vacio = UsoCatalogosInstancia::default();
+        assert!(!fusionar_snapshot_instancia_en(&cfg1, &vacio).unwrap());
+        let sin_id = make_snap("   ", "2025-08-01T10:00:00Z", 2, 2, "Juzgado Especial", "09:00");
+        assert!(!fusionar_snapshot_instancia_en(&cfg1, &sin_id).unwrap());
+        let solo_ceros = UsoCatalogosInstancia {
+            instancia_id: "inst-cero".into(),
+            ..Default::default()
+        };
+        assert!(!fusionar_snapshot_instancia_en(&cfg1, &solo_ceros).unwrap());
+        assert!(!cfg1.join(NOMBRE_ARCHIVO_USO).exists());
+
+        let snap_a = make_snap("inst-a", "2025-08-10T10:00:00Z", 2, 2, "juzgado especial", "09:00");
+        let snap_a_stale = make_snap("inst-a", "2025-08-05T10:00:00Z", 1, 1, "juzgado especial", "09:00");
+        let snap_b = make_snap("inst-b", "2025-08-11T10:00:00Z", 3, 2, "Juzgado Especial", "14:00");
+        let snap_c = make_snap("inst-c", "2025-08-12T10:00:00Z", 1, 1, "Juzgado Especial", "09:00");
+
+        // Primer merge -> Ok(true); repetido e historia atrasada -> Ok(false) sin inflación
+        assert!(fusionar_snapshot_instancia_en(&cfg1, &snap_a).unwrap());
+        let contenido_tras_a = fs::read_to_string(cfg1.join(NOMBRE_ARCHIVO_USO)).unwrap();
+        assert!(!fusionar_snapshot_instancia_en(&cfg1, &snap_a).unwrap());
+        assert!(!fusionar_snapshot_instancia_en(&cfg1, &snap_a_stale).unwrap());
+        assert_eq!(
+            fs::read_to_string(cfg1.join(NOMBRE_ARCHIVO_USO)).unwrap(),
+            contenido_tras_a
+        );
+
+        assert!(fusionar_snapshot_instancia_en(&cfg1, &snap_b).unwrap());
+        assert!(fusionar_snapshot_instancia_en(&cfg1, &snap_c).unwrap());
+
+        // Orden inverso en cfg2: C, B, A (conmutatividad)
+        assert!(fusionar_snapshot_instancia_en(&cfg2, &snap_c).unwrap());
+        assert!(fusionar_snapshot_instancia_en(&cfg2, &snap_b).unwrap());
+        assert!(fusionar_snapshot_instancia_en(&cfg2, &snap_a).unwrap());
+
+        let u1 = cargar_uso_sin_lock_en(&cfg1.join(NOMBRE_ARCHIVO_USO));
+        let u2 = cargar_uso_sin_lock_en(&cfg2.join(NOMBRE_ARCHIVO_USO));
+
+        assert_eq!(u1.total_audiencias_contabilizadas, 6);
+        assert_eq!(u1.tipos_sin_especificar, 1);
+        assert_eq!(u1.tipos_audiencia.get("audiencia concentrada").unwrap().conteo, 5);
+        assert_eq!(u1.juzgados.get("juzgado especial").unwrap().conteo, 6);
+        assert_eq!(u1.horas_exactas.get("09:00").copied(), Some(3));
+        assert_eq!(u1.horas_exactas.get("14:00").copied(), Some(3));
+
+        assert_eq!(u1.por_instancia, u2.por_instancia);
+        assert_eq!(u1.total_audiencias_contabilizadas, u2.total_audiencias_contabilizadas);
+        assert_eq!(u1.tipos_audiencia, u2.tipos_audiencia);
+        assert_eq!(u1.juzgados, u2.juzgados);
+        assert_eq!(u1.horas_exactas, u2.horas_exactas);
+
+        let _ = fs::remove_dir_all(&dir1);
+        let _ = fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn test_decremento_local_no_corrompe_instancia_remota_y_clampa_en_cero() {
+        let dir = preparar_dir("decremento_remoto");
+        let carpeta_excel = dir.join("archivos");
+        let cfg = dir.join("config");
+        let ruta_uso = cfg.join(NOMBRE_ARCHIVO_USO);
+        fs::create_dir_all(&carpeta_excel).unwrap();
+        fs::create_dir_all(&cfg).unwrap();
+
+        let settings = AppSettings::default();
+        let aud_local = AudienciaInput {
+            radicado: "RAD-LOC".into(),
+            tipo: "Audiencia concentrada".into(),
+            fecha: "10/08/2025".into(),
+            hora: "08:00".into(),
+            juzgado: "Juzgado Alpha".into(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+        let u_loc = registrar_delta_audiencia_en(&ruta_uso, &carpeta_excel, &settings, None, Some(&aud_local))
+            .unwrap();
+        let local_id = u_loc.instancia_id.clone();
+
+        // Sincronizar snapshot remoto con 2 audiencias
+        let mut tipos_rem = BTreeMap::new();
+        tipos_rem.insert(
+            "audiencia concentrada".into(),
+            EntradaUsoCatalogo {
+                nombre_display: "Audiencia concentrada".into(),
+                conteo: 2,
+                origen_historico: "predeterminado".into(),
+                primera_vez: "2025-08-10T10:00:00Z".into(),
+                ultima_vez: "2025-08-10T11:00:00Z".into(),
+            },
+        );
+        let mut juz_rem = BTreeMap::new();
+        juz_rem.insert(
+            "juzgado beta".into(),
+            EntradaUsoCatalogo {
+                nombre_display: "Juzgado Beta".into(),
+                conteo: 2,
+                origen_historico: "otra".into(),
+                primera_vez: "2025-08-10T10:00:00Z".into(),
+                ultima_vez: "2025-08-10T11:00:00Z".into(),
+            },
+        );
+        let mut horas_rem = BTreeMap::new();
+        horas_rem.insert("09:00".into(), 2);
+
+        let snap_remoto = UsoCatalogosInstancia {
+            instancia_id: "inst-remota".into(),
+            ultima_actualizacion: "2025-08-10T11:00:00Z".into(),
+            total_audiencias_contabilizadas: 2,
+            tipos_sin_especificar: 0,
+            juzgados_sin_especificar: 0,
+            horas_sin_especificar: 0,
+            tipos_audiencia: tipos_rem,
+            juzgados: juz_rem,
+            horas_exactas: horas_rem,
+        };
+        assert!(fusionar_snapshot_instancia_en(&cfg, &snap_remoto).unwrap());
+
+        // Borrar la audiencia local: por_instancia[local_id] baja a 0, inst-remota permanece en 2
+        let u_post_del = registrar_delta_audiencia_en(
+            &ruta_uso,
+            &carpeta_excel,
+            &settings,
+            Some(&aud_local),
+            None,
+        )
+        .unwrap();
+        assert_eq!(u_post_del.total_audiencias_contabilizadas, 2);
+        assert_eq!(
+            u_post_del
+                .por_instancia
+                .get(&local_id)
+                .map(|i| i.total_audiencias_contabilizadas),
+            Some(0)
+        );
+        assert_eq!(
+            u_post_del
+                .por_instancia
+                .get("inst-remota")
+                .map(|i| i.total_audiencias_contabilizadas),
+            Some(2)
+        );
+
+        // Restar una audiencia que solo existe en la instancia remota clampa local en 0 sin dañar inst-remota
+        let aud_remota = AudienciaInput {
+            hora: "09:00".into(),
+            juzgado: "Juzgado Beta".into(),
+            ..aud_local
+        };
+        let u_post_clamp = registrar_delta_audiencia_en(
+            &ruta_uso,
+            &carpeta_excel,
+            &settings,
+            Some(&aud_remota),
+            None,
+        )
+        .unwrap();
+        assert_eq!(u_post_clamp.total_audiencias_contabilizadas, 2);
+        assert_eq!(u_post_clamp.horas_exactas.get("09:00").copied(), Some(2));
+        assert_eq!(u_post_clamp.juzgados.get("juzgado beta").unwrap().conteo, 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_paquete_lokus_interoperabilidad_con_por_instancia() {
+        let dir_orig = preparar_dir("lokus_interop_orig");
+        let dir_dest = preparar_dir("lokus_interop_dest");
+        let uso_orig_path = dir_orig.join("config").join(NOMBRE_ARCHIVO_USO);
+        let cfg_dest = dir_dest.join("config");
+        let uso_dest_path = cfg_dest.join(NOMBRE_ARCHIVO_USO);
+        fs::create_dir_all(&dir_orig).unwrap();
+        fs::create_dir_all(&cfg_dest).unwrap();
+
+        let settings = AppSettings::default();
+        let aud = AudienciaInput {
+            radicado: "RAD-PKG-1".into(),
+            tipo: "Audiencia de acusación".into(),
+            fecha: "12/08/2025".into(),
+            hora: "10:00".into(),
+            juzgado: "Juzgado 5 Penal".into(),
+            realizada: "SI".into(),
+            motivo: String::new(),
+            observaciones: String::new(),
+        };
+        let uso_orig =
+            registrar_delta_audiencia_en(&uso_orig_path, &dir_orig, &settings, None, Some(&aud))
+                .unwrap();
+
+        // Importar paquete .lokus en dest
+        let uso_dest = fusionar_uso_importado_en(
+            &uso_dest_path,
+            &dir_dest,
+            &settings,
+            Some(&uso_orig),
+            &[],
+            "omitir",
+        )
+        .unwrap();
+        assert_eq!(uso_dest.total_audiencias_contabilizadas, 1);
+        assert!(uso_dest.por_instancia.contains_key(&uso_orig.instancia_id));
+
+        // Un sync posterior con el snapshot de origen es idempotente (Ok(false), sin doble conteo)
+        let snap_orig = uso_orig.snapshot_instancia();
+        assert!(!fusionar_snapshot_instancia_en(&cfg_dest, &snap_orig).unwrap());
+        let uso_final = cargar_uso_sin_lock_en(&uso_dest_path);
+        assert_eq!(uso_final.total_audiencias_contabilizadas, 1);
+
+        let _ = fs::remove_dir_all(&dir_orig);
+        let _ = fs::remove_dir_all(&dir_dest);
     }
 }

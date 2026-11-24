@@ -175,6 +175,25 @@ pub struct ProcesoHabitual {
     #[serde(default)]
     pub defensor_habitual: String,
     pub frecuencia: u32,
+    #[serde(default)]
+    pub procesado_habitual: String,
+    #[serde(default)]
+    pub ultima_fecha: String,
+    #[serde(default)]
+    pub ultima_tipo: String,
+    #[serde(default)]
+    pub ultima_realizada: String,
+    #[serde(default)]
+    pub ultimo_motivo: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProcesoFrecuencias {
+    pub procesados: std::collections::BTreeMap<String, u32>,
+    pub juzgados: std::collections::BTreeMap<String, u32>,
+    pub tipos: std::collections::BTreeMap<String, u32>,
+    pub defensores: std::collections::BTreeMap<String, u32>,
 }
 
 /// Mapa ligero local de asociaciones (grafo ponderado por frecuencias de co-ocurrencia)
@@ -231,6 +250,8 @@ pub struct IndicePriorsExcel {
     pub realizada_no: u32,
     pub motivos_freq: [u32; 8],
     pub procesos_por_numero: std::collections::BTreeMap<String, ProcesoHabitual>,
+    #[serde(default)]
+    pub procesos_frecuencias: std::collections::BTreeMap<String, ProcesoFrecuencias>,
     #[serde(default)]
     pub grafo: GrafoAsociaciones,
 }
@@ -641,6 +662,149 @@ pub fn extraer_numeros_radicado(texto: &str) -> Vec<String> {
     }
 
     numeros
+}
+
+/// Parsea fechas de audiencias en formatos habituales de Lokus/Excel (`DD/MM/YYYY`, `YYYY-MM-DD`, `DD-MM-YYYY`, `YYYY/MM/DD`).
+pub fn parsear_fecha_priors(fecha: &str) -> Option<NaiveDate> {
+    let s = fecha.trim();
+    if s.is_empty() {
+        return None;
+    }
+    for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d"] {
+        if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
+            return Some(d);
+        }
+    }
+    None
+}
+
+/// Extrae el nombre legible del procesado desde una cadena de radicado (`"JUAN PEREZ - 200016001075202500123"`),
+/// preservando mayúsculas/tildes y descartando números de radicado y marcadores genéricos (`[PROCESADO]`, `Sin radicado`, etc.).
+pub fn extraer_nombre_procesado_de_radicado(radicado: &str) -> String {
+    const ETIQUETAS_RADICADO: &[&str] = &[
+        "rad",
+        "radicado",
+        "cui",
+        "spoa",
+        "nunc",
+        "nro",
+        "num",
+        "no",
+        "proc",
+        "procesado",
+        "procesada",
+        "procesados",
+        "imputado",
+        "imputada",
+        "imputados",
+        "acusado",
+        "acusada",
+        "acusados",
+        "indiciado",
+        "sindicado",
+        "usuario",
+        "contra",
+    ];
+    const PLACEHOLDERS_INVALIDOS: &[&str] = &[
+        "procesado",
+        "procesada",
+        "procesados",
+        "radicado",
+        "numero",
+        "sin radicado",
+        "no radicado",
+        "no registra",
+        "no aplica",
+        "n a",
+        "na",
+        "nn",
+        "sin nombre",
+        "sin procesado",
+        "desconocido",
+        "usuario",
+        "por establecer",
+        "indeterminado",
+    ];
+
+    let limpio = radicado.trim();
+    if limpio.is_empty() {
+        return String::new();
+    }
+
+    let es_token_numerico_o_puntuacion = |tok: &str| -> bool {
+        let digitos = tok.chars().filter(|c| c.is_ascii_digit()).count();
+        let letras = tok.chars().filter(|c| c.is_alphabetic()).count();
+        if digitos >= 5 {
+            return true;
+        }
+        letras == 0 && tok.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | '.' | '/' | ':' | ',' | '#' | '(' | ')' | '[' | ']'))
+    };
+
+    let es_etiqueta_borde = |tokens: &[&str], idx: usize| -> bool {
+        let norm = normalizar_texto_sin_tildes(tokens[idx]);
+        if ETIQUETAS_RADICADO.contains(&norm.as_str()) {
+            return true;
+        }
+        if norm == "en" {
+            if let Some(next) = tokens.get(idx + 1) {
+                if normalizar_texto_sin_tildes(next) == "contra" {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+
+    for seg in limpio
+        .split(" - ")
+        .flat_map(|s| s.split(" – "))
+        .flat_map(|s| s.split(" — "))
+    {
+        let mut tokens: Vec<&str> = seg
+            .split_whitespace()
+            .filter(|tok| !es_token_numerico_o_puntuacion(tok))
+            .collect();
+
+        let antes_limpieza = tokens
+            .join(" ")
+            .trim_matches(|c: char| matches!(c, ':' | ';' | ',' | '.' | '-' | '–' | '—' | '[' | ']'))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let norm_antes = normalizar_texto_sin_tildes(&antes_limpieza);
+        if norm_antes.is_empty() || PLACEHOLDERS_INVALIDOS.contains(&norm_antes.as_str()) {
+            continue;
+        }
+
+        while !tokens.is_empty() && es_etiqueta_borde(&tokens, 0) {
+            tokens.remove(0);
+        }
+        while !tokens.is_empty() && es_etiqueta_borde(&tokens, tokens.len() - 1) {
+            tokens.pop();
+        }
+
+        let candidato = tokens
+            .join(" ")
+            .trim_matches(|c: char| matches!(c, ':' | ';' | ',' | '.' | '-' | '–' | '—' | '[' | ']'))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if candidato.is_empty() {
+            continue;
+        }
+        let letras = candidato.chars().filter(|c| c.is_alphabetic()).count();
+        if letras < 2 {
+            continue;
+        }
+        let norm_cand = normalizar_texto_sin_tildes(&candidato);
+        if norm_cand.is_empty() || PLACEHOLDERS_INVALIDOS.contains(&norm_cand.as_str()) {
+            continue;
+        }
+        return candidato;
+    }
+
+    String::new()
 }
 
 fn similitud_levenshtein(a: &str, b: &str) -> f64 {
@@ -1069,5 +1233,80 @@ mod tests {
             .or_default()
             .insert("Juzgado 4 Penal".into(), 2);
         assert_eq!(grafo.total_conexiones(), 5);
+    }
+
+    #[test]
+    fn test_proceso_habitual_deserializacion_retrocompatible_y_helpers_v4() {
+        let v3_json = r#"{
+            "formato": 3,
+            "actualizada": "2025-08-01T10:00:00-05:00",
+            "total_registros": 2,
+            "procesos_por_numero": {
+                "200016001075202500123": {
+                    "radicado_completo": "JUAN PEREZ - 200016001075202500123",
+                    "juzgado_habitual": "Juzgado 1 Penal",
+                    "tipo_habitual": "Audiencia concentrada",
+                    "defensor_habitual": "Ana Pérez",
+                    "frecuencia": 2
+                }
+            }
+        }"#;
+        let priors: IndicePriorsExcel = serde_json::from_str(v3_json).unwrap();
+        assert_eq!(priors.formato, 3);
+        assert!(priors.procesos_frecuencias.is_empty());
+        let proc_hab = priors
+            .procesos_por_numero
+            .get("200016001075202500123")
+            .unwrap();
+        assert_eq!(proc_hab.procesado_habitual, "");
+        assert_eq!(proc_hab.ultima_fecha, "");
+        assert_eq!(proc_hab.ultima_tipo, "");
+        assert_eq!(proc_hab.ultima_realizada, "");
+        assert_eq!(proc_hab.ultimo_motivo, "");
+
+        // parsear_fecha_priors
+        let esperada = NaiveDate::from_ymd_opt(2025, 8, 15);
+        assert_eq!(parsear_fecha_priors("15/08/2025"), esperada);
+        assert_eq!(parsear_fecha_priors("2025-08-15"), esperada);
+        assert_eq!(parsear_fecha_priors("15-08-2025"), esperada);
+        assert_eq!(parsear_fecha_priors("2025/08/15"), esperada);
+        assert_eq!(parsear_fecha_priors("  "), None);
+        assert_eq!(parsear_fecha_priors("32/13/2025"), None);
+        assert_eq!(parsear_fecha_priors("sin fecha"), None);
+
+        // extraer_nombre_procesado_de_radicado
+        assert_eq!(
+            extraer_nombre_procesado_de_radicado("JUAN PEREZ - 200016001075202500123"),
+            "JUAN PEREZ"
+        );
+        assert_eq!(
+            extraer_nombre_procesado_de_radicado("200016001075202500123 - María José De La Hoz"),
+            "María José De La Hoz"
+        );
+        assert_eq!(
+            extraer_nombre_procesado_de_radicado("JUAN-CARLOS PEREZ - 200016001075202500123"),
+            "JUAN-CARLOS PEREZ"
+        );
+        assert_eq!(
+            extraer_nombre_procesado_de_radicado("Procesado: JUAN PEREZ - Rad. 200016001075202500123"),
+            "JUAN PEREZ"
+        );
+        assert_eq!(
+            extraer_nombre_procesado_de_radicado("[PROCESADO] - 200016001075202500111"),
+            ""
+        );
+        assert_eq!(
+            extraer_nombre_procesado_de_radicado("PROCESADO - 200016001075202255547"),
+            ""
+        );
+        assert_eq!(
+            extraer_nombre_procesado_de_radicado("20001-60-01075-2025-00123"),
+            ""
+        );
+        assert_eq!(extraer_nombre_procesado_de_radicado("Sin radicado"), "");
+        assert_eq!(
+            extraer_nombre_procesado_de_radicado("Sin radicado - Carlos Gómez"),
+            "Carlos Gómez"
+        );
     }
 }

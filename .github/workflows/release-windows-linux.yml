@@ -62,6 +62,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOKUS_GOOGLE_CLIENT_ID: ${{ secrets.LOKUS_GOOGLE_CLIENT_ID_DESKTOP }}
+          LOKUS_GOOGLE_CLIENT_SECRET: ${{ secrets.LOKUS_GOOGLE_CLIENT_SECRET_DESKTOP }}
         with:
           tagName: v__VERSION__
           releaseName: "Lokus v__VERSION__"

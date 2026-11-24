@@ -11,6 +11,7 @@
     Package,
     FileSpreadsheet,
     UserCheck,
+    User,
     Pencil,
   } from "@lucide/svelte";
   import {
@@ -100,6 +101,36 @@
   let consolidandoIa = $state(false);
   let respondiendoAclaracion = $state(false);
   let aclaracionOcultadaId = $state("");
+  let driveEstado = $state(null);
+  let sincronizandoDrive = $state(false);
+  let conectandoDrive = $state(false);
+  let errorDrive = $state("");
+  let driveClientIdDraft = $state("");
+  let driveAvatarError = $state(false);
+
+  let nombreCuentaCorto = $derived.by(() => {
+    const nombre = String(driveEstado?.nombre || "").trim();
+    if (nombre) {
+      return nombre.split(/\s+/)[0];
+    }
+    const email = String(driveEstado?.email || "").trim();
+    if (email.includes("@")) {
+      return email.split("@")[0];
+    }
+    return "Cuenta";
+  });
+
+  let inicialesCuenta = $derived.by(() => {
+    const nombre = String(driveEstado?.nombre || "").trim();
+    const email = String(driveEstado?.email || "").trim();
+    const fuente = nombre || (email.includes("@") ? email.split("@")[0] : email);
+    if (!fuente) return "G";
+    const partes = fuente.split(/[\s._-]+/).filter(Boolean);
+    if (partes.length >= 2) {
+      return `${partes[0][0]}${partes[1][0]}`.toUpperCase();
+    }
+    return fuente.slice(0, 2).toUpperCase();
+  });
 
   // Edición
   let modoEdicion = $state(false);
@@ -897,6 +928,8 @@
     errorImportacion = "";
     modoConflictoImport = "omitir";
     importarConfigPaquete = true;
+    errorDrive = "";
+    cargarEstadoDrive();
     modalActivo = "portabilidad";
   }
 
@@ -1938,6 +1971,205 @@
     }
   }
 
+  async function eliminarHechoIa(hechoId) {
+    if (!hechoId) return;
+    try {
+      diagnosticoIa = await invoke("cmd_eliminar_hecho_ia", { hechoId });
+      await cargarResumenAprendizaje();
+      mostrarToast("Hecho eliminado de la memoria de IA", "info", 2800);
+    } catch (e) {
+      mostrarToast(`No se pudo eliminar el hecho: ${e}`, "error", 3600);
+    }
+  }
+
+  async function eliminarItemPlaybookIa(itemId) {
+    if (!itemId) return;
+    try {
+      diagnosticoIa = await invoke("cmd_eliminar_item_playbook_ia", { itemId });
+      await cargarResumenAprendizaje();
+      mostrarToast("Entrada retirada del Playbook de IA", "info", 2800);
+    } catch (e) {
+      mostrarToast(`No se pudo retirar la entrada del Playbook: ${e}`, "error", 3600);
+    }
+  }
+
+  function abrirModalCuenta() {
+    errorDrive = "";
+    modalActivo = "cuenta";
+    cargarEstadoDrive();
+  }
+
+  async function cargarEstadoDrive() {
+    try {
+      const est = await invoke("cmd_obtener_estado_drive");
+      driveEstado = est;
+      driveAvatarError = false;
+      if (est && typeof est.client_id_custom === "string") {
+        driveClientIdDraft = est.client_id_custom;
+      }
+      return est;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function sincronizarGoogleDrive(silencioso = false) {
+    if (sincronizandoDrive) return;
+    sincronizandoDrive = true;
+    errorDrive = "";
+    try {
+      const res = await invoke("cmd_sincronizar_drive");
+      await Promise.all([
+        refrescarListaArchivos(),
+        cargarConfigInicial(),
+        cargarResumenAprendizaje(),
+        cargarEstadoDrive(),
+      ]);
+      if (!archivoActual && archivosDisponibles.length > 0) {
+        archivoActual = archivosDisponibles[0];
+        await recargarArchivoActual();
+      } else if (archivoActual) {
+        await recargarArchivoActual();
+      }
+      if (vistaActiva === "estadisticas") {
+        await cargarEstadisticas();
+      }
+      if (!silencioso || !res?.sin_cambios) {
+        mostrarToast(
+          res?.resumen_mensaje || "Sincronización con Google Drive completada",
+          "success",
+          4200
+        );
+      }
+    } catch (e) {
+      const msg = String(e);
+      errorDrive = msg;
+      await cargarEstadoDrive();
+      if (!silencioso) {
+        mostrarToast(msg, "error", 4800);
+      }
+    } finally {
+      sincronizandoDrive = false;
+    }
+  }
+
+  async function procesarCallbackGoogleAndroid(payload) {
+    if (!payload) return;
+    conectandoDrive = true;
+    errorDrive = "";
+    try {
+      if (payload.error) {
+        throw new Error(payload.errorDescription || payload.error);
+      }
+      if (!payload.code || !payload.state) {
+        return;
+      }
+      const est = await invoke("cmd_completar_auth_drive_android", {
+        code: String(payload.code),
+        state: String(payload.state),
+      });
+      driveEstado = est;
+      driveAvatarError = false;
+      if (est && typeof est.client_id_custom === "string") {
+        driveClientIdDraft = est.client_id_custom;
+      }
+      mostrarToast(
+        est?.nombre
+          ? `Sesión iniciada como ${est.nombre}`
+          : est?.email
+            ? `Conectado con Google Drive (${est.email})`
+            : "Conectado con Google Drive",
+        "success",
+        4200
+      );
+      await sincronizarGoogleDrive(true);
+    } catch (e) {
+      const msg = String(e?.message || e);
+      errorDrive = msg;
+      mostrarToast(`No se pudo completar la conexión con Google: ${msg}`, "error", 4800);
+    } finally {
+      conectandoDrive = false;
+    }
+  }
+
+  async function conectarGoogleDrive(clientIdCustom = "") {
+    if (conectandoDrive) return;
+    conectandoDrive = true;
+    errorDrive = "";
+    const override = String(clientIdCustom || "").trim() || null;
+    try {
+      const puente = obtenerPuenteAndroid();
+      if (puente && typeof puente.openExternalAuthUrl === "function") {
+        const inicio = await invoke("cmd_preparar_auth_drive_android", {
+          clientIdOverride: override,
+        });
+        const abierto = puente.openExternalAuthUrl(inicio.auth_url);
+        if (!abierto) {
+          throw new Error("No se pudo abrir el navegador en Android para autorizar Google Drive.");
+        }
+        conectandoDrive = false;
+        return;
+      }
+
+      const est = await invoke("cmd_conectar_drive_desktop", {
+        clientIdOverride: override,
+      });
+      driveEstado = est;
+      driveAvatarError = false;
+      if (est && typeof est.client_id_custom === "string") {
+        driveClientIdDraft = est.client_id_custom;
+      }
+      mostrarToast(
+        est?.nombre
+          ? `Sesión iniciada como ${est.nombre}`
+          : est?.email
+            ? `Conectado con Google Drive (${est.email})`
+            : "Conectado con Google Drive",
+        "success",
+        4200
+      );
+      await sincronizarGoogleDrive(true);
+    } catch (e) {
+      const msg = String(e?.message || e);
+      errorDrive = msg;
+      mostrarToast(msg, "error", 4800);
+    } finally {
+      conectandoDrive = false;
+    }
+  }
+
+  async function desconectarGoogleDrive() {
+    errorDrive = "";
+    try {
+      const est = await invoke("cmd_desconectar_drive");
+      driveEstado = est;
+      driveAvatarError = false;
+      mostrarToast("Sesión de Google cerrada", "info", 3200);
+    } catch (e) {
+      errorDrive = String(e);
+      mostrarToast(`Error al desconectar Drive: ${e}`, "error", 4200);
+    }
+  }
+
+  async function guardarConfigDrive(autoSync, clientIdCustom = "") {
+    errorDrive = "";
+    try {
+      const limpio = String(clientIdCustom || "").trim();
+      const est = await invoke("cmd_guardar_config_drive", {
+        autoSync: Boolean(autoSync),
+        clientIdCustom: limpio ? limpio : "",
+      });
+      driveEstado = est;
+      if (est && typeof est.client_id_custom === "string") {
+        driveClientIdDraft = est.client_id_custom;
+      }
+      mostrarToast("Preferencias de Google Drive guardadas", "success", 2800);
+    } catch (e) {
+      errorDrive = String(e);
+      mostrarToast(`No se pudo guardar configuración de Drive: ${e}`, "error", 4200);
+    }
+  }
+
   async function exportarAprendizajeIa() {
     if (exportandoAprendizaje) return;
     exportandoAprendizaje = true;
@@ -2137,10 +2369,16 @@
   onMount(() => {
     if (typeof window !== "undefined") {
       window.__lokusHandleAndroidBack = manejarAtrasAndroid;
+      window.__lokusOnGoogleAuthCallback = procesarCallbackGoogleAndroid;
     }
     return () => {
-      if (typeof window !== "undefined" && window.__lokusHandleAndroidBack === manejarAtrasAndroid) {
-        delete window.__lokusHandleAndroidBack;
+      if (typeof window !== "undefined") {
+        if (window.__lokusHandleAndroidBack === manejarAtrasAndroid) {
+          delete window.__lokusHandleAndroidBack;
+        }
+        if (window.__lokusOnGoogleAuthCallback === procesarCallbackGoogleAndroid) {
+          delete window.__lokusOnGoogleAuthCallback;
+        }
       }
     };
   });
@@ -2155,6 +2393,18 @@
     if (archivosDisponibles.length > 0 && !archivoActual) {
       archivoActual = archivosDisponibles[0];
       await recargarArchivoActual();
+    }
+    const puente = obtenerPuenteAndroid();
+    const rawPending = puente?.consumePendingGoogleAuthCallback?.();
+    if (rawPending) {
+      try {
+        await procesarCallbackGoogleAndroid(JSON.parse(rawPending));
+      } catch (_) {}
+    } else {
+      const est = await cargarEstadoDrive();
+      if (est?.conectado && est?.auto_sync) {
+        sincronizarGoogleDrive(true);
+      }
     }
   });
 </script>
@@ -2283,6 +2533,42 @@
             <span class="share-badge" aria-hidden="true">
               {aprendizaje.pendientes_exportar > 99 ? "99+" : aprendizaje.pendientes_exportar}
             </span>
+          {/if}
+        </button>
+
+        <button
+          type="button"
+          class="account-trigger-btn {driveEstado?.conectado ? 'is-connected' : ''}"
+          onclick={abrirModalCuenta}
+          title={driveEstado?.conectado
+            ? `Cuenta conectada: ${driveEstado.nombre || driveEstado.email || "Google Drive"}`
+            : "Entrar con Google para guardar y sincronizar tus datos"}
+          aria-label={driveEstado?.conectado
+            ? "Cuenta de Google conectada"
+            : "Cuenta de Google — Iniciar sesión"}
+        >
+          {#if driveEstado?.conectado}
+            {#if driveEstado.foto_url && !driveAvatarError}
+              <img
+                src={driveEstado.foto_url}
+                alt=""
+                class="account-avatar"
+                referrerpolicy="no-referrer"
+                onerror={() => (driveAvatarError = true)}
+              />
+            {:else}
+              <span class="account-avatar account-avatar-initials" aria-hidden="true">
+                {inicialesCuenta}
+              </span>
+            {/if}
+            <span class="account-trigger-label">{nombreCuentaCorto}</span>
+            <span
+              class="account-status-dot {sincronizandoDrive ? 'is-syncing' : ''}"
+              aria-hidden="true"
+            ></span>
+          {:else}
+            <User size={15} />
+            <span class="account-trigger-label">Entrar</span>
           {/if}
         </button>
       </div>
@@ -2489,6 +2775,17 @@
   {toast}
   onRefrescarDiagnosticoIa={cargarDiagnosticoIa}
   onConsolidarMemoriaIa={consolidarMemoriaIaManual}
+  onEliminarHechoIa={eliminarHechoIa}
+  onEliminarItemPlaybookIa={eliminarItemPlaybookIa}
+  {driveEstado}
+  {sincronizandoDrive}
+  {conectandoDrive}
+  {errorDrive}
+  bind:driveClientIdDraft
+  onConectarDrive={conectarGoogleDrive}
+  onDesconectarDrive={desconectarGoogleDrive}
+  onSincronizarDrive={() => sincronizarGoogleDrive(false)}
+  onGuardarConfigDrive={guardarConfigDrive}
   onCrearNuevoArchivo={crearNuevoArchivo}
   onDefensorNuevoChange={sincronizarNombreDesdeDefensorCrear}
   onNombreNuevoInput={marcarNombreNuevoEditadoManual}
