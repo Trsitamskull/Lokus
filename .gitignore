@@ -15,6 +15,7 @@ config/config_local.py
 config/settings.json
 config/ia_aprendizaje.json*
 config/uso_catalogos.json*
+config/drive_sync.json*
 *.env
 *.env.*
 *.keystore
