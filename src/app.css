@@ -968,6 +968,7 @@ body.is-dragging-tree {
 
 .topbar-nav {
   flex: 1;
+  min-width: 0;
   max-width: 920px;
   display: flex;
   align-items: center;
@@ -3495,6 +3496,7 @@ dialog.modal-overflow-visible .modal-footer {
   }
   .header-nav-wrap {
     order: 1;
+    flex: 0 0 100%;
     width: 100%;
     gap: 6px;
   }
@@ -3529,6 +3531,17 @@ dialog.modal-overflow-visible .modal-footer {
   .ai-config-trigger {
     min-height: 34px;
     padding: 6px 10px;
+  }
+  .extract-panel.is-unconfigured .extract-panel-head {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .extract-panel.is-unconfigured .extract-panel-head > :first-child {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+  .extract-panel.is-unconfigured .btn {
+    min-height: 36px;
   }
   .tab-count {
     font-size: 10.5px;
@@ -3602,16 +3615,16 @@ dialog.modal-overflow-visible .modal-footer {
     width: min(286px, calc(100vw - 20px));
   }
   .calendar-select-trigger {
-    height: 34px;
-    font-size: 12.5px;
+    height: 32px;
+    font-size: 12px;
   }
   .calendar-header .mini-icon-btn {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
   }
   .calendar-day {
-    height: 34px;
-    font-size: 12.5px;
+    height: 30px;
+    font-size: 12px;
   }
   .calendar-weekdays {
     font-size: 11px;
