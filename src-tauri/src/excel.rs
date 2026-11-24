@@ -39,6 +39,11 @@ pub struct RespaldoInfo {
 }
 
 pub fn obtener_carpeta_archivos() -> PathBuf {
+    if let Some(dir) = crate::rutas::ruta_archivos_prioritaria() {
+        return dir;
+    }
+
+    #[cfg(not(target_os = "android"))]
     if cfg!(debug_assertions) {
         if let Ok(cwd) = std::env::current_dir() {
             // Durante `cargo tauri dev` o `cargo test` dentro de src-tauri/, usar ../archivos_creados
@@ -60,9 +65,9 @@ pub fn obtener_carpeta_archivos() -> PathBuf {
     let docs = dirs::document_dir()
         .or_else(dirs::data_local_dir)
         .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Lokus")
-        .join("archivos_creados");
+        .map(|base| base.join("Lokus").join("archivos_creados"))
+        .or_else(crate::rutas::ruta_archivos_respaldo)
+        .unwrap_or_else(|| PathBuf::from(".").join("Lokus").join("archivos_creados"));
     let _ = fs::create_dir_all(&docs);
     docs
 }
@@ -745,10 +750,15 @@ pub fn eliminar_archivo(nombre_archivo: &str) -> Result<(), String> {
     eliminar_archivo_con_opcion(nombre_archivo, false)
 }
 
-/// Carpeta de Descargas del usuario (o su carpeta personal si no existe) para exportaciones.
+/// Carpeta de Descargas del usuario (o carpeta de exportaciones en Android) para exportaciones.
 pub fn carpeta_descargas() -> Result<PathBuf, String> {
+    if let Some(dir) = crate::rutas::ruta_descargas_prioritaria() {
+        return Ok(dir);
+    }
+
     dirs::download_dir()
         .or_else(dirs::home_dir)
+        .or_else(crate::rutas::ruta_descargas_respaldo)
         .ok_or_else(|| "No se pudo localizar la carpeta de Descargas".to_string())
 }
 

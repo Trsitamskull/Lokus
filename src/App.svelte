@@ -246,12 +246,63 @@
     }, duracion);
   }
 
+  function obtenerPuenteAndroid() {
+    if (typeof window === "undefined") return null;
+    const puente = window.LokusAndroid;
+    return puente && typeof puente === "object" ? puente : null;
+  }
+
+  async function entregarArchivoExportadoEnAndroid(ruta, mensajeEscritorio, duracion = 4500) {
+    const puente = obtenerPuenteAndroid();
+    if (!puente || typeof puente.saveToDownloadsAndShare !== "function") {
+      mostrarToast(mensajeEscritorio, "success", duracion);
+      return;
+    }
+    try {
+      const archivo = await invoke("cmd_leer_archivo_exportado", { ruta });
+      const rawRes = puente.saveToDownloadsAndShare(
+        archivo.contenido_b64,
+        archivo.nombre,
+        archivo.mime,
+        true
+      );
+      let res = null;
+      try {
+        res = typeof rawRes === "string" ? JSON.parse(rawRes) : rawRes;
+      } catch (_) {}
+      if (res?.ok) {
+        invoke("cmd_limpiar_archivo_exportado", { ruta }).catch(() => {});
+        mostrarToast(
+          `Guardado en ${res.savedLocation || `Descargas/Lokus/${archivo.nombre}`} y listo para compartir`,
+          "success",
+          5000
+        );
+        return;
+      }
+      if (res?.error) {
+        mostrarToast(`Copia local guardada. Aviso al compartir: ${res.error}`, "info", 5000);
+        return;
+      }
+    } catch (err) {
+      mostrarToast(
+        `Copia guardada internamente (${ruta}). No se pudo abrir el menú de compartir: ${err}`,
+        "info",
+        5000
+      );
+      return;
+    }
+    mostrarToast(mensajeEscritorio, "success", duracion);
+  }
+
   function aplicarTema(tema) {
     document.documentElement.setAttribute("data-theme", tema);
     const meta = document.querySelector('meta[name="color-scheme"]');
     if (meta) meta.content = tema;
     try {
       localStorage.setItem("color-scheme", tema);
+    } catch (_) {}
+    try {
+      obtenerPuenteAndroid()?.setTheme?.(tema === "light");
     } catch (_) {}
     settings.theme = tema;
   }
@@ -327,12 +378,15 @@
           mes = mNum;
         }
       }
-      estadisticas = await invoke("cmd_obtener_estadisticas", {
+      const resStats = await invoke("cmd_obtener_estadisticas", {
         anio,
         mes,
         archivo: statsArchivoFiltro || null,
         defensor: statsDefensorFiltro || null,
       });
+      if (resStats && typeof resStats === "object") {
+        estadisticas = resStats;
+      }
     } catch (e) {
       mostrarToast(`Error calculando estadísticas: ${e}`, "error");
     } finally {
@@ -415,7 +469,15 @@
       await navigator.clipboard.writeText(resumen);
       mostrarToast("Resumen mensual copiado al portapapeles", "success");
     } catch (_) {
-      mostrarToast("No se pudo copiar al portapapeles", "error");
+      let copiadoNativo = false;
+      try {
+        copiadoNativo = Boolean(obtenerPuenteAndroid()?.copyText?.(resumen));
+      } catch (_) {}
+      if (copiadoNativo) {
+        mostrarToast("Resumen mensual copiado al portapapeles", "success");
+      } else {
+        mostrarToast("No se pudo copiar al portapapeles", "error");
+      }
     }
   }
 
@@ -845,11 +907,11 @@
         tipoPaquete: tipoExportacion,
       });
       modalActivo = null;
-      mostrarToast(
+      await entregarArchivoExportadoEnAndroid(
+        ruta,
         tipoExportacion === "completo"
           ? `Respaldo completo guardado en: ${ruta}`
           : `Estadísticas exportadas en: ${ruta}`,
-        "success",
         5000
       );
     } catch (e) {
@@ -1217,7 +1279,7 @@
   async function descargarArchivo(nombre) {
     try {
       const ruta = await invoke("cmd_descargar_archivo", { nombre });
-      mostrarToast(`Copia exportada en: ${ruta}`, "success", 4200);
+      await entregarArchivoExportadoEnAndroid(ruta, `Copia exportada en: ${ruta}`, 4200);
     } catch (e) {
       mostrarToast(`Error al exportar: ${e}`, "error");
     }
@@ -1871,9 +1933,9 @@
         pendientes_ia: 0,
         pendientes_uso: 0,
       };
-      mostrarToast(
+      await entregarArchivoExportadoEnAndroid(
+        ruta,
         `Uso de catálogos y aprendizaje exportados en: ${ruta}`,
-        "success",
         5000
       );
     } catch (e) {
@@ -2014,6 +2076,59 @@
     } catch (_) {}
   }
 
+  function manejarAtrasAndroid() {
+    if (typeof document !== "undefined") {
+      try {
+        const popoverAbierto = document.querySelector("[popover]:popover-open");
+        if (popoverAbierto && typeof popoverAbierto.hidePopover === "function") {
+          popoverAbierto.hidePopover();
+          return "handled";
+        }
+      } catch (_) {}
+
+      const menuFallback = document.querySelector(".folder-context-menu.is-fallback-open");
+      if (menuFallback) {
+        document.body?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        return "handled";
+      }
+
+      const desplegableAbierto = document.querySelector(".custom-select-popover, .calendar-popover");
+      if (desplegableAbierto) {
+        document.body?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        return "handled";
+      }
+    }
+
+    if (modalActivo) {
+      modalActivo = null;
+      return "handled";
+    }
+    if (sidebarMobileOpen) {
+      sidebarMobileOpen = false;
+      return "handled";
+    }
+    if (modoEdicion) {
+      cancelarEdicion();
+      return "handled";
+    }
+    if (vistaActiva !== "formulario") {
+      cambiarVista("formulario");
+      return "handled";
+    }
+    return "exit";
+  }
+
+  onMount(() => {
+    if (typeof window !== "undefined") {
+      window.__lokusHandleAndroidBack = manejarAtrasAndroid;
+    }
+    return () => {
+      if (typeof window !== "undefined" && window.__lokusHandleAndroidBack === manejarAtrasAndroid) {
+        delete window.__lokusHandleAndroidBack;
+      }
+    };
+  });
+
   onMount(async () => {
     try {
       sidebarColapsada = localStorage.getItem("sidebar-collapsed") === "true";
@@ -2082,6 +2197,8 @@
             <PanelLeftClose size={16} />
           {/if}
         </button>
+
+        <span class="mobile-brand-title" aria-hidden="true">Lokus</span>
 
         <div class="topbar-nav" role="tablist" aria-label="Secciones principales">
           <button

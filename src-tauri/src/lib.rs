@@ -7,6 +7,7 @@ pub mod ingesta;
 pub mod models;
 pub mod paquete;
 pub mod patrones_abreviacion;
+pub mod rutas;
 pub mod uso_catalogos;
 
 use ai::{
@@ -584,6 +585,15 @@ async fn cmd_importar_paquete(
         .await
 }
 
+#[tauri::command]
+async fn cmd_leer_archivo_exportado(ruta: String) -> Result<rutas::ArchivoExportado, String> {
+    ejecutar_en_hilo_io(move || rutas::leer_archivo_exportado(&ruta)).await
+}
+
+#[tauri::command]
+async fn cmd_limpiar_archivo_exportado(ruta: String) -> Result<(), String> {
+    ejecutar_en_hilo_io(move || rutas::limpiar_archivo_exportado(&ruta)).await
+}
 
 #[tauri::command]
 async fn cmd_obtener_estadisticas(
@@ -598,6 +608,10 @@ async fn cmd_obtener_estadisticas(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            rutas::inicializar_rutas_tauri(app);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             cmd_listar_archivos,
             cmd_listar_carpetas,
@@ -643,6 +657,8 @@ pub fn run() {
             cmd_exportar_paquete,
             cmd_inspeccionar_importacion,
             cmd_importar_paquete,
+            cmd_leer_archivo_exportado,
+            cmd_limpiar_archivo_exportado,
         ])
         .run(tauri::generate_context!())
         .expect("error al ejecutar la aplicación Tauri");

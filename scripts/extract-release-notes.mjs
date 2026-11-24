@@ -96,6 +96,7 @@ function main() {
     "### Descargas",
     "- **Windows:** `Lokus.exe` (ejecutable portable directo) o `Lokus-setup.exe` (instalador con WebView2 incluido).",
     "- **Linux:** `.AppImage`, `.deb` y `.rpm`.",
+    `- **Android:** \`Lokus_${version}_android_arm64.apk\` (instalable en teléfonos ARM64) y \`.aab\`.`,
   ].join("\n");
 
   const cuerpoFinal = `${notas}\n\n${descargas}\n`;

@@ -23,6 +23,7 @@
     Keyboard,
     Sun,
     Moon,
+    MoreVertical,
   } from "@lucide/svelte";
 
   let {
@@ -291,6 +292,9 @@
 
   function iniciarPosibleArrastre(e, item) {
     if (e.button !== 0) return;
+    // En pantallas táctiles (Android), priorizar el desplazamiento vertical del listado;
+    // el movimiento y organización se gestionan desde el botón de opciones (⋮).
+    if (e.pointerType === "touch") return;
     if (e.pointerType === "mouse") {
       window.getSelection?.()?.removeAllRanges?.();
     }
@@ -560,8 +564,8 @@
     let y = e.clientY ?? 0;
     if (viaKeyboard && triggerEl) {
       const rect = triggerEl.getBoundingClientRect();
-      x = Math.round(rect.left + 28);
-      y = Math.round(rect.bottom - 2);
+      x = Math.min(Math.max(8, Math.round(rect.left)), Math.max(8, window.innerWidth - 220));
+      y = Math.round(rect.bottom + 2);
     }
 
     restaurarFocoAlCerrar = true;
@@ -615,9 +619,23 @@
     }
   }
 
+  let prevMobileOpen = false;
+  $effect(() => {
+    if (prevMobileOpen && !mobileOpen && contextMenu) {
+      cerrarMenuContextual({ restaurarFoco: false });
+    }
+    prevMobileOpen = mobileOpen;
+  });
+
+  function ejecutarAccionSidebar(callback) {
+    if (mobileOpen) onCloseMobile?.();
+    callback?.();
+  }
+
   function ejecutarAccionMenu(callback) {
     const ruta = contextMenu?.ruta;
     cerrarMenuContextual({ restaurarFoco: false });
+    if (mobileOpen) onCloseMobile?.();
     if (ruta) callback?.(ruta);
   }
 
@@ -732,6 +750,15 @@
       <FileSpreadsheet size={15} strokeWidth={isActive ? 2.2 : 1.9} class="excel-icon" />
       <span class="file-name-truncate">{item.nombre.replace(/\.xlsx$/i, "")}</span>
     </button>
+    <button
+      type="button"
+      class="mini-icon-btn sidebar-item-menu-btn"
+      aria-label="Opciones de {item.nombre.replace(/\.xlsx$/i, '')}"
+      title="Opciones de planilla"
+      onclick={(e) => abrirMenuContextual(e, "archivo", item.ruta, e.currentTarget, true)}
+    >
+      <MoreVertical size={14} />
+    </button>
   </div>
 {/snippet}
 
@@ -802,6 +829,15 @@
           <span class="folder-count">{nodo.totalArchivos}</span>
         {/if}
       </button>
+      <button
+        type="button"
+        class="mini-icon-btn sidebar-item-menu-btn"
+        aria-label="Opciones de carpeta {nodo.nombre}"
+        title="Opciones de carpeta"
+        onclick={(e) => abrirMenuContextual(e, "carpeta", nodo.ruta, e.currentTarget, true)}
+      >
+        <MoreVertical size={14} />
+      </button>
     </div>
 
     {#if abierta && (nodo.carpetas.length > 0 || nodo.archivos.length > 0)}
@@ -843,7 +879,7 @@
       <button
         type="button"
         class="mini-icon-btn"
-        onclick={() => onCrearCarpeta("")}
+        onclick={() => ejecutarAccionSidebar(() => onCrearCarpeta(""))}
         title="Crear nueva carpeta"
         aria-label="Crear nueva carpeta"
       >
@@ -852,7 +888,7 @@
       <button
         type="button"
         class="mini-icon-btn"
-        onclick={() => onCrearArchivo("")}
+        onclick={() => ejecutarAccionSidebar(() => onCrearArchivo(""))}
         title="Crear nuevo archivo Excel (Ctrl+N)"
         aria-label="Crear nuevo archivo Excel"
       >
@@ -990,7 +1026,7 @@
       <button
         type="button"
         class="ai-config-trigger {aiStatus.configured ? '' : 'is-unconfigured'}"
-        onclick={onAbrirConfigIa}
+        onclick={() => ejecutarAccionSidebar(onAbrirConfigIa)}
         title={aiStatus.configured ? "Configurar proveedor de IA" : "Falta configurar tu clave API de IA"}
       >
         <span class="led {aiStatus.configured ? 'on' : 'off'}"></span>
@@ -1007,7 +1043,7 @@
         <button
           type="button"
           class="mini-icon-btn"
-          onclick={onAbrirAtajos}
+          onclick={() => ejecutarAccionSidebar(onAbrirAtajos)}
           title="Atajos de teclado (F1)"
           aria-label="Atajos de teclado"
         >

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Tag del release destino (ej: v5.2.1). Si se envía, también se compila exactamente ese tag."
+        description: "Tag del release destino (ej: v5.2.1). Si se envía, compila ese tag y adjunta al release."
         required: false
         type: string
   push:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build-android:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,43 +29,133 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: "22"
+          cache: "npm"
 
-      - name: Setup Java 17
+      - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
-      - name: Setup Rust stable
+      - name: Setup Rust stable (aarch64-linux-android)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
 
-      - name: Add Android Rust target
-        run: rustup target add aarch64-linux-android
-
-      - name: Configurar Android SDK del runner
-        run: |
-          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
-          echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "/usr/local/lib/android/sdk/platform-tools" >> "$GITHUB_PATH"
-
-      - name: Instalar SDK/NDK requeridos
-        run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
-          echo "NDK_HOME=/usr/local/lib/android/sdk/ndk/26.3.11579264" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          key: android-aarch64
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci || npm install
 
-      - name: Inicializar proyecto Android (Tauri)
-        run: npm run tauri android init -- --ci
+      - name: Configurar entorno base de Android SDK y NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Build Android (APK + AAB)
-        run: npm run tauri android build -- --target aarch64 --apk --aab --ci
+          CMDLINE_BIN=""
+          if [ -d "$SDK_DIR/cmdline-tools/latest/bin" ]; then
+            CMDLINE_BIN="$SDK_DIR/cmdline-tools/latest/bin"
+          elif [ -d "$SDK_DIR/cmdline-tools" ]; then
+            CMDLINE_BIN=$(find "$SDK_DIR/cmdline-tools" -maxdepth 2 -type d -name bin | sort -V | tail -n1 || true)
+          fi
+          if [ -n "$CMDLINE_BIN" ]; then
+            export PATH="$CMDLINE_BIN:$PATH"
+            echo "$CMDLINE_BIN" >> "$GITHUB_PATH"
+          fi
+          echo "$SDK_DIR/platform-tools" >> "$GITHUB_PATH"
 
-      - name: Resolver versión, tag y artefactos
+          # Resolver NDK antes de `tauri android init` (requerido por cargo-mobile2)
+          NDK_PATH=""
+          if [ -d "$SDK_DIR/ndk" ]; then
+            for cand in $(find "$SDK_DIR/ndk" -mindepth 1 -maxdepth 1 -type d | sort -Vr); do
+              if [ -d "$cand/toolchains/llvm" ]; then
+                NDK_PATH="$cand"
+                break
+              fi
+            done
+          fi
+          if [ -z "$NDK_PATH" ]; then
+            yes | sdkmanager --licenses >/dev/null || true
+            sdkmanager --install "ndk;27.2.12479018"
+            NDK_PATH="$SDK_DIR/ndk/27.2.12479018"
+          fi
+          echo "NDK seleccionado: $NDK_PATH"
+          echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+
+      - name: Inicializar y configurar proyecto Android (Tauri + puente nativo Lokus)
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx tauri android init --ci --skip-targets-install
+          node scripts/configure-android.mjs
+
+      - name: Instalar plataforma SDK requerida según compileSdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMPILE_SDK=$(node scripts/configure-android.mjs --print-compile-sdk)
+          echo "compileSdk detectado en Gradle: $COMPILE_SDK"
+
+          yes | sdkmanager --licenses >/dev/null || true
+          PLATFORM_PKG=$(sdkmanager --list 2>/dev/null | grep -oE "platforms;android-${COMPILE_SDK}(\.[0-9]+)?" | sort -V | tail -n1 || true)
+          if [ -n "$PLATFORM_PKG" ]; then
+            echo "Instalando plataforma Android: $PLATFORM_PKG"
+            sdkmanager --install "platform-tools" "$PLATFORM_PKG"
+          else
+            echo "Plataforma exacta no listada; instalando platform-tools (Gradle resolverá la plataforma automáticamente)."
+            sdkmanager --install "platform-tools"
+          fi
+
+      - name: Preparar firma Android (Keystore de producción o firma instalable automática)
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASS" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASS" ]; then
+            KS_FILE="$RUNNER_TEMP/lokus-release.keystore"
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS_FILE"
+            echo "LOKUS_ANDROID_KEYSTORE_PATH=$KS_FILE" >> "$GITHUB_ENV"
+            echo "LOKUS_ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASS" >> "$GITHUB_ENV"
+            echo "LOKUS_ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "LOKUS_ANDROID_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "Firma configurada con Keystore de producción (GitHub Secrets)."
+          else
+            KS_FILE="$RUNNER_TEMP/lokus-adhoc.p12"
+            keytool -genkeypair -noprompt \
+              -keystore "$KS_FILE" \
+              -storetype PKCS12 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 3650 \
+              -alias lokus \
+              -storepass lokusandroid \
+              -keypass lokusandroid \
+              -dname "CN=Lokus Judicial, O=Defensoria, C=CO"
+            echo "LOKUS_ANDROID_KEYSTORE_PATH=$KS_FILE" >> "$GITHUB_ENV"
+            echo "LOKUS_ANDROID_KEYSTORE_PASSWORD=lokusandroid" >> "$GITHUB_ENV"
+            echo "LOKUS_ANDROID_KEY_ALIAS=lokus" >> "$GITHUB_ENV"
+            echo "LOKUS_ANDROID_KEY_PASSWORD=lokusandroid" >> "$GITHUB_ENV"
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+            echo "Secretos de keystore no configurados: se generó firma automática para APK instalable."
+          fi
+
+      - name: Build Android (APK firmado + AAB)
+        run: npx tauri android build --target aarch64 --apk --aab --ci
+
+      - name: Resolver versión, verificar firma y preparar artefactos
         id: vars
         env:
           INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || '' }}
@@ -80,15 +170,21 @@ jobs:
 
           INPUT_TAG="${INPUT_TAG:-}"
           REF_TAG="${GITHUB_REF_NAME:-}"
+          SHOULD_ATTACH="false"
           if [ -n "$INPUT_TAG" ]; then
             TAG="$INPUT_TAG"
+            SHOULD_ATTACH="true"
           elif [[ "$REF_TAG" == v* ]]; then
             TAG="$REF_TAG"
+            SHOULD_ATTACH="true"
           else
             TAG="v$VERSION"
           fi
 
-          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk" | sort | head -n1 || true)
+          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk" ! -name "*-unsigned.apk" | sort | head -n1 || true)
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk" | sort | head -n1 || true)
+          fi
           AAB_PATH=$(find src-tauri/gen/android/app/build/outputs/bundle -type f -name "*.aab" | sort | head -n1 || true)
           if [ -z "$APK_PATH" ] || [ -z "$AAB_PATH" ]; then
             echo "No se encontraron artefactos Android (.apk/.aab)." >&2
@@ -96,17 +192,36 @@ jobs:
             exit 1
           fi
 
-          APK_OUT="Lokus_${VERSION}_android_arm64-unsigned.apk"
+          # Verificar que el APK y el AAB generados estén realmente firmados
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name "apksigner" | sort -V | tail -n1 || true)
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --verbose "$APK_PATH"
+          else
+            jarsigner -verify "$APK_PATH"
+          fi
+          jarsigner -verify "$AAB_PATH"
+
+          APK_OUT="Lokus_${VERSION}_android_arm64.apk"
           AAB_OUT="Lokus_${VERSION}_android_arm64.aab"
           cp "$APK_PATH" "$APK_OUT"
           cp "$AAB_PATH" "$AAB_OUT"
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "should_attach=$SHOULD_ATTACH" >> "$GITHUB_OUTPUT"
           echo "apk_out=$APK_OUT" >> "$GITHUB_OUTPUT"
           echo "aab_out=$AAB_OUT" >> "$GITHUB_OUTPUT"
 
+      - name: Upload Android artifacts (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lokus-Android-${{ steps.vars.outputs.version }}
+          path: |
+            ${{ steps.vars.outputs.apk_out }}
+            ${{ steps.vars.outputs.aab_out }}
+
       - name: Esperar release antes de subir Android
+        if: steps.vars.outputs.should_attach == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -123,7 +238,8 @@ jobs:
           done
           gh release view "$TAG"
 
-      - name: Adjuntar APK/AAB al release
+      - name: Adjuntar APK y AAB al release
+        if: steps.vars.outputs.should_attach == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -133,11 +249,3 @@ jobs:
             "${{ steps.vars.outputs.apk_out }}" \
             "${{ steps.vars.outputs.aab_out }}" \
             --clobber
-
-      - name: Upload Android artifacts (workflow artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: Lokus-Android-${{ steps.vars.outputs.version }}
-          path: |
-            ${{ steps.vars.outputs.apk_out }}
-            ${{ steps.vars.outputs.aab_out }}

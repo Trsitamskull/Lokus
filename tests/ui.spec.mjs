@@ -518,6 +518,29 @@ function mockTauriInit(opts = {}) {
           pendientesIa = 0;
           pendientesUso = 0;
           return "/home/test/Descargas/lokus_uso_y_aprendizaje_ia_test.json";
+        case "cmd_descargar_archivo": {
+          const base = String(args.nombre || "audiencias.xlsx").split("/").pop() || "audiencias.xlsx";
+          return `/data/user/0/com.josebustamante.gestoraudiencias/files/exportaciones/${base}`;
+        }
+        case "cmd_leer_archivo_exportado": {
+          const ruta = String(args.ruta || "");
+          const nombre = ruta.split("/").pop() || "audiencias.xlsx";
+          const mime = nombre.endsWith(".xlsx")
+            ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            : nombre.endsWith(".json")
+              ? "application/json"
+              : "application/octet-stream";
+          return {
+            nombre,
+            mime,
+            contenido_b64: "UEsDBAoAAAAAA",
+          };
+        }
+        case "cmd_limpiar_archivo_exportado": {
+          window.__LOKUS_CLEANED_EXPORTS__ = window.__LOKUS_CLEANED_EXPORTS__ || [];
+          window.__LOKUS_CLEANED_EXPORTS__.push(String(args.ruta || ""));
+          return null;
+        }
         case "cmd_autocompletar_ia": {
           window.__LOKUS_TEST_CALLS__.autocompletarIa.push(args);
           const baseResp = {
@@ -603,6 +626,41 @@ function mockTauriInit(opts = {}) {
           };
           return construirDiagnostico();
         }
+        case "cmd_obtener_estadisticas":
+          return {
+            total_audiencias: 1,
+            total_si: 1,
+            total_no: 0,
+            efectividad_pct: 100,
+            totales_motivos: [0, 0, 0, 0, 0, 0, 0, 0],
+            total_planillas: archivos.length,
+            total_planillas_con_datos: 1,
+            total_archivadas: 0,
+            meses_disponibles: [
+              { anio: 2026, mes: 1, etiqueta: "Enero 2026", cantidad: 1 },
+            ],
+            planillas: archivos.map((archivo) => ({
+              archivo,
+              defensor: defensoresPorArchivo[archivo] || "",
+              total_audiencias: 1,
+              total_si: 1,
+              total_no: 0,
+              efectividad_pct: 100,
+              archivada: false,
+            })),
+            defensores_disponibles: ["Dra. Laura Gómez"],
+            por_defensor: [
+              {
+                defensor: "Dra. Laura Gómez",
+                total_audiencias: 1,
+                total_si: 1,
+                total_no: 0,
+                efectividad_pct: 100,
+                motivo_frecuente: "Sin aplazamientos",
+                archivos: ["2026/Enero/audiencias_enero.xlsx"],
+              },
+            ],
+          };
         case "cmd_leer_archivo":
           return {
             registros: [
@@ -784,12 +842,12 @@ test.describe("Lokus UI smoke checks", () => {
     const presetBtns = page.locator(".time-presets .preset-btn");
     await expect(presetBtns).toHaveCount(6);
     await expect(presetBtns).toHaveText([
+      "7:30 AM",
       "8:00 AM",
       "9:00 AM",
       "10:00 AM",
       "2:00 PM",
       "3:00 PM",
-      "4:00 PM",
     ]);
     const presetLayout = await page.evaluate(() => {
       const container = document.querySelector(".time-presets");
@@ -1764,6 +1822,169 @@ test.describe("Lokus UI smoke checks", () => {
       .getByRole("button", { name: 'Usar "Juzgado Especializado de Prueba" en Otra' })
       .click();
     await expect(juzgadoOtraInput).toHaveValue("Juzgado Especializado de Prueba");
+
+    expect(errors).toEqual([]);
+  });
+
+  test("Android móvil: menú de opciones táctil, puente nativo de exportación/tema y botón Atrás", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    page.on("console", (m) => {
+      if (m.type() === "error") errors.push(m.text());
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      window.__ANDROID_BRIDGE_CALLS__ = { themes: [], exports: [] };
+      window.LokusAndroid = {
+        isAvailable: () => true,
+        setTheme: (isLight) => {
+          window.__ANDROID_BRIDGE_CALLS__.themes.push(Boolean(isLight));
+        },
+        saveToDownloadsAndShare: (b64, fileName, mime, openShare) => {
+          window.__ANDROID_BRIDGE_CALLS__.exports.push({ b64, fileName, mime, openShare });
+          return JSON.stringify({
+            ok: true,
+            savedLocation: `Descargas/Lokus/${fileName}`,
+            shared: Boolean(openShare),
+          });
+        },
+      };
+    });
+    await page.addInitScript(mockTauriInit, { configured: true });
+
+    await page.goto("/");
+    await expect(page.locator(".active-doc-name")).toHaveText("audiencias_enero.xlsx");
+
+    // 1. Cero desbordamiento horizontal y cabecera móvil en 2 bandas limpias (sin botón huérfano)
+    const headerLayout = await page.evaluate(() => {
+      const sb = document.querySelector(".sidebar-toggle-btn")?.getBoundingClientRect();
+      const brand = document.querySelector(".mobile-brand-title")?.getBoundingClientRect();
+      const right = document.querySelector(".header-right")?.getBoundingClientRect();
+      const nav = document.querySelector(".topbar-nav")?.getBoundingClientRect();
+      const verTodos = document.querySelector(".dossier-recent-card .inline-action-link")?.getBoundingClientRect();
+      return {
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        sbTop: sb?.top ?? 0,
+        brandTop: brand?.top ?? 0,
+        brandWidth: brand?.width ?? 0,
+        rightTop: right?.top ?? 0,
+        navTop: nav?.top ?? 0,
+        navWidth: nav?.width ?? 0,
+        verTodosHeight: verTodos?.height ?? 0,
+      };
+    });
+    expect(headerLayout.overflow).toBe(false);
+    expect(headerLayout.brandWidth).toBeGreaterThan(20);
+    expect(Math.abs(headerLayout.sbTop - headerLayout.rightTop)).toBeLessThan(12);
+    expect(headerLayout.navTop).toBeGreaterThan(headerLayout.sbTop + 25);
+    expect(headerLayout.navWidth).toBeGreaterThan(340);
+    expect(headerLayout.verTodosHeight).toBeLessThanOrEqual(36);
+
+    // 2. Abrir cajón lateral móvil y usar botón de opciones (⋮) sin clic derecho
+    await page.locator(".active-doc-switch").click();
+    await expect(page.locator(".sidebar.mobile-open")).toBeVisible();
+
+    const btnOpciones = page.getByRole("button", { name: "Opciones de audiencias_enero" });
+    await expect(btnOpciones).toBeVisible();
+    await btnOpciones.click();
+
+    // Exportar planilla Excel debe invocar el puente Android (MediaStore + Share Sheet)
+    await page.getByRole("button", { name: "Exportar copia a Descargas" }).click();
+    await expect(page.locator(".toast")).toContainText(
+      "Guardado en Descargas/Lokus/audiencias_enero.xlsx y listo para compartir"
+    );
+
+    const bridgeCalls = await page.evaluate(() => window.__ANDROID_BRIDGE_CALLS__);
+    expect(bridgeCalls.exports.length).toBe(1);
+    expect(bridgeCalls.exports[0].fileName).toBe("audiencias_enero.xlsx");
+    expect(bridgeCalls.exports[0].mime).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    expect(bridgeCalls.exports[0].openShare).toBe(true);
+    const cleanedExports = await page.evaluate(() => window.__LOKUS_CLEANED_EXPORTS__ || []);
+    expect(cleanedExports).toContain(
+      "/data/user/0/com.josebustamante.gestoraudiencias/files/exportaciones/audiencias_enero.xlsx"
+    );
+
+    // 3. Cambiar tema sincroniza con la barra de estado de Android
+    await page.locator(".active-doc-switch").click();
+    await page.getByRole("button", { name: "Cambiar tema" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    const themeCalls = await page.evaluate(() => window.__ANDROID_BRIDGE_CALLS__.themes);
+    expect(themeCalls[themeCalls.length - 1]).toBe(true);
+
+    // 4. Botón Atrás con menú contextual (⋮) abierto cierra primero el popover sin dejarlo huérfano
+    await page.getByRole("button", { name: "Opciones de audiencias_enero" }).click();
+    await expect(page.getByRole("button", { name: "Exportar copia a Descargas" })).toBeVisible();
+    const backPopover = await page.evaluate(() => window.__lokusHandleAndroidBack());
+    expect(backPopover).toBe("handled");
+    await expect(page.getByRole("button", { name: "Exportar copia a Descargas" })).toHaveCount(0);
+    await expect(page.locator(".sidebar.mobile-open")).toBeVisible();
+
+    // 5. Botón '+' del sidebar cierra el cajón móvil al abrir modal y AutocompleteInput no secuestra pointerdown
+    await page.getByRole("button", { name: "Crear nuevo archivo Excel" }).click();
+    await expect(page.locator("dialog[open]")).toBeVisible();
+    await expect(page.locator(".sidebar.mobile-open")).toHaveCount(0);
+    const toggleDef = page.locator("dialog[open]").getByRole("button", { name: "Mostrar opciones guardadas" });
+    await toggleDef.click();
+    const primeraOpc = page.locator("dialog[open] .custom-select-option").first();
+    await expect(primeraOpc).toBeVisible();
+    // pointerdown táctil (inicio de scroll) NO debe seleccionar ni cerrar el desplegable
+    await primeraOpc.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+    await expect(page.locator("dialog[open] .autocomplete-popover")).toBeVisible();
+    // click normal SÍ selecciona y cierra
+    await primeraOpc.click();
+    await expect(page.locator("dialog[open] .autocomplete-popover")).toHaveCount(0);
+    const backCrearModal = await page.evaluate(() => window.__lokusHandleAndroidBack());
+    expect(backCrearModal).toBe("handled");
+    await expect(page.locator("dialog[open]")).toHaveCount(0);
+
+    // 6. Botón Atrás de Android: cierra sidebar -> vuelve de Registros -> import accept="*/*" -> retorna 'exit' en raíz
+    await page.locator(".active-doc-switch").click();
+    await expect(page.locator(".sidebar.mobile-open")).toBeVisible();
+    const backSidebar = await page.evaluate(() => window.__lokusHandleAndroidBack());
+    expect(backSidebar).toBe("handled");
+    await expect(page.locator(".sidebar.mobile-open")).toHaveCount(0);
+
+    await page.getByRole("tab", { name: /Registros/i }).click();
+    await page.locator(".search-input").fill("zzznomatch");
+    const emptyStateCheck = await page.evaluate(() => {
+      const cell = document.querySelector(".records-empty-cell");
+      const row = document.querySelector(".records-empty-row");
+      return {
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        textAlign: cell ? getComputedStyle(cell).textAlign : "",
+        rowBorder: row ? getComputedStyle(row).borderTopStyle : "",
+      };
+    });
+    expect(emptyStateCheck.overflow).toBe(false);
+    expect(emptyStateCheck.textAlign).toBe("center");
+    expect(emptyStateCheck.rowBorder).toBe("none");
+    await page.locator(".search-input").fill("");
+
+    await page.getByRole("tab", { name: /Estadísticas/i }).click();
+    const statsOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth
+    );
+    expect(statsOverflow).toBe(false);
+
+    const backTab = await page.evaluate(() => window.__lokusHandleAndroidBack());
+    expect(backTab).toBe("handled");
+    await expect(page.locator("#radicado")).toBeVisible();
+
+    await page.getByRole("button", { name: "Exportar o importar datos" }).click();
+    await expect(page.locator("dialog[open]")).toBeVisible();
+    await page.locator("dialog[open]").getByRole("tab", { name: /Importar/i }).click();
+    await expect(page.locator('dialog[open] input[type="file"]')).toHaveAttribute("accept", "*/*");
+    const backModal = await page.evaluate(() => window.__lokusHandleAndroidBack());
+    expect(backModal).toBe("handled");
+    await expect(page.locator("dialog[open]")).toHaveCount(0);
+
+    const backRoot = await page.evaluate(() => window.__lokusHandleAndroidBack());
+    expect(backRoot).toBe("exit");
 
     expect(errors).toEqual([]);
   });

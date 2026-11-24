@@ -98,6 +98,7 @@ Todos los colores en componentes `.svelte` y reglas de `src/app.css` deben refer
 ### Barra Lateral Plegable y Menú Contextual Unificado
 - `.desktop-frame.sidebar-collapsed`: colapsa la columna del sidebar a `0px` con transición suave de `grid-template-columns` (`0.18s`, respetando `prefers-reduced-motion`) y se alterna mediante `.sidebar-toggle-btn` (siempre visible) o `Ctrl+B`.
 - Tanto carpetas (`[data-context-folder]`) como archivos `.xlsx` (`[data-context-file]`) usan `.folder-context-menu` (`popover="manual"`) con acciones de clic derecho y bloqueo del menú nativo en `.sidebar-files`.
+- **Accesibilidad táctil en Android / pantallas estrechas**: cada fila de carpeta y planilla incluye un botón discreto `.sidebar-item-menu-btn` (`MoreVertical` de Lucide; visible al pasar el puntero/foco en escritorio y siempre visible en `pointer: coarse` / `.sidebar.mobile-open` con objetivo táctil `34px × 34px`) para abrir el menú de opciones en 1 toque. Bajo `@media (pointer: coarse)`, las filas del árbol usan `touch-action: pan-y` y desactivan el arrastre táctil inmediato para garantizar desplazamiento vertical fluido sin arrastres accidentales.
 
 ### Controles de Fecha y Hora (`DatePickerInput.svelte` y `AudienciaForm.svelte`)
 - **Calendario (`.calendar-popover`)**: alterna vistas inline entre días (`.calendar-grid`), rejilla `4×3` de meses (`.calendar-months-matrix`) y rejilla `4×3` paginada de años `2018–2050` (`.calendar-years-matrix`) mediante `.calendar-cell-btn`, con navegación por rueda del ratón sobre mes, año y cuadrícula.

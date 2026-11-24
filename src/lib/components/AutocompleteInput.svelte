@@ -305,14 +305,8 @@
         class="autocomplete-toggle-btn"
         aria-label="Mostrar opciones guardadas"
         aria-expanded={open && (filtradas.length > 0 || (allowEmptyOption && value.trim() !== ""))}
-        onpointerdown={(e) => {
-          e.preventDefault();
-          toggleDropdown();
-        }}
-        onclick={(e) => {
-          // Soporte de activación por teclado (Enter/Space) cuando el foco está en el botón
-          if (e.detail === 0) toggleDropdown();
-        }}
+        onmousedown={(e) => e.preventDefault()}
+        onclick={() => toggleDropdown()}
       >
         <ChevronDown size={15} class={open ? "is-rotated" : ""} />
       </button>
@@ -348,10 +342,8 @@
             role="option"
             aria-selected={isEmptySelected}
             class="custom-select-option {isEmptySelected ? 'selected' : ''}"
-            onpointerdown={(e) => {
-              e.preventDefault();
-              selectSuggestion("");
-            }}
+            onmousedown={(e) => e.preventDefault()}
+            onclick={() => selectSuggestion("")}
           >
             <span class="opt-text" style="color: var(--text-muted); font-style: italic">
               {emptyOptionLabel}
@@ -439,10 +431,8 @@
                 aria-selected={isSelected}
                 class="custom-select-option"
                 onmouseenter={() => (highlightedIndex = idx)}
-                onpointerdown={(e) => {
-                  e.preventDefault();
-                  selectSuggestion(item);
-                }}
+                onmousedown={(e) => e.preventDefault()}
+                onclick={() => selectSuggestion(item)}
               >
                 <span class="opt-text">{item}</span>
                 {#if isSelected}

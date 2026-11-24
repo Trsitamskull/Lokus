@@ -547,6 +547,48 @@ button,
   flex-shrink: 0;
 }
 
+.sidebar-item-menu-btn {
+  width: 24px;
+  height: 24px;
+  margin-inline-end: 4px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  border-color: transparent;
+  background: transparent;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sidebar-item-menu-btn {
+    opacity: 0;
+    transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+  }
+
+  .sidebar-file-row:hover .sidebar-item-menu-btn,
+  .sidebar-file-row:focus-within .sidebar-item-menu-btn,
+  .sidebar-file-row.is-context-open .sidebar-item-menu-btn,
+  .sidebar-folder-row:hover .sidebar-item-menu-btn,
+  .sidebar-folder-row:focus-within .sidebar-item-menu-btn,
+  .sidebar-folder-row.is-context-open .sidebar-item-menu-btn {
+    opacity: 1;
+  }
+}
+
+@media (pointer: coarse), (hover: none) {
+  .sidebar-folder-row,
+  .sidebar-folder-btn,
+  .sidebar-file-row,
+  .sidebar-file-btn {
+    touch-action: pan-y;
+  }
+
+  .sidebar-item-menu-btn {
+    width: 34px;
+    height: 34px;
+    opacity: 1;
+    color: var(--text-secondary);
+  }
+}
+
 .excel-icon {
   color: var(--excel-icon);
   flex-shrink: 0;
@@ -586,6 +628,7 @@ button,
   box-shadow: var(--shadow-popover);
   color: var(--text-primary);
   margin: 0;
+  max-width: calc(100vw - 16px);
 }
 
 @supports (position-area: block-end) {
@@ -964,6 +1007,10 @@ body.is-dragging-tree {
 
 .sidebar-toggle-btn:hover {
   color: var(--text-primary);
+}
+
+.mobile-brand-title {
+  display: none;
 }
 
 .topbar-nav {
@@ -3348,7 +3395,7 @@ dialog::backdrop {
 
 .toast {
   position: fixed;
-  bottom: 18px;
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   right: 22px;
   z-index: 300;
   max-width: min(460px, calc(100vw - 36px));
@@ -3497,14 +3544,24 @@ dialog.modal-overflow-visible .modal-footer {
     gap: 8px;
   }
   .header-nav-wrap {
+    display: contents;
+  }
+  .sidebar-toggle-btn {
     order: 1;
-    flex: 0 0 100%;
-    width: 100%;
-    gap: 6px;
+  }
+  .mobile-brand-title {
+    display: inline-flex;
+    align-items: center;
+    order: 2;
+    margin-inline-end: auto;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
   }
   .header-right {
-    order: 2;
-    margin-inline-start: auto;
+    order: 3;
+    margin-inline-start: 0;
     min-width: 0;
     gap: 6px;
   }
@@ -3515,6 +3572,9 @@ dialog.modal-overflow-visible .modal-footer {
     height: 40px;
   }
   .topbar-nav {
+    order: 4;
+    flex: 0 0 100%;
+    width: 100%;
     max-width: none;
     gap: 4px;
   }
@@ -3607,7 +3667,8 @@ dialog.modal-overflow-visible .modal-footer {
     width: 100%;
     gap: 10px;
   }
-  .dossier-actions-right .shortcut-hint {
+  .dossier-actions-right .shortcut-hint,
+  .extract-panel-actions .shortcut-hint {
     display: none;
   }
   .dossier-actions-right .dossier-submit-btn {
@@ -3617,12 +3678,21 @@ dialog.modal-overflow-visible .modal-footer {
   .dossier-actions-right .btn {
     min-height: 36px;
   }
+  .dossier-recent-card .field-header {
+    gap: 8px;
+    align-items: center;
+  }
+  .dossier-recent-card .field-label {
+    min-width: 0;
+  }
   .inline-action-link {
     min-height: 32px;
     padding: 0 6px;
     border-radius: var(--radius-chip);
     display: inline-flex;
     align-items: center;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .inline-action-link:hover {
     background: var(--bg-hover);
@@ -3704,6 +3774,21 @@ dialog.modal-overflow-visible .modal-footer {
   .motivos-grid {
     grid-template-columns: 1fr;
   }
+  .stats-filters,
+  .month-stepper,
+  .stats-select-defensor,
+  .stats-select-planilla {
+    width: 100%;
+  }
+  .stats-select-month {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+  }
+  .stats-filters > .btn {
+    flex: 1 1 calc(50% - 4px);
+    justify-content: center;
+  }
   .dossier-actions-right {
     width: 100%;
     margin-left: 0;
@@ -3774,6 +3859,15 @@ dialog.modal-overflow-visible .modal-footer {
     background: var(--bg-workspace);
   }
 
+  .records-table tbody tr.records-empty-row {
+    margin: 0;
+    width: 100%;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
+  }
+
   .records-table td {
     display: flex;
     align-items: center;
@@ -3781,6 +3875,14 @@ dialog.modal-overflow-visible .modal-footer {
     gap: 10px;
     padding: 6px 12px;
     text-align: right !important;
+    overflow-wrap: anywhere;
+  }
+
+  .records-table td.records-empty-cell {
+    display: block;
+    text-align: center !important;
+    padding: 36px 20px;
+    border-bottom: none;
   }
 
   .records-table td[data-label]::before {
@@ -3791,6 +3893,7 @@ dialog.modal-overflow-visible .modal-footer {
     letter-spacing: 0.04em;
     color: var(--text-muted);
     text-align: left;
+    flex-shrink: 0;
   }
 
   .records-table tbody tr:last-child td:last-child {
@@ -3833,6 +3936,10 @@ dialog.modal-overflow-visible .modal-footer {
   .sidebar.mobile-open .mini-icon-btn {
     width: 34px;
     height: 34px;
+  }
+  .sidebar.mobile-open .sidebar-item-menu-btn {
+    opacity: 1;
+    color: var(--text-secondary);
   }
   .sidebar .ai-config-trigger {
     min-height: 34px;
@@ -3948,6 +4055,29 @@ dialog.modal-overflow-visible .modal-footer {
 
   .shortcut-grid {
     grid-template-columns: 1fr;
+  }
+
+  dialog:modal {
+    width: min(500px, calc(100vw - 16px));
+    max-height: 90dvh;
+  }
+
+  .modal-footer {
+    flex-wrap: wrap;
+  }
+
+  .toast {
+    left: 12px;
+    right: 12px;
+    max-width: calc(100vw - 24px);
+    justify-content: center;
+  }
+}
+
+@media (max-width: 560px), (max-height: 620px) {
+  dialog.modal-overflow-visible {
+    overflow-y: auto;
+    max-height: 90dvh;
   }
 }
 

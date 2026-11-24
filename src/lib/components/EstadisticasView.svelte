@@ -41,18 +41,19 @@
       }
     }
     if (maxIdx < 0) return { nombre: "Sin aplazamientos", total: 0, pct: 0 };
-    const pct =
-      stats.total_no > 0 ? ((maxVal / stats.total_no) * 100).toFixed(1) : "0.0";
+    const totalNo = stats?.total_no ?? 0;
+    const pct = totalNo > 0 ? ((maxVal / totalNo) * 100).toFixed(1) : "0.0";
     return { nombre: MOTIVOS_LABELS[maxIdx], total: maxVal, pct };
   });
 
   let causalesOrdenadas = $derived.by(() => {
     const motivos = stats?.totales_motivos || [0, 0, 0, 0, 0, 0, 0, 0];
+    const totalNo = stats?.total_no ?? 0;
     const items = MOTIVOS_LABELS.map((label, idx) => ({
       idx,
       label,
       total: motivos[idx] || 0,
-      pct: stats.total_no > 0 ? (motivos[idx] / stats.total_no) * 100 : 0,
+      pct: totalNo > 0 ? (motivos[idx] / totalNo) * 100 : 0,
     }));
     items.sort((a, b) => b.total - a.total || a.idx - b.idx);
     return items;

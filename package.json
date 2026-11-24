@@ -8,6 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "android:configure": "node scripts/configure-android.mjs",
+    "android:init": "tauri android init --ci && node scripts/configure-android.mjs",
+    "android:build": "node scripts/configure-android.mjs && tauri android build --target aarch64 --apk --ci",
     "test:ui": "playwright test"
   },
   "dependencies": {

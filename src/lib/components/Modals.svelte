@@ -161,13 +161,31 @@
     return btoa(bin);
   }
 
+  let errorLecturaImport = $state("");
+
+  const esAndroidImport = $derived(
+    (typeof window !== "undefined" && Boolean(window.LokusAndroid)) ||
+      (typeof navigator !== "undefined" && /android/i.test(navigator.userAgent))
+  );
+
+  $effect(() => {
+    if (modalActivo !== "portabilidad") {
+      errorLecturaImport = "";
+    }
+  });
+
   async function manejarArchivoImportInput(e) {
     const file = e.currentTarget.files?.[0];
     e.currentTarget.value = "";
+    errorLecturaImport = "";
     if (!file) return;
-    const buffer = await file.arrayBuffer();
-    const b64 = uint8ABase64(new Uint8Array(buffer));
-    await onSeleccionarArchivoImportar?.(file.name, b64);
+    try {
+      const buffer = await file.arrayBuffer();
+      const b64 = uint8ABase64(new Uint8Array(buffer));
+      await onSeleccionarArchivoImportar?.(file.name, b64);
+    } catch (err) {
+      errorLecturaImport = `No se pudo leer el archivo seleccionado: ${err?.message || err}`;
+    }
   }
 
   async function cerrarDefensoresYGuardarPendiente() {
@@ -907,15 +925,19 @@
               </span>
               <input
                 type="file"
-                accept=".lokus,.json,application/json,application/gzip"
+                accept={esAndroidImport
+                  ? "*/*"
+                  : ".lokus,.json,application/json,application/gzip"}
                 hidden
                 onchange={manejarArchivoImportInput}
               />
             </label>
           </div>
 
-          {#if errorImportacion}
-            <p style="color: var(--status-no); font-size: 12.5px">{errorImportacion}</p>
+          {#if errorLecturaImport || errorImportacion}
+            <p style="color: var(--status-no); font-size: 12.5px">
+              {errorLecturaImport || errorImportacion}
+            </p>
           {/if}
 
           {#if inspeccionImportacion}

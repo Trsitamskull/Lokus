@@ -14,8 +14,8 @@ Los artefactos compilados para **Windows**, **Linux** y **Android** se publican 
   - `.AppImage`: Ejecutable portable universal.
   - `.rpm` / `.deb`: Paquetes nativos de instalación.
 - **Android (ARM64):**
-  - `Lokus_<version>_android_arm64-unsigned.apk`: Instalación manual para pruebas en dispositivo.
-  - `Lokus_<version>_android_arm64.aab`: Bundle para publicación en Play Console.
+  - `Lokus_<version>_android_arm64.apk`: Instalador firmado y listo para instalar directamente en teléfonos Android (Android 7.0+ / API 24+, ARM64).
+  - `Lokus_<version>_android_arm64.aab`: Bundle firmado para publicación en Play Console.
 
 ---
 
@@ -158,17 +158,19 @@ cargo test --offline --manifest-path src-tauri/Cargo.toml
 npm run tauri build
 ```
 
-### Compilación Android (APK + AAB)
-> Requiere tener instalado Android SDK/NDK y definir `ANDROID_HOME` y `NDK_HOME`.
+### Compilación Android (APK firmado + AAB)
+> Requiere tener instalado **Java 21**, **Android SDK/NDK** y definir `ANDROID_HOME` y `NDK_HOME`. Para firma de producción local o en CI se usan las variables `LOKUS_ANDROID_KEYSTORE_PATH`, `LOKUS_ANDROID_KEYSTORE_PASSWORD`, `LOKUS_ANDROID_KEY_ALIAS` y `LOKUS_ANDROID_KEY_PASSWORD` (en GitHub Actions, si no se definen los secretos `ANDROID_KEYSTORE_*`, el workflow genera automáticamente una firma instalable para el APK).
 
 ```bash
-npm run tauri android init -- --ci
-npm run tauri android build -- --target aarch64 --apk --aab --ci
+npm run android:init
+npm run android:build
 ```
+
+El script `scripts/configure-android.mjs` configura automáticamente `MainActivity.kt` (edge-to-edge con insets reales de barras del sistema y teclado IME, botón Atrás inteligente y puente nativo `window.LokusAndroid` para guardar en `Descargas/Lokus/` vía MediaStore y abrir la hoja de compartir de Android), `proguard-lokus.pro`, `AndroidManifest.xml`, `file_paths.xml` y la firma en `app/build.gradle.kts`.
 
 Los artefactos se generan en:
 
-- `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk`
+- `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
 - `src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab`
 
 ---

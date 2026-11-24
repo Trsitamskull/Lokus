@@ -187,6 +187,11 @@ fn tipos_audiencia_default_strings() -> Vec<String> {
 }
 
 fn obtener_ruta_config() -> PathBuf {
+    if let Some(dir) = crate::rutas::ruta_config_prioritaria() {
+        return dir.join("settings.json");
+    }
+
+    #[cfg(not(target_os = "android"))]
     if cfg!(debug_assertions) {
         if let Ok(cwd) = std::env::current_dir() {
             // Durante `cargo tauri dev` o `cargo test` desde src-tauri/, usar ../config
@@ -207,8 +212,9 @@ fn obtener_ruta_config() -> PathBuf {
 
     let fallback = dirs::config_dir()
         .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("lokus-audiencias");
+        .map(|base| base.join("lokus-audiencias"))
+        .or_else(crate::rutas::ruta_config_respaldo)
+        .unwrap_or_else(|| PathBuf::from(".").join("lokus-audiencias"));
     let _ = fs::create_dir_all(&fallback);
     fallback.join("settings.json")
 }

@@ -17,6 +17,11 @@ config/ia_aprendizaje.json*
 config/uso_catalogos.json*
 *.env
 *.env.*
+*.keystore
+*.jks
+*.p12
+*.apk
+*.aab
 
 # Ignorar dependencias y artefactos de compilación (Rust / Tauri / Node)
 node_modules/
@@ -52,6 +57,7 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
+.playwright-mcp/
 
 # Archivos de pruebas locales con notas de audiencias
 Archivo_con_audiencias_*.md

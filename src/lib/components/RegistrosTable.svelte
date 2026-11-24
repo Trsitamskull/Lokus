@@ -131,7 +131,7 @@
       </thead>
       <tbody>
         {#if registrosFiltrados.length === 0}
-          <tr>
+          <tr class="records-empty-row">
             <td colspan="9" class="records-empty-cell">
               No hay audiencias que coincidan con el filtro actual.
             </td>
