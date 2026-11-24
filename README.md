@@ -1,11 +1,11 @@
 # Lokus — Gestor de Audiencias Judiciales (v4.1)
 
-Aplicación de escritorio nativa multiplataforma (**Windows** y **Linux**) construida con **Rust + Tauri v2 + Svelte 5** para la gestión, control estadístico y autocompletado inteligente de las planillas oficiales de audiencias judiciales de la Defensoría del Pueblo (Colombia).
+Aplicación nativa multiplataforma (**Windows**, **Linux** y build móvil **Android**) construida con **Rust + Tauri v2 + Svelte 5** para la gestión, control estadístico y autocompletado inteligente de las planillas oficiales de audiencias judiciales de la Defensoría del Pueblo (Colombia).
 
 ---
 
 ## Descarga Directa (Sin instalar dependencias)
-Los ejecutables compilados para **Windows** y **Linux** se publican automáticamente en [`https://github.com/Trsitamskull/Lokus/releases`](https://github.com/Trsitamskull/Lokus/releases):
+Los artefactos compilados para **Windows**, **Linux** y **Android** se publican en [`https://github.com/Trsitamskull/Lokus/releases`](https://github.com/Trsitamskull/Lokus/releases):
 
 - **Windows:**
   - `Lokus_3.0.0_x64-setup.exe`: Instalador recomendado de un solo archivo (incluye auto-instalación silenciosa de `WebView2` en caso de que el equipo no lo tenga).
@@ -13,6 +13,9 @@ Los ejecutables compilados para **Windows** y **Linux** se publican automáticam
 - **Linux (Fedora / Ubuntu / Debian):**
   - `.AppImage`: Ejecutable portable universal.
   - `.rpm` / `.deb`: Paquetes nativos de instalación.
+- **Android (ARM64):**
+  - `Lokus_<version>_android_arm64-unsigned.apk`: Instalación manual para pruebas en dispositivo.
+  - `Lokus_<version>_android_arm64.aab`: Bundle para publicación en Play Console.
 
 ---
 

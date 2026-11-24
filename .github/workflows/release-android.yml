@@ -1,0 +1,139 @@
+name: Build Lokus Android (APK + AAB)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag del release destino (ej: v5.2.1). Si se envía, también se compila exactamente ese tag."
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout tag solicitado (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+        run: git checkout "${{ github.event.inputs.release_tag }}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Android Rust target
+        run: rustup target add aarch64-linux-android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar SDK/NDK requeridos
+        run: |
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.3.11579264" >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Inicializar proyecto Android (Tauri)
+        run: npm run tauri android init --ci
+
+      - name: Build Android (APK + AAB)
+        run: npm run tauri android build --target aarch64 --apk --aab --ci
+
+      - name: Resolver versión, tag y artefactos
+        id: vars
+        env:
+          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));process.stdout.write(String(j.version||'').trim());")
+          if [ -z "$VERSION" ]; then
+            echo "No se pudo resolver la versión desde src-tauri/tauri.conf.json" >&2
+            exit 1
+          fi
+
+          INPUT_TAG="${INPUT_TAG:-}"
+          REF_TAG="${GITHUB_REF_NAME:-}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [[ "$REF_TAG" == v* ]]; then
+            TAG="$REF_TAG"
+          else
+            TAG="v$VERSION"
+          fi
+
+          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk" | sort | head -n1 || true)
+          AAB_PATH=$(find src-tauri/gen/android/app/build/outputs/bundle -type f -name "*.aab" | sort | head -n1 || true)
+          if [ -z "$APK_PATH" ] || [ -z "$AAB_PATH" ]; then
+            echo "No se encontraron artefactos Android (.apk/.aab)." >&2
+            find src-tauri/gen/android/app/build/outputs -maxdepth 6 -type f | sort || true
+            exit 1
+          fi
+
+          APK_OUT="Lokus_${VERSION}_android_arm64-unsigned.apk"
+          AAB_OUT="Lokus_${VERSION}_android_arm64.aab"
+          cp "$APK_PATH" "$APK_OUT"
+          cp "$AAB_PATH" "$AAB_OUT"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "apk_out=$APK_OUT" >> "$GITHUB_OUTPUT"
+          echo "aab_out=$AAB_OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Esperar release antes de subir Android
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.vars.outputs.tag }}"
+          for i in {1..36}; do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Release $TAG detectado."
+              exit 0
+            fi
+            echo "Esperando release $TAG... intento $i/36"
+            sleep 10
+          done
+          gh release view "$TAG"
+
+      - name: Adjuntar APK/AAB al release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "${{ steps.vars.outputs.tag }}" \
+            "${{ steps.vars.outputs.apk_out }}" \
+            "${{ steps.vars.outputs.aab_out }}" \
+            --clobber
+
+      - name: Upload Android artifacts (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lokus-Android-${{ steps.vars.outputs.version }}
+          path: |
+            ${{ steps.vars.outputs.apk_out }}
+            ${{ steps.vars.outputs.aab_out }}
