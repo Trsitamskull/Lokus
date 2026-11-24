@@ -3595,14 +3595,20 @@ dialog.modal-overflow-visible .modal-footer {
   }
   .dossier-actions-right {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
     gap: 8px;
   }
+  .dossier-actions-right .action-with-shortcut:only-child {
+    grid-column: 1 / -1;
+  }
   .dossier-actions-right .action-with-shortcut {
-    justify-content: space-between;
+    justify-content: center;
     width: 100%;
     gap: 10px;
+  }
+  .dossier-actions-right .shortcut-hint {
+    display: none;
   }
   .dossier-actions-right .dossier-submit-btn {
     width: 100%;

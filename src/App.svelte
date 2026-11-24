@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke as tauriInvoke } from "@tauri-apps/api/core";
   import {
     FileText,
     List,
@@ -203,6 +203,40 @@
 
   let toast = $state(null);
   let toastTimer = null;
+
+  function normalizarNombreDefensor(nombre) {
+    return String(nombre || "").trim().replace(/\s+/g, " ");
+  }
+
+  function errorPuenteTauriNoDisponible(error) {
+    const msg = String(error || "");
+    return (
+      msg.includes("reading 'invoke'") ||
+      msg.includes("__TAURI_INTERNALS__") ||
+      msg.toLowerCase().includes("tauri") && msg.toLowerCase().includes("not available")
+    );
+  }
+
+  function resolverInvokeGlobal() {
+    if (typeof window === "undefined") return null;
+    const invokeCore = window.__TAURI__?.core?.invoke;
+    if (typeof invokeCore === "function") return invokeCore;
+    const invokeLegacy = window.__TAURI__?.invoke;
+    if (typeof invokeLegacy === "function") return invokeLegacy;
+    return null;
+  }
+
+  async function invoke(command, payload = {}) {
+    try {
+      return await tauriInvoke(command, payload);
+    } catch (error) {
+      const invokeGlobal = resolverInvokeGlobal();
+      if (invokeGlobal && errorPuenteTauriNoDisponible(error)) {
+        return await invokeGlobal(command, payload);
+      }
+      throw error;
+    }
+  }
 
   function mostrarToast(mensaje, tipo = "info", duracion = 3000) {
     if (toastTimer) clearTimeout(toastTimer);
@@ -532,7 +566,7 @@
     errorModalCrear = "";
     errorModalDefensor = "";
     const nombreTrim = nombreNuevoArchivo.trim();
-    const defensorTrim = defensorNuevoArchivo.trim();
+    const defensorTrim = normalizarNombreDefensor(defensorNuevoArchivo);
     if (!nombreTrim) {
       errorModalCrear = "Ingresa un nombre para el archivo";
     }
@@ -569,7 +603,10 @@
       mostrarToast(`Archivo '${creado}' creado`, "success");
     } catch (e) {
       const msg = String(e);
-      if (msg.toLowerCase().includes("defensor")) {
+      if (errorPuenteTauriNoDisponible(msg)) {
+        errorModalCrear =
+          "No se detectó el motor nativo de Lokus. Abre la app de escritorio o Android para crear planillas y guardar defensores.";
+      } else if (msg.toLowerCase().includes("defensor")) {
         errorModalDefensor = msg;
       } else {
         errorModalCrear = msg;
@@ -1211,7 +1248,7 @@
   async function asignarDefensorAPlanilla(nombreDefensor) {
     const target = defensorTargetArchivo || archivoActual;
     if (!target) return;
-    const limpio = nombreDefensor.trim();
+    const limpio = normalizarNombreDefensor(nombreDefensor);
     const defensorAnterior = defensorArchivo.trim();
     errorDefensores = "";
     try {
@@ -1247,14 +1284,24 @@
 
   async function agregarDefensorADirectorio() {
     errorDefensores = "";
+    const limpio = normalizarNombreDefensor(nuevoDefensorDirectorio);
+    if (!limpio) {
+      errorDefensores = "Escribe un nombre de defensor para agregarlo al directorio.";
+      return;
+    }
     try {
       const cfg = await invoke("cmd_agregar_defensor", {
-        nombre: nuevoDefensorDirectorio,
+        nombre: limpio,
       });
       defensores = cfg.defensores || [];
       nuevoDefensorDirectorio = "";
     } catch (e) {
-      errorDefensores = String(e);
+      if (errorPuenteTauriNoDisponible(e)) {
+        errorDefensores =
+          "No se detectó el motor nativo de Lokus. Abre la app de escritorio o Android para guardar defensores.";
+      } else {
+        errorDefensores = String(e);
+      }
     }
   }
 
