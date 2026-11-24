@@ -155,6 +155,19 @@ cargo test --offline --manifest-path src-tauri/Cargo.toml
 npm run tauri build
 ```
 
+### Compilación Android (APK + AAB)
+> Requiere tener instalado Android SDK/NDK y definir `ANDROID_HOME` y `NDK_HOME`.
+
+```bash
+npm run tauri android init --ci
+npm run tauri android build --target aarch64 --apk --aab --ci
+```
+
+Los artefactos se generan en:
+
+- `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk`
+- `src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab`
+
 ---
 
 ## Atajos de Teclado
