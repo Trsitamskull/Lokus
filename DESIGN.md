@@ -77,6 +77,7 @@ Todos los colores en componentes `.svelte` y reglas de `src/app.css` deben refer
   - `.btn` (`padding: 7px 13px`, `font-size: 12.5px`, `font-weight: 600`, `border-radius: var(--radius-ctrl)`, `gap: 7px`).
   - Variantes: `.btn-solid` (primaria), `.btn-subtle` (secundaria con `--border-strong`), `.btn-ai-ready` / `.btn-ia-action` / `.btn-ai-warm`, `.btn-danger`.
   - `.mini-icon-btn`: botón cuadrado `26px × 26px` (`32px × 32px` en `.sidebar-toggle-btn`, `22px × 22px` en `.sidebar-collapse-btn`), `border-radius: var(--radius-chip)`.
+  - **Ergonomía móvil**: bajo `@container workspace (width < 760px)` y `@container workspace (width < 520px)`, elevar objetivos táctiles clave (`.workspace-header .mini-icon-btn`, `.sidebar-toggle-btn`, `.share-learning-btn`, `.active-doc-switch`, presets de hora y acciones de tabla en tarjeta) al rango `40–44px`, priorizando confort de toque sobre densidad extrema.
   - `.active-doc-defensor-btn`: botón discreto en `.active-doc-bar` para editar/asignar el defensor de la planilla activa en 1 clic. En planillas antiguas sin defensor asignado aplica la clase `.is-empty` sobre superficie cálida discreta (`--accent-warm`, `--accent-warm-soft`, `--accent-warm-border`, `max-width: 280px`) mostrando *"Sin defensor (perfil general) · Asignar"*.
 - **Icons**: Lucide SVG importado desde `@lucide/svelte` (`12px`–`16px`). Prohibido usar emojis Unicode como iconos de interfaz.
 
@@ -99,7 +100,7 @@ Todos los colores en componentes `.svelte` y reglas de `src/app.css` deben refer
 
 ### Controles de Fecha y Hora (`DatePickerInput.svelte` y `AudienciaForm.svelte`)
 - **Calendario (`.calendar-popover`)**: alterna vistas inline entre días (`.calendar-grid`), rejilla `4×3` de meses (`.calendar-months-matrix`) y rejilla `4×3` paginada de años `2018–2050` (`.calendar-years-matrix`) mediante `.calendar-cell-btn`, con navegación por rueda del ratón sobre mes, año y cuadrícula.
-- **Hora 12h (`.time-inline-box` + `.time-presets`)**: captura en formato `12h` (`01..12`) + selector `.time-meridiem-group` (`AM`/`PM`) con navegación por bordes mediante `ArrowLeft`/`ArrowRight` y conversión automática a `24h` (`HH:MM`) al persistir en Excel. Debajo del control `HH:MM AM/PM` se muestra una fila ordenada de `6` accesos rápidos (`.time-presets`: `8:00 AM`, `9:00 AM`, `10:00 AM`, `2:00 PM`, `3:00 PM`, `4:00 PM`) en grilla de `6` columnas (`minmax(0, 1fr)`), reduciéndose a `3×2` cuando la columna es estrecha (`@container timecol (width < 360px)` o `@container workspace (width < 520px)`).
+- **Hora 12h (`.time-inline-box` + `.time-presets`)**: captura en formato `12h` (`01..12`) + selector `.time-meridiem-group` (`AM`/`PM`) con navegación por bordes mediante `ArrowLeft`/`ArrowRight` y conversión automática a `24h` (`HH:MM`) al persistir en Excel. Debajo del control `HH:MM AM/PM` se muestra una fila ordenada de `6` accesos rápidos (`.time-presets`: `7:30 AM`, `8:00 AM`, `9:00 AM`, `10:00 AM`, `2:00 PM`, `3:00 PM`) en grilla de `6` columnas (`minmax(0, 1fr)`), reduciéndose a `2×3` cuando la columna es estrecha (`@container timecol (width < 360px)` o `@container workspace (width < 520px)`).
 
 ### Container Queries
 - Contenedores declarados en `src/app.css`:

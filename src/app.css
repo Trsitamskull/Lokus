@@ -3486,21 +3486,151 @@ dialog.modal-overflow-visible .modal-footer {
 }
 
 @container workspace (width < 760px) {
+  .workspace-header {
+    min-height: auto;
+    padding: 8px 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .header-nav-wrap {
+    order: 1;
+    width: 100%;
+    gap: 6px;
+  }
+  .header-right {
+    order: 2;
+    margin-inline-start: auto;
+    gap: 6px;
+  }
+  .workspace-header .mini-icon-btn,
+  .sidebar-toggle-btn,
+  .share-learning-btn {
+    width: 40px;
+    height: 40px;
+  }
+  .topbar-nav {
+    max-width: none;
+    gap: 4px;
+  }
+  .topbar-sep {
+    display: none;
+  }
   .header-divider {
     display: none;
   }
   .topbar-tab {
-    padding: 0 8px;
+    padding: 0 10px;
     font-size: 12px;
-    height: 34px;
-    gap: 5px;
+    min-height: 40px;
+    height: 40px;
+    gap: 6px;
+  }
+  .ai-config-trigger {
+    min-height: 34px;
+    padding: 6px 10px;
+  }
+  .tab-count {
+    font-size: 10.5px;
+    padding: 1px 6px;
+  }
+  .active-doc-bar {
+    min-height: 40px;
+    padding: 7px 12px;
+    gap: 10px;
+  }
+  .active-doc-edit-btn {
+    width: 30px;
+    height: 30px;
+  }
+  .active-doc-switch {
+    min-height: 36px;
+    padding: 0 9px;
+    border-radius: var(--radius-chip);
+    border: 1px solid var(--border-strong);
+    background: var(--bg-input);
+    text-decoration: none;
+  }
+  .active-doc-switch:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-focus);
+    opacity: 1;
   }
   .workspace-scroll {
-    padding: 12px 14px;
+    padding: 12px;
   }
   .dossier-form-card {
-    padding: 14px 16px;
+    padding: 14px;
     gap: 14px;
+  }
+  .inline-action-link {
+    min-height: 32px;
+    padding: 0 6px;
+    border-radius: var(--radius-chip);
+    display: inline-flex;
+    align-items: center;
+  }
+  .inline-action-link:hover {
+    background: var(--bg-hover);
+    opacity: 1;
+  }
+  .time-inline-box {
+    height: 44px;
+    padding: 5px 8px;
+  }
+  .time-part-input {
+    width: 32px;
+    height: 32px;
+    font-size: 14px;
+  }
+  .time-meridiem-group {
+    gap: 3px;
+    margin-left: 6px;
+  }
+  .time-meridiem-btn {
+    min-width: 40px;
+    height: 34px;
+    padding: 0 9px;
+    font-size: 12.5px;
+  }
+  .time-presets .preset-btn {
+    min-height: 34px;
+    padding: 6px 4px;
+    font-size: 12px;
+  }
+  .calendar-popover {
+    width: min(286px, calc(100vw - 20px));
+  }
+  .calendar-select-trigger {
+    height: 34px;
+    font-size: 12.5px;
+  }
+  .calendar-header .mini-icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+  .calendar-day {
+    height: 34px;
+    font-size: 12.5px;
+  }
+  .calendar-weekdays {
+    font-size: 11px;
+  }
+  .date-picker-root .password-reveal-btn,
+  .date-picker-root .date-trigger-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: var(--radius-chip);
+    justify-content: center;
+    inset-inline-end: 4px;
+  }
+  .calendar-footer .inline-action-link {
+    min-height: 32px;
+    padding: 0 8px;
+    border: 1px solid var(--border-hairline);
+    background: var(--bg-subtle);
+    text-decoration: none;
   }
 }
 
@@ -3516,14 +3646,40 @@ dialog.modal-overflow-visible .modal-footer {
 }
 
 @container workspace (width < 520px) {
+  .workspace-header {
+    padding: 8px 10px;
+    gap: 7px;
+  }
+  .workspace-header .mini-icon-btn,
+  .sidebar-toggle-btn,
+  .share-learning-btn {
+    width: 44px;
+    height: 44px;
+  }
+  .topbar-tab > :is(svg) {
+    display: none;
+  }
+  .topbar-tab {
+    min-height: 42px;
+    height: 42px;
+    padding: 0 8px;
+    font-size: 11.5px;
+    gap: 4px;
+  }
+  .active-doc-bar {
+    padding: 7px 10px;
+  }
+  .active-doc-meta {
+    font-size: 11.5px;
+  }
   .time-presets {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @container timecol (width < 360px) {
   .time-presets {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -3574,6 +3730,15 @@ dialog.modal-overflow-visible .modal-footer {
   .records-table tbody tr:last-child td:last-child {
     border-bottom: none;
   }
+
+  .table-row-actions {
+    gap: 6px;
+  }
+
+  .table-row-actions .mini-icon-btn {
+    width: 34px;
+    height: 34px;
+  }
 }
 
 /* Media pantalla (<= 960px, ej. Meta + Flecha izquierda): Sidebar en cajón deslizable y área principal al 100% */
@@ -3597,6 +3762,15 @@ dialog.modal-overflow-visible .modal-footer {
     transform: translateX(-105%);
     transition: transform 0.2s ease;
     box-shadow: var(--shadow-popover);
+  }
+
+  .sidebar.mobile-open .mini-icon-btn {
+    width: 34px;
+    height: 34px;
+  }
+  .sidebar .ai-config-trigger {
+    min-height: 34px;
+    padding: 6px 10px;
   }
 
   .desktop-frame.sidebar-collapsed .sidebar.mobile-open,
