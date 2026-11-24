@@ -3583,6 +3583,14 @@ dialog.modal-overflow-visible .modal-footer {
     gap: 14px;
   }
   .dossier-actions {
+    position: sticky;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    z-index: 4;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-card);
+    padding: 8px;
+    margin-top: 6px;
     gap: 8px;
   }
   .dossier-actions-right {
@@ -3595,6 +3603,10 @@ dialog.modal-overflow-visible .modal-footer {
     justify-content: space-between;
     width: 100%;
     gap: 10px;
+  }
+  .dossier-actions-right .dossier-submit-btn {
+    width: 100%;
+    justify-content: center;
   }
   .dossier-actions-right .btn {
     min-height: 36px;
