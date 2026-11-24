@@ -60,10 +60,10 @@ jobs:
         run: npm install
 
       - name: Inicializar proyecto Android (Tauri)
-        run: npm run tauri android init --ci
+        run: npm run tauri android init -- --ci
 
       - name: Build Android (APK + AAB)
-        run: npm run tauri android build --target aarch64 --apk --aab --ci
+        run: npm run tauri android build -- --target aarch64 --apk --aab --ci
 
       - name: Resolver versión, tag y artefactos
         id: vars

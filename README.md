@@ -162,8 +162,8 @@ npm run tauri build
 > Requiere tener instalado Android SDK/NDK y definir `ANDROID_HOME` y `NDK_HOME`.
 
 ```bash
-npm run tauri android init --ci
-npm run tauri android build --target aarch64 --apk --aab --ci
+npm run tauri android init -- --ci
+npm run tauri android build -- --target aarch64 --apk --aab --ci
 ```
 
 Los artefactos se generan en:
