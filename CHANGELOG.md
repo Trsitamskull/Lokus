@@ -1,5 +1,16 @@
 # Historial de Versiones (Lokus)
 
+## [5.3.1] - 2026-11-24
+
+### Corrección de errores (Bugs)
+- **Apertura instantánea de Excel en Windows:** Se eliminó por completo la configuración heredada de impresora (`paperSize`, `dpi`, `fitTo*`) y vista de diseño de página (`PageLayout`/`PageBreakPreview`) en todas las hojas al crear, guardar, restaurar, descargar o importar planillas `.xlsx`, evitando que Microsoft Excel se congele varios minutos al abrir archivos antiguos o restaurados.
+- **Nombres de procesados sin radicado en IA:** Cuando el texto recibido contiene uno o varios nombres de procesados pero no incluye número de radicado, la IA ahora conserva el nombre o nombres en el campo `radicado` en lugar de dejarlo vacío.
+- **Compartir en Android sin copia duplicada:** Al exportar o compartir un Excel, respaldo `.lokus` o aprendizaje IA en Android, se abre directamente la hoja nativa de compartir (`FileProvider`) para elegir dónde guardarlo o enviarlo sin crear antes una copia duplicada automática en `Descargas/Lokus`.
+
+### Nuevas funciones y sincronización
+- **Sincronización bidireccional de aprendizaje de IA sin duplicados ("anti ping-pong"):** Nuevo tipo **Solo aprendizaje de IA (`.lokus.json`)** en *Portabilidad → Exportar* (y respaldo incluido en las copias completas `.lokus`) con identificadores únicos por dispositivo y fusión idempotente (`PC ↔ Celular`, `PC ↔ PC` o 3+ equipos) para intercambiar reglas, alias, correcciones y perfiles una y otra vez sin duplicar datos ni inflar métricas.
+- **Compatibilidad directa con JSON exportados antes de esta versión:** *Portabilidad → Importar* también reconoce archivos `lokus_aprendizaje_ia_*.json` exportados desde versiones anteriores, absorbe todo su aprendizaje en el celular o PC y al volver al equipo de origen evita el doble conteo reutilizando el identificador histórico del equipo (`uso_catalogos.json`).
+
 ## [5.3.0] - 2026-11-24
 
 ### Nuevas funciones
