@@ -805,6 +805,189 @@ fn limpiar_observacion_vacia(obs: String) -> String {
     limpiar_valor_opcional_vacio(&obs)
 }
 
+fn es_relleno_sin_radicado(s: &str) -> bool {
+    let norm = normalizar_texto_sin_tildes(s);
+    matches!(
+        norm.as_str(),
+        "" | "sin radicado"
+            | "no radicado"
+            | "no hay radicado"
+            | "no registra radicado"
+            | "no indica radicado"
+            | "sin numero de radicado"
+            | "sin numero"
+            | "no registra"
+            | "no menciona"
+            | "no especificado"
+            | "no especifica"
+            | "no aplica"
+            | "no tiene"
+            | "no disponible"
+            | "ninguno"
+            | "por definir"
+            | "por asignar"
+            | "pendiente"
+            | "n a"
+            | "n/a"
+            | "na"
+    )
+}
+
+/// Limpia sufijos/prefijos o paréntesis de relleno como `" - Sin radicado"` o `"(sin radicado)"`
+/// sin descartar el o los nombres de procesados que acompañen al campo.
+fn limpiar_ruido_sin_radicado(valor: &str) -> String {
+    static RE_PAREN_RUIDO: OnceLock<Regex> = OnceLock::new();
+    let re_paren = RE_PAREN_RUIDO.get_or_init(|| {
+        Regex::new(
+            r"(?i)\s*[\(\[]\s*(?:sin\s+radicado|no\s+(?:hay|registra|indica)\s+radicado|no\s+radicado|sin\s+n[uú]mero(?:\s+de\s+radicado)?|no\s+aplica|n/?a)\s*[\)\]]\s*",
+        )
+        .expect("regex paren ruido radicado")
+    });
+
+    let sin_paren = re_paren.replace_all(valor.trim(), " ");
+    let limpio = sin_paren.split_whitespace().collect::<Vec<_>>().join(" ");
+    let base = limpiar_valor_opcional_vacio(&limpio);
+    if base.is_empty() || es_relleno_sin_radicado(&base) {
+        return String::new();
+    }
+
+    let partes: Vec<&str> = base
+        .split(" - ")
+        .flat_map(|seg| seg.split(" – "))
+        .flat_map(|seg| seg.split(" — "))
+        .map(str::trim)
+        .filter(|seg| !seg.is_empty() && !es_relleno_sin_radicado(seg))
+        .collect();
+
+    if partes.is_empty() {
+        return String::new();
+    }
+
+    let unido = partes.join(" - ");
+    limpiar_valor_opcional_vacio(&unido)
+}
+
+fn recortar_delimitador_procesado(candidato: &str) -> String {
+    static RE_DELIM: OnceLock<Regex> = OnceLock::new();
+    let re_delim = RE_DELIM.get_or_init(|| {
+        Regex::new(
+            r"(?i)(?:\s+-\s+\d|(?:^|[\s,])(?:radicado|rad\.?|cui|spo|nunc|juzgado|despacho|juez|fiscal(?:ia|ía)?|fecha|hora|audiencia|tipo\s+de\s+audiencia|motivo|causal|se\s+realiz[oó]|no\s+se\s+realiz[oó]|observaci[oó]n(?:es)?|delito|punible|reprogram\w*|aplaz\w*|suspend\w*|no\s+comparec\w*|no\s+asist\w*|ausente|defensor(?:a)?|inpec|icbf|v[ií]ctima)\b)",
+        )
+        .expect("regex delim procesado")
+    });
+
+    let recortado = match re_delim.find(candidato) {
+        Some(m) => &candidato[..m.start()],
+        None => candidato,
+    };
+
+    recortado
+        .trim_matches(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | ';' | ':' | '.' | '-' | '–' | '—' | '|')
+        })
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn es_nombre_procesado_valido(candidato: &str) -> bool {
+    let limpio = candidato.trim();
+    if limpio.is_empty() || limpio.len() > 140 {
+        return false;
+    }
+    let norm = normalizar_texto_sin_tildes(limpio);
+    if es_relleno_sin_radicado(&norm) {
+        return false;
+    }
+
+    let prefijos_invalidos = [
+        "no ",
+        "sin ",
+        "por ",
+        "ningun",
+        "desconocid",
+        "juzgado",
+        "juez",
+        "fiscal",
+        "defensor",
+        "inpec",
+        "icbf",
+        "victima",
+        "audiencia",
+        "solicita",
+        "apla",
+        "reprogr",
+        "ausent",
+        "comparec",
+        "asisti",
+        "el ",
+        "la ",
+        "los ",
+        "las ",
+    ];
+    if prefijos_invalidos.iter().any(|p| norm == p.trim() || norm.starts_with(p)) {
+        return false;
+    }
+    if norm.contains("no comparecio")
+        || norm.contains("no asistio")
+        || norm.contains("no se conecto")
+    {
+        return false;
+    }
+
+    let palabras_alfa = limpio
+        .split_whitespace()
+        .filter(|w| {
+            let letras = w.chars().filter(|c| c.is_alphabetic()).count();
+            letras >= 2 || (letras == 1 && w.len() == 1 && matches!(w.to_ascii_lowercase().as_str(), "y" | "e"))
+        })
+        .filter(|w| !matches!(w.to_ascii_lowercase().as_str(), "y" | "e" | "de" | "del" | "la" | "las" | "los"))
+        .count();
+
+    palabras_alfa >= 2
+}
+
+/// Respaldo determinista cuando el texto no trae número de radicado pero sí etiqueta
+/// explícita con uno o varios nombres de procesados (y el LLM devolvió `radicado` vacío).
+fn extraer_procesados_sin_radicado(texto: &str) -> Option<String> {
+    static RE_ETIQUETA: OnceLock<Regex> = OnceLock::new();
+    static RE_CONTRA: OnceLock<Regex> = OnceLock::new();
+
+    let re_etiqueta = RE_ETIQUETA.get_or_init(|| {
+        Regex::new(
+            r"(?im)(?:^|[\n\r.;,|\-–—])\s*(?:procesad[oa]s?|imputad[oa]s?|acusad[oa]s?|indiciad[oa]s?|sindicad[oa]s?|condenad[oa]s?|detenid[oa]s?|capturad[oa]s?|usuari[oa]s?|en\s+contra\s+de)\s*:\s*([^\n\r.;|]+)",
+        )
+        .expect("regex etiqueta procesados")
+    });
+
+    for caps in re_etiqueta.captures_iter(texto) {
+        if let Some(m) = caps.get(1) {
+            let candidato = recortar_delimitador_procesado(m.as_str());
+            if es_nombre_procesado_valido(&candidato) {
+                return Some(candidato);
+            }
+        }
+    }
+
+    let re_contra = RE_CONTRA.get_or_init(|| {
+        Regex::new(
+            r"(?m)(?:^|[\s.;,])(?:en\s+)?contra\s+(?:de\s+)?([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚáéíóúÑñ]+(?:\s+(?:y|e|de|del|la|las|los|[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚáéíóúÑñ]+)){1,10})",
+        )
+        .expect("regex contra procesados")
+    });
+
+    for caps in re_contra.captures_iter(texto) {
+        if let Some(m) = caps.get(1) {
+            let candidato = recortar_delimitador_procesado(m.as_str());
+            if es_nombre_procesado_valido(&candidato) {
+                return Some(candidato);
+            }
+        }
+    }
+
+    None
+}
+
 fn formatear_candidatos_prompt(cands: Option<&CandidatosPrompt>) -> String {
     let Some(c) = cands else {
         return String::new();
@@ -978,7 +1161,7 @@ fn construir_prompt_con_candidatos_y_resumenes(
 Analiza el texto (que puede venir en estilo ESTRUCTURADO descriptivo o en estilo COMPACTO telegráfico) y devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
 
 {{
-  "radicado": "NOMBRE_PROCESADO - NÚMERO_RADICADO (si hay ambos) o el identificador/radicado encontrado (o \"\" si no existe)",
+  "radicado": "NOMBRE_PROCESADO - NÚMERO_RADICADO (si hay ambos), solo el/los NOMBRE(S) DEL/LOS PROCESADO(S) si NO hay radicado, o solo el NÚMERO_RADICADO si no hay nombre (solo \"\" si no aparece ninguno)",
   "tipo_audiencia": "Nombre exacto del catálogo de tipos de audiencia si corresponde, o el nombre real si es distinto (o \"\" si no se menciona)",
   "fecha": "DD/MM/YYYY (o \"\" si no se menciona)",
   "hora": "HH (formato 24 horas de 2 dígitos, ej: 08, 14, o \"\" si no se menciona hora)",
@@ -997,7 +1180,10 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
    - Si un dato opcional (`tipo_audiencia`, `juzgado`, `fecha`, `hora`, `minuto`, `observaciones`) NO aparece en el texto, devuelve SIEMPRE cadena vacía `""`. Nunca escribas textos de relleno como "No especificado", "N/A", "Ninguno" ni "Sin datos".
 2. RADICADO Y PROCESADO:
    - Busca números largos (19 a 23 dígitos, ej: "200016001075202255547") o formatos cortos ("2024-00236", "2019-00542").
-   - Si hay varios procesados, inclúyelos (ej: "FERNANDO JULIO CASUIL Y SHARLES DE JESUS LOPEZ JIMENEZ - 20001...").
+   - Si hay ambos (nombre y radicado), devuélvelos juntos en `"radicado"` como `"NOMBRE - RADICADO"`.
+   - Si NO hay número de radicado pero SÍ aparece uno o varios nombres de procesados/imputados/acusados/indiciados/usuarios, DEBES escribir ese nombre o todos los nombres en `"radicado"` (ej: `"JUAN PEREZ"` o `"FERNANDO JULIO CASUIL Y SHARLES DE JESUS LOPEZ JIMENEZ"`). Nunca dejes `"radicado"` vacío ni añadas textos como `"Sin radicado"`.
+   - Si hay varios procesados con radicado, inclúyelos todos (ej: `"FERNANDO JULIO CASUIL Y SHARLES DE JESUS LOPEZ JIMENEZ - 20001..."`).
+   - Nunca pongas el nombre del Defensor Público, juez o fiscal en `"radicado"`.
 3. FECHA Y HORA MILITAR (24h):
    - Convierte cualquier fecha ("24 de junio", "JUNIO 24") a DD/MM/YYYY. Si no menciona el año, usa {current_year}.
    - Convierte horas PM a formato 24h ("09:30 am" -> hora: "09", minuto: "30"; "2:30 PM" -> hora: "14", minuto: "30"). Si no hay hora, deja "hora": "" y "minuto": "".
@@ -1040,7 +1226,10 @@ pub(crate) fn esquema_extraccion_audiencia_openai() -> Value {
             "schema": {
                 "type": "object",
                 "properties": {
-                    "radicado": { "type": "string" },
+                    "radicado": {
+                        "type": "string",
+                        "description": "NOMBRE_PROCESADO - NÚMERO_RADICADO si hay ambos; si no hay radicado pero sí uno o varios nombres de procesados, solo los nombres; o solo el radicado si no hay nombre."
+                    },
                     "tipo_audiencia": { "type": "string" },
                     "fecha": { "type": "string" },
                     "hora": { "type": "string" },
@@ -1084,7 +1273,10 @@ pub(crate) fn esquema_extraccion_audiencia_gemini() -> Value {
     json!({
         "type": "OBJECT",
         "properties": {
-            "radicado": { "type": "STRING" },
+            "radicado": {
+                "type": "STRING",
+                "description": "NOMBRE_PROCESADO - NÚMERO_RADICADO si hay ambos; si no hay radicado pero sí uno o varios nombres de procesados, solo los nombres; o solo el radicado si no hay nombre."
+            },
             "tipo_audiencia": { "type": "STRING" },
             "fecha": { "type": "STRING" },
             "hora": { "type": "STRING" },
@@ -2152,7 +2344,7 @@ pub(crate) fn arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
     let pref_efectiva =
         preferencias_efectivas_con_base_para_defensor(memoria_base, memoria_local, defensor);
 
-    let mut radicado = limpiar_valor_opcional_vacio(&get_str("radicado"));
+    let mut radicado = limpiar_ruido_sin_radicado(&get_str("radicado"));
     let mut proc_vinculado = None;
     for num in extraer_numeros_radicado(if radicado.is_empty() { texto } else { &radicado }) {
         if let Some(p) = priors.procesos_por_numero.get(&num) {
@@ -2169,6 +2361,11 @@ pub(crate) fn arbitrar_salida_hibrida_con_base_catalogos_y_defensor(
                 && nums_raw.iter().any(|n| nums_sug.contains(n) || rad_sug.contains(n)))
         {
             radicado = rad_sug.clone();
+        }
+    }
+    if radicado.is_empty() {
+        if let Some(nombres_procesados) = extraer_procesados_sin_radicado(texto) {
+            radicado = nombres_procesados;
         }
     }
 
@@ -4076,5 +4273,150 @@ mod tests {
             mapear_tipo_audiencia_con_usuario("Principio de oportunidad", &[]).0,
             "Aplicación principio de oportunidad"
         );
+    }
+
+    #[test]
+    fn test_nombres_procesados_sin_radicado_prompt_limpieza_y_respaldo() {
+        // 1) Prompt instruye conservar uno o varios nombres cuando no existe radicado
+        let prompt = construir_prompt(
+            "Procesado: JUAN PEREZ. Juzgado 1 Penal Municipal.",
+            2026,
+            "",
+        );
+        assert!(prompt.contains("solo el/los NOMBRE(S) DEL/LOS PROCESADO(S) si NO hay radicado"));
+        assert!(prompt.contains("Si NO hay número de radicado pero SÍ aparece uno o varios nombres"));
+
+        let mem = MemoriaAprendizaje::default();
+        let priors = IndicePriorsExcel::default();
+        let motor = MotorEstadisticoLocal::entrenar_desde_memorias(&mem, &mem);
+
+        // 2) Conserva un nombre o varios nombres devueltos sin radicado
+        let raw_uno = json!({
+            "radicado": "JUAN PEREZ",
+            "tipo_audiencia": "Audiencia preparatoria",
+            "fecha": "10/11/2026",
+            "hora": "09",
+            "minuto": "00",
+            "juzgado": "Juzgado 1 Penal Municipal de Valledupar",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let out_uno = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            "Procesado JUAN PEREZ, audiencia preparatoria.",
+            &raw_uno,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            None,
+        );
+        assert_eq!(out_uno.radicado, "JUAN PEREZ");
+
+        let raw_varios = json!({
+            "radicado": "JUAN PEREZ Y MARIA GOMEZ (sin radicado)",
+            "tipo_audiencia": "",
+            "fecha": "",
+            "hora": "",
+            "minuto": "",
+            "juzgado": "",
+            "se_realizo": "NO",
+            "motivo": "Juez",
+            "observaciones": ""
+        });
+        let out_varios = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            "Procesados: JUAN PEREZ Y MARIA GOMEZ",
+            &raw_varios,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            None,
+        );
+        assert_eq!(out_varios.radicado, "JUAN PEREZ Y MARIA GOMEZ");
+
+        // 3) Limpia sufijos " - Sin radicado" conservando el nombre
+        let raw_ruido = json!({
+            "radicado": "JUAN PEREZ - Sin radicado",
+            "tipo_audiencia": "",
+            "fecha": "",
+            "hora": "",
+            "minuto": "",
+            "juzgado": "",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let out_ruido = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            "JUAN PEREZ",
+            &raw_ruido,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            None,
+        );
+        assert_eq!(out_ruido.radicado, "JUAN PEREZ");
+
+        // 4) Respaldo determinista rescata nombres si el LLM devolvió radicado vacío
+        let raw_rescate = json!({
+            "radicado": "",
+            "tipo_audiencia": "Audiencia de juicio oral",
+            "fecha": "12/11/2026",
+            "hora": "10",
+            "minuto": "00",
+            "juzgado": "Juzgado 2 Penal Municipal de Valledupar",
+            "se_realizo": "SI",
+            "motivo": "",
+            "observaciones": ""
+        });
+        let out_rescate = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            "Procesados: Juan Pérez y María Gómez. Juzgado 2 Penal Municipal de Valledupar, juicio oral.",
+            &raw_rescate,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            None,
+        );
+        assert_eq!(out_rescate.radicado, "Juan Pérez y María Gómez");
+
+        // 5) Negativo: texto sin nombre ni radicado ("Usuario no compareció...") NO inventa nombre
+        let raw_neg = json!({
+            "radicado": "",
+            "tipo_audiencia": "",
+            "fecha": "",
+            "hora": "",
+            "minuto": "",
+            "juzgado": "Juzgado 1 Penal Municipal de Valledupar",
+            "se_realizo": "NO",
+            "motivo": "Usuario",
+            "observaciones": ""
+        });
+        let out_neg = arbitrar_salida_hibrida_con_catalogos_y_defensor(
+            "Usuario no compareció. Juzgado 1 Penal Municipal.",
+            &raw_neg,
+            &mem,
+            &priors,
+            Vec::new(),
+            Vec::new(),
+            &motor,
+            &[],
+            &[],
+            None,
+        );
+        assert_eq!(out_neg.radicado, "");
     }
 }

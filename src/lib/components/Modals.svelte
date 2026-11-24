@@ -896,7 +896,20 @@
                   <strong>Copia completa de Lokus (.lokus)</strong>
                 </div>
                 <p class="shortcut-hint">
-                  Incluye todas tus carpetas, planillas Excel, estadísticas archivadas, tus listas (defensores, juzgados y tipos de audiencia) y el historial de uso de catálogos. Nunca incluye tus claves API.
+                  Incluye todas tus carpetas, planillas Excel, estadísticas archivadas, tus listas (defensores, juzgados y tipos de audiencia), el historial de uso de catálogos y el aprendizaje de IA. Nunca incluye tus claves API.
+                </p>
+              </div>
+            </label>
+
+            <label class="portabilidad-card-option {tipoExportacion === 'aprendizaje_ia' ? 'selected' : ''}">
+              <input type="radio" name="tipo-exp" value="aprendizaje_ia" bind:group={tipoExportacion} />
+              <div>
+                <div class="portabilidad-card-title">
+                  <Sparkles size={14} />
+                  <strong>Solo aprendizaje de IA (.lokus.json)</strong>
+                </div>
+                <p class="shortcut-hint">
+                  Sincroniza reglas, alias, correcciones y perfiles entre tu computador y celular sin duplicar datos aunque vayas y vuelvas varias veces.
                 </p>
               </div>
             </label>
@@ -921,7 +934,7 @@
               <span>
                 {archivoImportNombre
                   ? `Archivo elegido: ${archivoImportNombre}`
-                  : "Seleccionar respaldo (.lokus) o estadísticas (.lokus.json)..."}
+                  : "Seleccionar respaldo (.lokus), aprendizaje IA o estadísticas (.lokus.json)..."}
               </span>
               <input
                 type="file"
@@ -946,7 +959,9 @@
                 <strong>
                   {inspeccionImportacion.tipo_paquete === "completo"
                     ? "Paquete detectado: Copia completa"
-                    : "Paquete detectado: Solo estadísticas"}
+                    : inspeccionImportacion.tipo_paquete === "aprendizaje_ia"
+                      ? "Paquete detectado: Aprendizaje de IA"
+                      : "Paquete detectado: Solo estadísticas"}
                 </strong>
                 <span class="shortcut-hint">v{inspeccionImportacion.version_app}</span>
               </div>
@@ -970,6 +985,29 @@
                     {/if}
                     {#if inspeccionImportacion.resumenes_ya_archivados > 0}
                       · <strong>{inspeccionImportacion.resumenes_ya_archivados}</strong> ya archivados
+                    {/if}
+                  </span>
+                {/if}
+
+                {#if inspeccionImportacion.trae_aprendizaje_ia}
+                  <span>
+                    • Aprendizaje IA:
+                    {#if inspeccionImportacion.ia_ya_sincronizada}
+                      <strong>ya sincronizado</strong> (sin novedades en {inspeccionImportacion.ia_reglas_en_paquete} reglas)
+                    {:else}
+                      <strong>{inspeccionImportacion.ia_reglas_nuevas}</strong> regla(s) nueva(s)
+                      {#if inspeccionImportacion.ia_reglas_actualizables > 0}
+                        · <strong>{inspeccionImportacion.ia_reglas_actualizables}</strong> actualizada(s)
+                      {/if}
+                      {#if inspeccionImportacion.ia_correcciones_nuevas > 0}
+                        · <strong>{inspeccionImportacion.ia_correcciones_nuevas}</strong> corrección(es)
+                      {/if}
+                      {#if inspeccionImportacion.ia_alias_nuevos > 0}
+                        · <strong>{inspeccionImportacion.ia_alias_nuevos}</strong> alias
+                      {/if}
+                      {#if inspeccionImportacion.ia_perfiles_actualizables > 0}
+                        · <strong>{inspeccionImportacion.ia_perfiles_actualizables}</strong> perfil(es)
+                      {/if}
                     {/if}
                   </span>
                 {/if}

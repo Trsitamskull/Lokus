@@ -18,6 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Local;
 use regex::Regex;
@@ -129,6 +130,120 @@ pub(crate) fn liberar_cluster_induccion(cluster_id: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     set.remove(cluster_id);
+}
+
+fn generar_instancia_id_ia() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = CONTADOR_IDS.fetch_add(1, Ordering::Relaxed);
+    format!("inst-ia-{:x}-{:04x}", nanos, seq % 0xffff)
+}
+
+fn recalcular_totales_desde_contadores(memoria: &mut MemoriaAprendizaje) {
+    if memoria.contadores_por_instancia.is_empty() {
+        return;
+    }
+    let (mut ac, mut ext, mut ind, mut con) = (0u32, 0u32, 0u32, 0u32);
+    for c in memoria.contadores_por_instancia.values() {
+        ac = ac.saturating_add(c.aciertos);
+        ext = ext.saturating_add(c.llamadas_extraccion);
+        ind = ind.saturating_add(c.llamadas_induccion);
+        con = con.saturating_add(c.llamadas_consolidacion);
+    }
+    memoria.aciertos = ac;
+    memoria.llamadas_extraccion_total = ext;
+    memoria.llamadas_induccion_llm_total = ind;
+    memoria.llamadas_consolidacion_total = con;
+}
+
+/// Garantiza `instancia_id` único para esta máquina/memoria y sincroniza el G-Counter
+/// (`contadores_por_instancia`) con los totales escalares heredados o modificados.
+pub fn asegurar_instancia_y_contadores(memoria: &mut MemoriaAprendizaje) -> String {
+    if memoria.instancia_id.trim().is_empty() {
+        memoria.instancia_id = generar_instancia_id_ia();
+    } else {
+        memoria.instancia_id = memoria.instancia_id.trim().to_string();
+    }
+    let inst_local = memoria.instancia_id.clone();
+
+    let mut vist = BTreeSet::new();
+    memoria.instancias_sincronizadas.retain(|s| {
+        let t = s.trim();
+        !t.is_empty() && t != inst_local && vist.insert(t.to_string())
+    });
+
+    let (mut sum_ac, mut sum_ext, mut sum_ind, mut sum_con) = (0u32, 0u32, 0u32, 0u32);
+    for c in memoria.contadores_por_instancia.values() {
+        sum_ac = sum_ac.saturating_add(c.aciertos);
+        sum_ext = sum_ext.saturating_add(c.llamadas_extraccion);
+        sum_ind = sum_ind.saturating_add(c.llamadas_induccion);
+        sum_con = sum_con.saturating_add(c.llamadas_consolidacion);
+    }
+
+    if memoria.aciertos > sum_ac
+        || memoria.llamadas_extraccion_total > sum_ext
+        || memoria.llamadas_induccion_llm_total > sum_ind
+        || memoria.llamadas_consolidacion_total > sum_con
+    {
+        let entry = memoria
+            .contadores_por_instancia
+            .entry(inst_local.clone())
+            .or_default();
+        if memoria.aciertos > sum_ac {
+            entry.aciertos = entry.aciertos.saturating_add(memoria.aciertos - sum_ac);
+        }
+        if memoria.llamadas_extraccion_total > sum_ext {
+            entry.llamadas_extraccion = entry
+                .llamadas_extraccion
+                .saturating_add(memoria.llamadas_extraccion_total - sum_ext);
+        }
+        if memoria.llamadas_induccion_llm_total > sum_ind {
+            entry.llamadas_induccion = entry
+                .llamadas_induccion
+                .saturating_add(memoria.llamadas_induccion_llm_total - sum_ind);
+        }
+        if memoria.llamadas_consolidacion_total > sum_con {
+            entry.llamadas_consolidacion = entry
+                .llamadas_consolidacion
+                .saturating_add(memoria.llamadas_consolidacion_total - sum_con);
+        }
+    }
+
+    if !memoria.contadores_por_instancia.is_empty() {
+        recalcular_totales_desde_contadores(memoria);
+    }
+
+    inst_local
+}
+
+fn incrementar_aciertos(memoria: &mut MemoriaAprendizaje, delta: u32) {
+    let inst = asegurar_instancia_y_contadores(memoria);
+    let entry = memoria.contadores_por_instancia.entry(inst).or_default();
+    entry.aciertos = entry.aciertos.saturating_add(delta);
+    recalcular_totales_desde_contadores(memoria);
+}
+
+fn incrementar_llamadas_extraccion(memoria: &mut MemoriaAprendizaje, delta: u32) {
+    let inst = asegurar_instancia_y_contadores(memoria);
+    let entry = memoria.contadores_por_instancia.entry(inst).or_default();
+    entry.llamadas_extraccion = entry.llamadas_extraccion.saturating_add(delta);
+    recalcular_totales_desde_contadores(memoria);
+}
+
+fn incrementar_llamadas_induccion(memoria: &mut MemoriaAprendizaje, delta: u32) {
+    let inst = asegurar_instancia_y_contadores(memoria);
+    let entry = memoria.contadores_por_instancia.entry(inst).or_default();
+    entry.llamadas_induccion = entry.llamadas_induccion.saturating_add(delta);
+    recalcular_totales_desde_contadores(memoria);
+}
+
+fn incrementar_llamadas_consolidacion(memoria: &mut MemoriaAprendizaje, delta: u32) {
+    let inst = asegurar_instancia_y_contadores(memoria);
+    let entry = memoria.contadores_por_instancia.entry(inst).or_default();
+    entry.llamadas_consolidacion = entry.llamadas_consolidacion.saturating_add(delta);
+    recalcular_totales_desde_contadores(memoria);
 }
 
 fn generar_id_unico(prefijo: &str) -> String {
@@ -678,6 +793,44 @@ pub struct LoteConsolidacion {
     pub telemetria_disparo: TelemetriaDisparoConsolidacion,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ContadoresInstanciaIa {
+    pub aciertos: u32,
+    pub llamadas_extraccion: u32,
+    pub llamadas_induccion: u32,
+    pub llamadas_consolidacion: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct InspeccionFusionIa {
+    pub reglas_nuevas: usize,
+    pub reglas_actualizables: usize,
+    pub correcciones_nuevas: usize,
+    pub ejemplos_nuevos: usize,
+    pub alias_nuevos: usize,
+    pub perfiles_nuevos_o_actualizados: usize,
+    pub consolidaciones_nuevas: usize,
+    pub defensores_nuevos: usize,
+    pub ya_sincronizado: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ResultadoFusionIa {
+    pub reglas_nuevas: usize,
+    pub reglas_actualizadas: usize,
+    pub correcciones_nuevas: usize,
+    pub ejemplos_nuevos: usize,
+    pub alias_nuevos: usize,
+    pub alias_actualizados: usize,
+    pub perfiles_actualizados: usize,
+    pub consolidaciones_nuevas: usize,
+    pub defensores_nuevos: usize,
+    pub cambios_totales: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoriaAprendizaje {
@@ -729,6 +882,12 @@ pub struct MemoriaAprendizaje {
     pub exportacion_seq: u64,
     #[serde(default)]
     pub ultima_exportacion_previa: String,
+    #[serde(default)]
+    pub instancia_id: String,
+    #[serde(default)]
+    pub contadores_por_instancia: BTreeMap<String, ContadoresInstanciaIa>,
+    #[serde(default)]
+    pub instancias_sincronizadas: Vec<String>,
 }
 
 impl Default for MemoriaAprendizaje {
@@ -760,6 +919,9 @@ impl Default for MemoriaAprendizaje {
             semilla_rng: DEFAULT_SEMILLA_RNG,
             exportacion_seq: 0,
             ultima_exportacion_previa: String::new(),
+            instancia_id: String::new(),
+            contadores_por_instancia: BTreeMap::new(),
+            instancias_sincronizadas: Vec::new(),
         }
     }
 }
@@ -1701,6 +1863,7 @@ pub fn migrar_memoria_v1_a_v2(memoria: &mut MemoriaAprendizaje) {
     }
 
     normalizar_y_fusionar_defensores(memoria, era_anterior_v4);
+    asegurar_instancia_y_contadores(memoria);
 }
 
 pub(crate) fn renombrar_defensor_en_memoria_struct(
@@ -5044,6 +5207,17 @@ pub fn ruta_memoria() -> PathBuf {
     ruta_en_carpeta_config(NOMBRE_ARCHIVO_MEMORIA)
 }
 
+fn leer_instancia_id_uso_hermano(ruta_memoria: &Path) -> Option<String> {
+    let ruta_uso = ruta_memoria.with_file_name(crate::uso_catalogos::NOMBRE_ARCHIVO_USO);
+    let raw = fs::read_to_string(ruta_uso).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    val.get("instancia_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Carga la memoria; si es `v1` la migra automáticamente a `v2` sin perder datos,
 /// y si el archivo está dañado lo conserva como `.bak` y empieza de cero.
 pub fn cargar_memoria_en(ruta: &Path) -> MemoriaAprendizaje {
@@ -5052,6 +5226,11 @@ pub fn cargar_memoria_en(ruta: &Path) -> MemoriaAprendizaje {
     };
     match serde_json::from_str::<MemoriaAprendizaje>(&contenido) {
         Ok(mut memoria) => {
+            if memoria.instancia_id.trim().is_empty() {
+                if let Some(id_uso) = leer_instancia_id_uso_hermano(ruta) {
+                    memoria.instancia_id = id_uso;
+                }
+            }
             migrar_memoria_v1_a_v2(&mut memoria);
             memoria
         }
@@ -6588,8 +6767,7 @@ pub fn aplicar_consolidacion_ia_en(
             memoria.consolidaciones_ia.drain(0..ex);
         }
 
-        memoria.llamadas_consolidacion_total =
-            memoria.llamadas_consolidacion_total.saturating_add(1);
+        incrementar_llamadas_consolidacion(&mut memoria, 1);
 
         // Descuento atómico únicamente de watermark_ids y reducción de presión (presion *= 0.2)
         let notas_por_id: BTreeMap<String, bool> = memoria
@@ -6744,7 +6922,7 @@ pub fn registrar_resultado_completo_en(
     }
 
     memoria.enfriamiento_aclaracion = memoria.enfriamiento_aclaracion.saturating_sub(1);
-    memoria.llamadas_extraccion_total = memoria.llamadas_extraccion_total.saturating_add(1);
+    incrementar_llamadas_extraccion(&mut memoria, 1);
 
     // Auto-descartar aclaración previa pendiente si cambió el defensor o pasaron >= 2 turnos sin respuesta
     let mut auto_descartar_por_omision = false;
@@ -6938,7 +7116,7 @@ pub fn registrar_resultado_completo_en(
             est_gen.presion += 0.45 * sorpresa_total;
         }
     } else {
-        memoria.aciertos = memoria.aciertos.saturating_add(1);
+        incrementar_aciertos(&mut memoria, 1);
         let anon = Anonimizador::desde_radicados(&[&final_usuario.radicado]);
         let ejemplo = EjemploPositivo {
             id: generar_id_unico("pos"),
@@ -7048,8 +7226,7 @@ pub fn aplicar_analisis_en(
 ) -> Result<ResumenAprendizaje, String> {
     let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
     let mut memoria = cargar_memoria_en(ruta);
-    memoria.llamadas_induccion_llm_total =
-        memoria.llamadas_induccion_llm_total.saturating_add(1);
+    incrementar_llamadas_induccion(&mut memoria, 1);
 
     let mut regla_a_registrar: Option<(String, String, String, String, Vec<String>, f64, bool)> =
         None;
@@ -7400,8 +7577,7 @@ pub fn aplicar_analisis_cluster_en(
 ) -> Result<ResumenAprendizaje, String> {
     let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
     let mut memoria = cargar_memoria_en(ruta);
-    memoria.llamadas_induccion_llm_total =
-        memoria.llamadas_induccion_llm_total.saturating_add(1);
+    incrementar_llamadas_induccion(&mut memoria, 1);
 
     let mut ids_set: BTreeSet<String> = correccion_ids.iter().cloned().collect();
     if let Some(clu) = memoria.cola_induccion.iter().find(|c| c.id == cluster_id) {
@@ -8448,8 +8624,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
         (Some(r_uso), None) => cargar_uso_con_lock_en(r_uso),
         _ => UsoCatalogos::default(),
     };
-    let instancia_id = uso.instancia_id.clone();
-    let fuentes_importadas: Vec<String> = uso.fuentes_importadas.iter().cloned().collect();
+    let instancia_id_uso = uso.instancia_id.clone();
 
     let radicados_excel = carpeta_archivos
         .map(recolectar_radicados_en)
@@ -8462,9 +8637,28 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
     };
     let priors_ref = priors_explicitos.or(priors_propios.as_ref());
 
-    let destino_str = {
+    let (destino_str, instancia_id_confirmar) = {
         let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
         let mut memoria = cargar_memoria_en(ruta);
+        asegurar_instancia_y_contadores(&mut memoria);
+        let instancia_id = if !instancia_id_uso.trim().is_empty() {
+            instancia_id_uso.clone()
+        } else {
+            memoria.instancia_id.clone()
+        };
+        let mut fuentes_set: BTreeSet<String> = uso.fuentes_importadas.iter().cloned().collect();
+        for inst in &memoria.instancias_sincronizadas {
+            if !inst.trim().is_empty() && inst != &instancia_id {
+                fuentes_set.insert(inst.clone());
+            }
+        }
+        for inst in memoria.contadores_por_instancia.keys() {
+            if !inst.trim().is_empty() && inst != &instancia_id && inst != &memoria.instancia_id {
+                fuentes_set.insert(inst.clone());
+            }
+        }
+        let fuentes_importadas: Vec<String> = fuentes_set.into_iter().collect();
+
         if memoria.correcciones.is_empty()
             && memoria.reglas.is_empty()
             && memoria.aciertos == 0
@@ -8838,11 +9032,11 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             guardar_memoria_en(ruta, &memoria)?;
         }
 
-        destino.to_string_lossy().to_string()
+        (destino.to_string_lossy().to_string(), instancia_id_uso)
     };
 
     if let Some(r_uso) = ruta_uso {
-        confirmar_uso_exportado_en(r_uso, &instancia_id)?;
+        confirmar_uso_exportado_en(r_uso, &instancia_id_confirmar)?;
     }
 
     Ok(destino_str)
@@ -8886,6 +9080,960 @@ pub fn exportar_aprendizaje_con_catalogos_en(
 
 pub fn exportar_aprendizaje_en(ruta: &Path, carpeta_destino: &Path) -> Result<String, String> {
     exportar_aprendizaje_con_catalogos_en(ruta, carpeta_destino, &[], &[])
+}
+
+// ---------------------------------------------------------------------------
+// Sincronización bidireccional e idempotente entre dispositivos ("anti ping-pong")
+// ---------------------------------------------------------------------------
+
+pub fn memoria_tiene_actividad(m: &MemoriaAprendizaje) -> bool {
+    !m.reglas.is_empty()
+        || !m.correcciones.is_empty()
+        || !m.ejemplos_aciertos.is_empty()
+        || !m.tabla_alias.is_empty()
+        || !m.perfiles_sinteticos.is_empty()
+        || !m.consolidaciones_ia.is_empty()
+        || m.aciertos > 0
+        || m.llamadas_extraccion_total > 0
+        || m.llamadas_induccion_llm_total > 0
+        || m.llamadas_consolidacion_total > 0
+        || !m.contadores_por_instancia.is_empty()
+        || !m.metricas_por_defensor.is_empty()
+        || !m.metricas_campos.is_empty()
+        || !m.metricas_modelos.is_empty()
+        || !m.preferencias_por_defensor.is_empty()
+        || m.preferencias_estilo != PreferenciasEstilo::default()
+}
+
+fn elegir_par_beta_idempotente(
+    da: f64,
+    db: f64,
+    oa: f64,
+    ob: f64,
+    pa: f64,
+    pb: f64,
+) -> (f64, f64) {
+    let dist_d = (da - pa).abs() + (db - pb).abs();
+    let dist_o = (oa - pa).abs() + (ob - pb).abs();
+    let ord_d = (dist_d, da, db);
+    let ord_o = (dist_o, oa, ob);
+    if ord_o > ord_d {
+        (oa, ob)
+    } else {
+        (da, db)
+    }
+}
+
+fn fusionar_metricas_campo_idempotente(dest: &mut MetricasCampo, otra: &MetricasCampo) -> bool {
+    let antes = dest.clone();
+    if dest.campo.trim().is_empty() && !otra.campo.trim().is_empty() {
+        dest.campo = otra.campo.clone();
+    }
+    let (nueva_ewma, nueva_ts) = if otra.ultima_actualizacion > dest.ultima_actualizacion
+        || (otra.ultima_actualizacion == dest.ultima_actualizacion
+            && otra.evaluaciones > dest.evaluaciones)
+    {
+        (otra.precision_ewma, otra.ultima_actualizacion.clone())
+    } else {
+        (dest.precision_ewma, dest.ultima_actualizacion.clone())
+    };
+    dest.evaluaciones = dest.evaluaciones.max(otra.evaluaciones);
+    dest.aciertos = dest.aciertos.max(otra.aciertos);
+    dest.correcciones = dest.correcciones.max(otra.correcciones);
+    let (na, nb) = elegir_par_beta_idempotente(
+        dest.alpha,
+        dest.beta,
+        otra.alpha,
+        otra.beta,
+        PRIOR_BETA_ALPHA,
+        PRIOR_BETA_BETA,
+    );
+    dest.alpha = na;
+    dest.beta = nb;
+    dest.precision_ewma = nueva_ewma;
+    dest.ultima_actualizacion = nueva_ts;
+    *dest != antes
+}
+
+fn fusionar_preferencias_idempotente(dest: &mut PreferenciasEstilo, otra: &PreferenciasEstilo) -> bool {
+    let antes = dest.clone();
+    let def = PreferenciasEstilo::default();
+    let (a, b) = elegir_par_beta_idempotente(
+        dest.incluir_causas_secundarias_alpha,
+        dest.incluir_causas_secundarias_beta,
+        otra.incluir_causas_secundarias_alpha,
+        otra.incluir_causas_secundarias_beta,
+        def.incluir_causas_secundarias_alpha,
+        def.incluir_causas_secundarias_beta,
+    );
+    dest.incluir_causas_secundarias_alpha = a;
+    dest.incluir_causas_secundarias_beta = b;
+
+    let (a, b) = elegir_par_beta_idempotente(
+        dest.incluir_reprogramacion_alpha,
+        dest.incluir_reprogramacion_beta,
+        otra.incluir_reprogramacion_alpha,
+        otra.incluir_reprogramacion_beta,
+        def.incluir_reprogramacion_alpha,
+        def.incluir_reprogramacion_beta,
+    );
+    dest.incluir_reprogramacion_alpha = a;
+    dest.incluir_reprogramacion_beta = b;
+
+    let (a, b) = elegir_par_beta_idempotente(
+        dest.se_fija_aplazamiento_alpha,
+        dest.se_fija_aplazamiento_beta,
+        otra.se_fija_aplazamiento_alpha,
+        otra.se_fija_aplazamiento_beta,
+        def.se_fija_aplazamiento_alpha,
+        def.se_fija_aplazamiento_beta,
+    );
+    dest.se_fija_aplazamiento_alpha = a;
+    dest.se_fija_aplazamiento_beta = b;
+
+    let (a, b) = elegir_par_beta_idempotente(
+        dest.instalada_reprogramada_si_alpha,
+        dest.instalada_reprogramada_si_beta,
+        otra.instalada_reprogramada_si_alpha,
+        otra.instalada_reprogramada_si_beta,
+        def.instalada_reprogramada_si_alpha,
+        def.instalada_reprogramada_si_beta,
+    );
+    dest.instalada_reprogramada_si_alpha = a;
+    dest.instalada_reprogramada_si_beta = b;
+    *dest != antes
+}
+
+fn fusionar_regla_idempotente(dest: &mut ReglaAprendida, otra: &ReglaAprendida) -> bool {
+    let antes = dest.clone();
+    dest.refuerzos = dest.refuerzos.max(otra.refuerzos);
+    let (na, nb) = elegir_par_beta_idempotente(
+        dest.alpha,
+        dest.beta,
+        otra.alpha,
+        otra.beta,
+        PRIOR_BETA_ALPHA,
+        PRIOR_BETA_BETA,
+    );
+    dest.alpha = na;
+    dest.beta = nb;
+    dest.impresiones = dest.impresiones.max(otra.impresiones);
+    dest.aciertos_directos = dest.aciertos_directos.max(otra.aciertos_directos);
+    dest.fallos_directos = dest.fallos_directos.max(otra.fallos_directos);
+    dest.aciertos_sombra = dest.aciertos_sombra.max(otra.aciertos_sombra);
+    dest.confirmaciones_sombra = dest.confirmaciones_sombra.max(otra.confirmaciones_sombra);
+
+    let ts_dest = if !dest.ultima_actualizacion.is_empty() {
+        dest.ultima_actualizacion.as_str()
+    } else {
+        dest.actualizada.as_str()
+    };
+    let ts_otra = if !otra.ultima_actualizacion.is_empty() {
+        otra.ultima_actualizacion.as_str()
+    } else {
+        otra.actualizada.as_str()
+    };
+
+    let prio_d = prioridad_estado_regla(&dest.estado);
+    let prio_o = prioridad_estado_regla(&otra.estado);
+    if (ts_otra, prio_o) > (ts_dest, prio_d) && !otra.estado.trim().is_empty() {
+        dest.estado = otra.estado.clone();
+    }
+    if ((ts_otra > ts_dest && !otra.regla.trim().is_empty())
+        || (ts_otra == ts_dest && otra.regla.len() > dest.regla.len()))
+        && otra.regla.len() <= 240
+    {
+        dest.regla = otra.regla.clone();
+    }
+
+    let mut triggers_set: BTreeSet<String> = dest.triggers.iter().cloned().collect();
+    for t in &otra.triggers {
+        if triggers_set.len() >= 12 {
+            break;
+        }
+        if !t.trim().is_empty() && triggers_set.insert(t.clone()) {
+            dest.triggers.push(t.clone());
+        }
+    }
+    let mut conf_set: BTreeSet<String> = dest
+        .defensores_confirmantes
+        .iter()
+        .map(|d| normalizar_clave_defensor(d))
+        .filter(|d| !d.is_empty())
+        .collect();
+    for d in &otra.defensores_confirmantes {
+        let dk = normalizar_clave_defensor(d);
+        if !dk.is_empty() && conf_set.insert(dk.clone()) {
+            dest.defensores_confirmantes.push(dk);
+        }
+    }
+    if otra.ultima_actualizacion > dest.ultima_actualizacion {
+        dest.ultima_actualizacion = otra.ultima_actualizacion.clone();
+    }
+    if otra.actualizada > dest.actualizada {
+        dest.actualizada = otra.actualizada.clone();
+    }
+    dest.confianza_llm = dest.confianza_llm.max(otra.confianza_llm);
+    if dest.origen_correccion_id.is_empty() && !otra.origen_correccion_id.is_empty() {
+        dest.origen_correccion_id = otra.origen_correccion_id.clone();
+    }
+    *dest != antes
+}
+
+fn rango_estado_correccion(estado: &str) -> u8 {
+    match estado {
+        "analizada" | "descartada" => 3,
+        "esperando_aclaracion" => 2,
+        "pendiente" => 1,
+        _ => 0,
+    }
+}
+
+fn fusionar_correccion_idempotente(dest: &mut CorreccionIa, otra: &CorreccionIa) -> bool {
+    let mut cambio = false;
+    let clave_dest = (
+        rango_estado_correccion(&dest.estado),
+        !dest.nota_usuario.trim().is_empty(),
+        !dest.regla_generada.trim().is_empty(),
+        !dest.regla_id_asociada.is_empty(),
+    );
+    let clave_otra = (
+        rango_estado_correccion(&otra.estado),
+        !otra.nota_usuario.trim().is_empty(),
+        !otra.regla_generada.trim().is_empty(),
+        !otra.regla_id_asociada.is_empty(),
+    );
+    if clave_otra > clave_dest {
+        dest.estado = otra.estado.clone();
+        dest.pregunta_ia = otra.pregunta_ia.clone();
+        cambio = true;
+    }
+    if dest.nota_usuario.trim().is_empty() && !otra.nota_usuario.trim().is_empty() {
+        dest.nota_usuario = otra.nota_usuario.clone();
+        cambio = true;
+    }
+    if dest.regla_generada.trim().is_empty() && !otra.regla_generada.trim().is_empty() {
+        dest.regla_generada = otra.regla_generada.clone();
+        cambio = true;
+    }
+    if dest.regla_id_asociada.is_empty() && !otra.regla_id_asociada.is_empty() {
+        dest.regla_id_asociada = otra.regla_id_asociada.clone();
+        cambio = true;
+    }
+    if dest.defensor_clave.trim().is_empty() && !otra.defensor_clave.trim().is_empty() {
+        dest.defensor_clave = otra.defensor_clave.clone();
+        cambio = true;
+    }
+    cambio
+}
+
+fn fusionar_estado_consolidacion_idempotente(
+    dest: &mut EstadoConsolidacion,
+    otra: &EstadoConsolidacion,
+) -> bool {
+    let antes = dest.clone();
+    if otra.ultima_consolidacion > dest.ultima_consolidacion {
+        dest.presion = otra.presion;
+        dest.correcciones_sin_consolidar = otra.correcciones_sin_consolidar;
+        dest.notas_sin_consolidar = otra.notas_sin_consolidar;
+        dest.extracciones_desde_ultima = otra.extracciones_desde_ultima;
+        dest.ultima_consolidacion = otra.ultima_consolidacion.clone();
+    } else if otra.ultima_consolidacion == dest.ultima_consolidacion {
+        dest.presion = dest.presion.max(otra.presion);
+        dest.correcciones_sin_consolidar = dest
+            .correcciones_sin_consolidar
+            .max(otra.correcciones_sin_consolidar);
+        dest.notas_sin_consolidar = dest.notas_sin_consolidar.max(otra.notas_sin_consolidar);
+        dest.extracciones_desde_ultima = dest
+            .extracciones_desde_ultima
+            .max(otra.extracciones_desde_ultima);
+    }
+    for id in &otra.ids_consolidadas_recientes {
+        if !dest.ids_consolidadas_recientes.contains(id) {
+            dest.ids_consolidadas_recientes.push(id.clone());
+        }
+    }
+    dest.ids_consolidadas_recientes.sort();
+    dest.ids_consolidadas_recientes.dedup();
+    if dest.ids_consolidadas_recientes.len() > 200 {
+        let ex = dest.ids_consolidadas_recientes.len() - 200;
+        dest.ids_consolidadas_recientes.drain(0..ex);
+    }
+    *dest != antes
+}
+
+fn clave_cluster_sync(c: &ClusterCorreccion) -> (String, String, String) {
+    (
+        c.defensor_clave.clone(),
+        c.campo_principal.clone(),
+        c.firma_error.clone(),
+    )
+}
+
+fn rango_estado_cluster(s: &str) -> u8 {
+    match s {
+        "inducido" => 3,
+        "listo" => 2,
+        "acumulando" => 1,
+        _ => 0,
+    }
+}
+
+/// Fusión estrictamente idempotente y conmutativa entre la memoria local y una memoria remota
+/// (`merge(A, A) == A` y `merge(merge(A, B), A) == merge(A, B)`).
+pub fn fusionar_memoria_ia_structs(
+    dest: &mut MemoriaAprendizaje,
+    incoming: &MemoriaAprendizaje,
+) -> ResultadoFusionIa {
+    migrar_memoria_v1_a_v2(dest);
+    let mut remota = incoming.clone();
+    migrar_memoria_v1_a_v2(&mut remota);
+
+    let mut res = ResultadoFusionIa::default();
+    let mut estado_interno_cambio = false;
+
+    // 1. Identidad de instancia y G-Counters por instancia (anti ping-pong)
+    let id_local = dest.instancia_id.clone();
+    if memoria_tiene_actividad(&remota) {
+        let mut vistas: BTreeSet<String> = dest.instancias_sincronizadas.iter().cloned().collect();
+        if !remota.instancia_id.is_empty()
+            && remota.instancia_id != id_local
+            && vistas.insert(remota.instancia_id.clone())
+        {
+            dest.instancias_sincronizadas.push(remota.instancia_id.clone());
+        }
+        for s in &remota.instancias_sincronizadas {
+            if !s.is_empty() && s != &id_local && vistas.insert(s.clone()) {
+                dest.instancias_sincronizadas.push(s.clone());
+            }
+        }
+        dest.instancias_sincronizadas.sort();
+        dest.instancias_sincronizadas.dedup();
+    }
+
+    for (inst_id, cnt_in) in &remota.contadores_por_instancia {
+        if inst_id.trim().is_empty() {
+            continue;
+        }
+        let entry = dest
+            .contadores_por_instancia
+            .entry(inst_id.clone())
+            .or_default();
+        let antes = entry.clone();
+        entry.aciertos = entry.aciertos.max(cnt_in.aciertos);
+        entry.llamadas_extraccion = entry.llamadas_extraccion.max(cnt_in.llamadas_extraccion);
+        entry.llamadas_induccion = entry.llamadas_induccion.max(cnt_in.llamadas_induccion);
+        entry.llamadas_consolidacion = entry
+            .llamadas_consolidacion
+            .max(cnt_in.llamadas_consolidacion);
+        if *entry != antes {
+            estado_interno_cambio = true;
+        }
+    }
+    recalcular_totales_desde_contadores(dest);
+
+    // 2. Directorio de defensores (unión conservando el nombre más completo)
+    for (_, nombre) in &remota.nombres_defensores {
+        let clave = normalizar_clave_defensor(nombre);
+        if clave.is_empty() {
+            continue;
+        }
+        let existia = dest.nombres_defensores.contains_key(&clave);
+        let antes = dest.nombres_defensores.get(&clave).cloned();
+        registrar_nombre_defensor(&mut dest.nombres_defensores, nombre);
+        if !existia {
+            res.defensores_nuevos += 1;
+        } else if dest.nombres_defensores.get(&clave) != antes.as_ref() {
+            estado_interno_cambio = true;
+        }
+    }
+
+    // 3. Reglas aprendidas
+    for r in &remota.reglas {
+        let mut pos = if !r.id.trim().is_empty() {
+            dest.reglas.iter().position(|x| x.id == r.id)
+        } else {
+            None
+        };
+        if pos.is_none() && !r.id.starts_with("base-") {
+            pos = dest.reglas.iter().position(|x| {
+                !x.id.starts_with("base-")
+                    && x.defensor_alcance == r.defensor_alcance
+                    && x.campo_objetivo == r.campo_objetivo
+                    && x.tipo_error == r.tipo_error
+                    && es_misma_regla(&x.regla, &r.regla)
+            });
+        }
+        if let Some(idx) = pos {
+            if fusionar_regla_idempotente(&mut dest.reglas[idx], r) {
+                res.reglas_actualizadas += 1;
+            }
+        } else {
+            dest.reglas.push(r.clone());
+            res.reglas_nuevas += 1;
+        }
+    }
+    if dest.reglas.len() > MAX_REGLAS {
+        dest.reglas.sort_by(|a, b| {
+            let a_base = a.id.starts_with("base-");
+            let b_base = b.id.starts_with("base-");
+            b_base
+                .cmp(&a_base)
+                .then_with(|| {
+                    prioridad_estado_regla(&b.estado).cmp(&prioridad_estado_regla(&a.estado))
+                })
+                .then_with(|| {
+                    (b.alpha - b.beta)
+                        .partial_cmp(&(a.alpha - a.beta))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| b.ultima_actualizacion.cmp(&a.ultima_actualizacion))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        dest.reglas.truncate(MAX_REGLAS);
+    }
+
+    // 4. Correcciones de IA
+    for c in &remota.correcciones {
+        if let Some(idx) = dest
+            .correcciones
+            .iter()
+            .position(|x| !c.id.is_empty() && x.id == c.id)
+        {
+            if fusionar_correccion_idempotente(&mut dest.correcciones[idx], c) {
+                estado_interno_cambio = true;
+            }
+        } else {
+            dest.correcciones.push(c.clone());
+            res.correcciones_nuevas += 1;
+        }
+    }
+    dest.correcciones
+        .sort_by(|a, b| a.registrada.cmp(&b.registrada).then_with(|| a.id.cmp(&b.id)));
+    if dest.correcciones.len() > MAX_CORRECCIONES {
+        let ex = dest.correcciones.len() - MAX_CORRECCIONES;
+        dest.correcciones.drain(0..ex);
+    }
+
+    // 5. Ejemplos positivos ancla
+    for e in &remota.ejemplos_aciertos {
+        let ya_esta = !e.id.is_empty() && dest.ejemplos_aciertos.iter().any(|x| x.id == e.id);
+        if !ya_esta {
+            dest.ejemplos_aciertos.push(e.clone());
+            res.ejemplos_nuevos += 1;
+        }
+    }
+    dest.ejemplos_aciertos
+        .sort_by(|a, b| a.registrada.cmp(&b.registrada).then_with(|| a.id.cmp(&b.id)));
+    if dest.ejemplos_aciertos.len() > MAX_ACIERTOS_EJEMPLOS {
+        let ex = dest.ejemplos_aciertos.len() - MAX_ACIERTOS_EJEMPLOS;
+        dest.ejemplos_aciertos.drain(0..ex);
+    }
+
+    // 6. Tabla de alias estadísticos
+    for a in &remota.tabla_alias {
+        let ent_norm = crate::estadistica_ia::canonizar_entrada_alias(&a.campo, &a.entrada_norm);
+        let can_norm = normalizar_texto_sin_tildes(&a.canonico);
+        if let Some(exist) = dest.tabla_alias.iter_mut().find(|x| {
+            x.campo == a.campo
+                && crate::estadistica_ia::canonizar_entrada_alias(&x.campo, &x.entrada_norm)
+                    == ent_norm
+                && normalizar_texto_sin_tildes(&x.canonico) == can_norm
+                && x.defensor_alcance == a.defensor_alcance
+        }) {
+            let antes = exist.clone();
+            let (na, nb) = elegir_par_beta_idempotente(
+                exist.alpha,
+                exist.beta,
+                a.alpha,
+                a.beta,
+                PRIOR_ALIAS_ALPHA,
+                PRIOR_ALIAS_BETA,
+            );
+            exist.alpha = na;
+            exist.beta = nb;
+            for d in &a.defensores_confirmantes {
+                let dk = normalizar_clave_defensor(d);
+                if !dk.is_empty() && !exist.defensores_confirmantes.contains(&dk) {
+                    exist.defensores_confirmantes.push(dk);
+                }
+            }
+            if a.ultima_actualizacion > exist.ultima_actualizacion {
+                exist.ultima_actualizacion = a.ultima_actualizacion.clone();
+            }
+            if *exist != antes {
+                res.alias_actualizados += 1;
+            }
+        } else {
+            dest.tabla_alias.push(a.clone());
+            res.alias_nuevos += 1;
+        }
+    }
+
+    // 7. Perfiles sintéticos (mayor versión -> fecha más reciente -> resumen más completo)
+    for (k, p) in &remota.perfiles_sinteticos {
+        let amb = alcance_canonico(k);
+        if p.resumen.trim().is_empty() {
+            continue;
+        }
+        match dest.perfiles_sinteticos.get(&amb) {
+            Some(actual)
+                if (actual.version, &actual.ultima_actualizacion, actual.resumen.len())
+                    >= (p.version, &p.ultima_actualizacion, p.resumen.len()) => {}
+            _ => {
+                let mut nuevo = p.clone();
+                nuevo.ambito = amb.clone();
+                dest.perfiles_sinteticos.insert(amb, nuevo);
+                res.perfiles_actualizados += 1;
+            }
+        }
+    }
+
+    // 8. Historial de consolidaciones IA
+    for co in &remota.consolidaciones_ia {
+        if !co.id.is_empty() && !dest.consolidaciones_ia.iter().any(|x| x.id == co.id) {
+            dest.consolidaciones_ia.push(co.clone());
+            res.consolidaciones_nuevas += 1;
+        }
+    }
+    dest.consolidaciones_ia
+        .sort_by(|a, b| a.fecha.cmp(&b.fecha).then_with(|| a.id.cmp(&b.id)));
+    if dest.consolidaciones_ia.len() > MAX_CONSOLIDACIONES_HISTORIAL {
+        let ex = dest.consolidaciones_ia.len() - MAX_CONSOLIDACIONES_HISTORIAL;
+        dest.consolidaciones_ia.drain(0..ex);
+    }
+
+    // 9. Métricas (por campo, modelo y defensor) sin inflación
+    for (campo, mc_in) in &remota.metricas_campos {
+        match dest.metricas_campos.get_mut(campo) {
+            Some(mc) => {
+                if fusionar_metricas_campo_idempotente(mc, mc_in) {
+                    estado_interno_cambio = true;
+                }
+            }
+            None => {
+                dest.metricas_campos.insert(campo.clone(), mc_in.clone());
+                estado_interno_cambio = true;
+            }
+        }
+    }
+    for (clave, mm_in) in &remota.metricas_modelos {
+        match dest.metricas_modelos.get_mut(clave) {
+            Some(mm) => {
+                let antes = mm.clone();
+                mm.evaluaciones = mm.evaluaciones.max(mm_in.evaluaciones);
+                mm.aciertos = mm.aciertos.max(mm_in.aciertos);
+                mm.correcciones = mm.correcciones.max(mm_in.correcciones);
+                for (campo, mc_in) in &mm_in.por_campo {
+                    match mm.por_campo.get_mut(campo) {
+                        Some(mc) => {
+                            fusionar_metricas_campo_idempotente(mc, mc_in);
+                        }
+                        None => {
+                            mm.por_campo.insert(campo.clone(), mc_in.clone());
+                        }
+                    }
+                }
+                if *mm != antes {
+                    estado_interno_cambio = true;
+                }
+            }
+            None => {
+                dest.metricas_modelos.insert(clave.clone(), mm_in.clone());
+                estado_interno_cambio = true;
+            }
+        }
+    }
+    for (clave, md_in) in &remota.metricas_por_defensor {
+        let dk = normalizar_clave_defensor(clave);
+        if dk.is_empty() {
+            continue;
+        }
+        match dest.metricas_por_defensor.get_mut(&dk) {
+            Some(md) => {
+                let antes = md.clone();
+                if !md_in.nombre_mostrar.trim().is_empty()
+                    && (md.nombre_mostrar.trim().is_empty()
+                        || es_nombre_defensor_mas_informativo(
+                            &md_in.nombre_mostrar,
+                            &md.nombre_mostrar,
+                        ))
+                {
+                    md.nombre_mostrar = md_in.nombre_mostrar.clone();
+                }
+                md.aciertos = md.aciertos.max(md_in.aciertos);
+                md.correcciones = md.correcciones.max(md_in.correcciones);
+                for (campo, mc_in) in &md_in.por_campo {
+                    match md.por_campo.get_mut(campo) {
+                        Some(mc) => {
+                            fusionar_metricas_campo_idempotente(mc, mc_in);
+                        }
+                        None => {
+                            md.por_campo.insert(campo.clone(), mc_in.clone());
+                        }
+                    }
+                }
+                if *md != antes {
+                    estado_interno_cambio = true;
+                }
+            }
+            None => {
+                dest.metricas_por_defensor.insert(dk, md_in.clone());
+                estado_interno_cambio = true;
+            }
+        }
+    }
+
+    // 10. Preferencias de estilo y estados de consolidación / cola / Page-Hinkley
+    if fusionar_preferencias_idempotente(&mut dest.preferencias_estilo, &remota.preferencias_estilo)
+    {
+        estado_interno_cambio = true;
+    }
+    for (k, pref_in) in &remota.preferencias_por_defensor {
+        let dk = normalizar_clave_defensor(k);
+        if dk.is_empty() {
+            continue;
+        }
+        match dest.preferencias_por_defensor.get_mut(&dk) {
+            Some(p) => {
+                if fusionar_preferencias_idempotente(p, pref_in) {
+                    estado_interno_cambio = true;
+                }
+            }
+            None => {
+                dest.preferencias_por_defensor.insert(dk, pref_in.clone());
+                estado_interno_cambio = true;
+            }
+        }
+    }
+
+    for (k, est_in) in &remota.estados_consolidacion {
+        let amb = alcance_canonico(k);
+        match dest.estados_consolidacion.get_mut(&amb) {
+            Some(est) => {
+                if fusionar_estado_consolidacion_idempotente(est, est_in) {
+                    estado_interno_cambio = true;
+                }
+            }
+            None => {
+                dest.estados_consolidacion.insert(amb, est_in.clone());
+                estado_interno_cambio = true;
+            }
+        }
+    }
+
+    for clu in &remota.cola_induccion {
+        let pos = dest
+            .cola_induccion
+            .iter()
+            .position(|x| x.id == clu.id || clave_cluster_sync(x) == clave_cluster_sync(clu));
+        if let Some(idx) = pos {
+            let d = &mut dest.cola_induccion[idx];
+            let antes = d.clone();
+            for cid in &clu.correccion_ids {
+                if !d.correccion_ids.contains(cid) {
+                    d.correccion_ids.push(cid.clone());
+                }
+            }
+            d.correccion_ids.sort();
+            d.correccion_ids.dedup();
+            if d.primera_vez.is_empty()
+                || (!clu.primera_vez.is_empty() && clu.primera_vez < d.primera_vez)
+            {
+                d.primera_vez = clu.primera_vez.clone();
+            }
+            if clu.ultima_vez > d.ultima_vez {
+                d.ultima_vez = clu.ultima_vez.clone();
+            }
+            if rango_estado_cluster(&clu.estado) > rango_estado_cluster(&d.estado) {
+                d.estado = clu.estado.clone();
+            }
+            if d.regla_inducida_id.is_empty() && !clu.regla_inducida_id.is_empty() {
+                d.regla_inducida_id = clu.regla_inducida_id.clone();
+            }
+            for def_p in &clu.defensores_presentes {
+                let dk = normalizar_clave_defensor(def_p);
+                if !dk.is_empty() && !d.defensores_presentes.contains(&dk) {
+                    d.defensores_presentes.push(dk);
+                }
+            }
+            if *d != antes {
+                estado_interno_cambio = true;
+            }
+        } else {
+            dest.cola_induccion.push(clu.clone());
+            estado_interno_cambio = true;
+        }
+    }
+    if dest.cola_induccion.len() > MAX_CLUSTERS_COLA {
+        dest.cola_induccion.sort_by(|a, b| {
+            rango_estado_cluster(&a.estado)
+                .cmp(&rango_estado_cluster(&b.estado))
+                .then_with(|| b.ultima_vez.cmp(&a.ultima_vez))
+        });
+        dest.cola_induccion.truncate(MAX_CLUSTERS_COLA);
+    }
+
+    if (
+        remota.estado_aclaracion.alpha_resp,
+        remota.estado_aclaracion.beta_omit,
+    ) > (
+        dest.estado_aclaracion.alpha_resp,
+        dest.estado_aclaracion.beta_omit,
+    ) {
+        dest.estado_aclaracion.alpha_resp = remota.estado_aclaracion.alpha_resp;
+        dest.estado_aclaracion.beta_omit = remota.estado_aclaracion.beta_omit;
+        estado_interno_cambio = true;
+    }
+    for (firma, turno) in &remota.estado_aclaracion.firmas_explicadas_recientes {
+        if let Some((_, t_d)) = dest
+            .estado_aclaracion
+            .firmas_explicadas_recientes
+            .iter_mut()
+            .find(|(f, _)| f == firma)
+        {
+            if *turno > *t_d {
+                *t_d = *turno;
+                estado_interno_cambio = true;
+            }
+        } else {
+            dest.estado_aclaracion
+                .firmas_explicadas_recientes
+                .push((firma.clone(), *turno));
+            estado_interno_cambio = true;
+        }
+    }
+
+    for (k, ph_in) in &remota.page_hinkley_campos {
+        match dest.page_hinkley_campos.get(k) {
+            Some(act) if (act.n_obs, &act.ultimo_drift) >= (ph_in.n_obs, &ph_in.ultimo_drift) => {
+            }
+            _ => {
+                dest.page_hinkley_campos.insert(k.clone(), ph_in.clone());
+                estado_interno_cambio = true;
+            }
+        }
+    }
+    for (m_k, map_in) in &remota.page_hinkley_modelos {
+        let dest_map = dest.page_hinkley_modelos.entry(m_k.clone()).or_default();
+        for (c_k, ph_in) in map_in {
+            match dest_map.get(c_k) {
+                Some(act)
+                    if (act.n_obs, &act.ultimo_drift) >= (ph_in.n_obs, &ph_in.ultimo_drift) =>
+                {
+                }
+                _ => {
+                    dest_map.insert(c_k.clone(), ph_in.clone());
+                    estado_interno_cambio = true;
+                }
+            }
+        }
+    }
+
+    let cambios_visibles = res.reglas_nuevas
+        + res.reglas_actualizadas
+        + res.correcciones_nuevas
+        + res.ejemplos_nuevos
+        + res.alias_nuevos
+        + res.alias_actualizados
+        + res.perfiles_actualizados
+        + res.consolidaciones_nuevas
+        + res.defensores_nuevos;
+    res.cambios_totales = cambios_visibles + usize::from(estado_interno_cambio && cambios_visibles == 0);
+    res
+}
+
+/// Prepara un snapshot normalizado y con `instancia_id` estable para exportar en `PaqueteLokus`.
+pub fn preparar_snapshot_memoria_para_paquete_en(
+    ruta: &Path,
+) -> Result<MemoriaAprendizaje, String> {
+    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+    let existia_en_disco = ruta.exists();
+    let raw_sin_inst = if existia_en_disco {
+        fs::read_to_string(ruta)
+            .ok()
+            .and_then(|s| serde_json::from_str::<MemoriaAprendizaje>(&s).ok())
+            .is_some_and(|m| m.instancia_id.trim().is_empty())
+    } else {
+        false
+    };
+    let mut memoria = cargar_memoria_en(ruta);
+    asegurar_instancia_y_contadores(&mut memoria);
+    if raw_sin_inst || (!existia_en_disco && memoria_tiene_actividad(&memoria)) {
+        guardar_memoria_en(ruta, &memoria)?;
+    }
+    Ok(memoria)
+}
+
+pub fn inspeccionar_fusion_memoria_ia_en(
+    ruta: &Path,
+    incoming: &MemoriaAprendizaje,
+) -> InspeccionFusionIa {
+    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+    let mut copia = cargar_memoria_en(ruta);
+    let res = fusionar_memoria_ia_structs(&mut copia, incoming);
+    InspeccionFusionIa {
+        reglas_nuevas: res.reglas_nuevas,
+        reglas_actualizables: res.reglas_actualizadas,
+        correcciones_nuevas: res.correcciones_nuevas,
+        ejemplos_nuevos: res.ejemplos_nuevos,
+        alias_nuevos: res.alias_nuevos + res.alias_actualizados,
+        perfiles_nuevos_o_actualizados: res.perfiles_actualizados,
+        consolidaciones_nuevas: res.consolidaciones_nuevas,
+        defensores_nuevos: res.defensores_nuevos,
+        ya_sincronizado: res.cambios_totales == 0,
+    }
+}
+
+pub fn fusionar_memoria_ia_desde_paquete_en(
+    ruta: &Path,
+    incoming: &MemoriaAprendizaje,
+) -> Result<ResultadoFusionIa, String> {
+    let _guard = BLOQUEO_MEMORIA.lock().unwrap_or_else(|e| e.into_inner());
+    let mut memoria = cargar_memoria_en(ruta);
+    let res = fusionar_memoria_ia_structs(&mut memoria, incoming);
+    if res.cambios_totales > 0 || (!ruta.exists() && memoria_tiene_actividad(&memoria)) {
+        guardar_memoria_en(ruta, &memoria)?;
+    }
+    Ok(res)
+}
+
+/// Convierte un archivo técnico legado (`lokus_aprendizaje_ia_*.json` exportado antes de la sincronización bidireccional)
+/// en una `MemoriaAprendizaje` compatible con la fusión idempotente entre equipos.
+pub fn memoria_desde_paquete_exportacion(paq: &PaqueteExportacion) -> MemoriaAprendizaje {
+    let mut mem = MemoriaAprendizaje::default();
+    let inst_id = if !paq.instancia_id.trim().is_empty() {
+        paq.instancia_id.trim().to_string()
+    } else if !paq.exportacion_id.trim().is_empty() {
+        format!("legacy-export-{}", paq.exportacion_id.trim())
+    } else {
+        "legacy-export".to_string()
+    };
+
+    mem.instancia_id = inst_id.clone();
+    mem.instancias_sincronizadas = paq
+        .fuentes_importadas
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && *s != inst_id)
+        .map(str::to_string)
+        .collect();
+    mem.contadores_por_instancia.insert(
+        inst_id,
+        ContadoresInstanciaIa {
+            aciertos: paq.aciertos,
+            llamadas_extraccion: paq.llamadas_extraccion_total,
+            llamadas_induccion: paq.llamadas_induccion_llm_total,
+            llamadas_consolidacion: paq.llamadas_consolidacion_total,
+        },
+    );
+    mem.aciertos = paq.aciertos;
+    mem.llamadas_extraccion_total = paq.llamadas_extraccion_total;
+    mem.llamadas_induccion_llm_total = paq.llamadas_induccion_llm_total;
+    mem.llamadas_consolidacion_total = paq.llamadas_consolidacion_total;
+
+    mem.reglas = paq.reglas.clone();
+    mem.correcciones = paq.correcciones.clone();
+    mem.ejemplos_aciertos = paq.ejemplos_aciertos.clone();
+    mem.consolidaciones_ia = paq.consolidaciones_ia.clone();
+
+    mem.tabla_alias = if !paq.tabla_alias_raw.is_empty() {
+        paq.tabla_alias_raw.clone()
+    } else {
+        paq.alias_validados
+            .iter()
+            .map(|a| AliasEstadistico {
+                campo: a.campo.clone(),
+                entrada_norm: a.entrada_norm.clone(),
+                canonico: a.canonico.clone(),
+                alpha: 3.0,
+                beta: PRIOR_ALIAS_BETA,
+                defensor_alcance: alcance_canonico(&a.defensor_alcance),
+                defensores_confirmantes: Vec::new(),
+                ultima_actualizacion: paq.exportado.clone(),
+            })
+            .collect()
+    };
+
+    if let Some(pref) = &paq.preferencias_raw {
+        mem.preferencias_estilo = pref.clone();
+    }
+    mem.preferencias_por_defensor = paq.preferencias_por_defensor_raw.clone();
+
+    for p in &paq.perfiles_sinteticos {
+        let amb = alcance_canonico(&p.ambito);
+        if !p.resumen.trim().is_empty() {
+            let mut copy = p.clone();
+            copy.ambito = amb.clone();
+            mem.perfiles_sinteticos.insert(amb, copy);
+        }
+    }
+
+    let campo_diag_a_metrica = |c: &CampoDiagnostico| -> MetricasCampo {
+        let mut alpha = PRIOR_BETA_ALPHA + (c.aciertos as f64).min(30.0);
+        let mut beta = PRIOR_BETA_BETA + (c.correcciones as f64).min(30.0);
+        normalizar_ess(&mut alpha, &mut beta);
+        MetricasCampo {
+            campo: c.campo.clone(),
+            evaluaciones: c.evaluaciones,
+            aciertos: c.aciertos,
+            correcciones: c.correcciones,
+            alpha,
+            beta,
+            precision_ewma: c.precision_ewma,
+            ultima_actualizacion: paq.exportado.clone(),
+        }
+    };
+
+    for c in &paq.metricas_por_campo {
+        mem.metricas_campos
+            .insert(c.campo.clone(), campo_diag_a_metrica(c));
+    }
+
+    for mm in &paq.metricas_por_modelo {
+        let (prov, mod_nom) = mm
+            .clave
+            .split_once(':')
+            .map(|(p, m)| (p.to_string(), m.to_string()))
+            .unwrap_or_else(|| (String::new(), mm.clave.clone()));
+        mem.metricas_modelos.insert(
+            mm.clave.clone(),
+            MetricasModelo {
+                clave: mm.clave.clone(),
+                proveedor: prov,
+                modelo: mod_nom,
+                evaluaciones: mm.evaluaciones,
+                aciertos: mm.aciertos,
+                correcciones: mm.correcciones,
+                por_campo: BTreeMap::new(),
+            },
+        );
+    }
+
+    for d in &paq.defensores_directorio {
+        let dk = normalizar_clave_defensor(&d.nombre);
+        if dk.is_empty() {
+            continue;
+        }
+        registrar_nombre_defensor(&mut mem.nombres_defensores, &d.nombre);
+        let por_campo = d
+            .por_campo
+            .iter()
+            .map(|c| (c.campo.clone(), campo_diag_a_metrica(c)))
+            .collect();
+        mem.metricas_por_defensor.insert(
+            dk,
+            MetricasDefensor {
+                nombre_mostrar: d.nombre.clone(),
+                aciertos: d.aciertos,
+                correcciones: d.correcciones,
+                por_campo,
+            },
+        );
+    }
+
+    migrar_memoria_v1_a_v2(&mut mem);
+    mem
 }
 
 // ---------------------------------------------------------------------------
@@ -13142,6 +14290,217 @@ mod tests {
             beta_antes,
             beta_despues
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_sincronizacion_ia_bidireccional_anti_ping_pong_pc_celular_y_tres_equipos() {
+        let dir = preparar_dir("sync_ping_pong");
+        let ruta_pc = dir.join("pc_ia.json");
+        let ruta_cel = dir.join("cel_ia.json");
+        let ruta_pc2 = dir.join("pc2_ia.json");
+
+        // 1) PC acumula 2 aciertos + 1 corrección + alias + perfil sintético
+        let base_pc = audiencia_base();
+        registrar_resultado_completo_en(
+            &ruta_pc,
+            "Audiencia concentrada 09:00 J01",
+            &base_pc,
+            &base_pc,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+            None,
+        )
+        .unwrap();
+        registrar_resultado_completo_en(
+            &ruta_pc,
+            "Imputación J02 10:00",
+            &base_pc,
+            &base_pc,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+            None,
+        )
+        .unwrap();
+        let mut mem_pc = preparar_snapshot_memoria_para_paquete_en(&ruta_pc).unwrap();
+        mem_pc.reglas.push(ReglaAprendida {
+            id: "reg-pc-1".into(),
+            tipo_error: "otro".into(),
+            regla: "Conservar siglas J01 PMG en observaciones".into(),
+            refuerzos: 3,
+            actualizada: "2026-11-20T10:00:00-05:00".into(),
+            estado: "activa".into(),
+            campo_objetivo: "juzgado".into(),
+            triggers: vec!["j01".into()],
+            alpha: 5.0,
+            beta: 1.0,
+            impresiones: 4,
+            aciertos_directos: 4,
+            fallos_directos: 0,
+            origen: "induccion_llm".into(),
+            modelo_alcance: "*".into(),
+            defensor_alcance: "ana perez".into(),
+            defensores_confirmantes: vec!["ana perez".into()],
+            ultima_actualizacion: "2026-11-20T10:00:00-05:00".into(),
+            confianza_llm: 0.9,
+            aciertos_sombra: 0,
+            confirmaciones_sombra: 0,
+            origen_correccion_id: String::new(),
+        });
+        mem_pc.tabla_alias.push(AliasEstadistico {
+            campo: "juzgado".into(),
+            entrada_norm: "j1 pmg".into(),
+            canonico: "Juzgado 1 Penal Municipal".into(),
+            alpha: 4.0,
+            beta: 1.2,
+            defensor_alcance: "ana perez".into(),
+            defensores_confirmantes: vec!["ana perez".into()],
+            ultima_actualizacion: "2026-11-20T10:00:00-05:00".into(),
+        });
+        mem_pc.perfiles_sinteticos.insert(
+            "ana perez".into(),
+            PerfilSinteticoDefensor {
+                ambito: "ana perez".into(),
+                nombre_mostrar: "Dra. Ana Pérez".into(),
+                resumen: "Usa siglas cortas J01 PMG".into(),
+                version: 2,
+                ultima_actualizacion: "2026-11-20T10:00:00-05:00".into(),
+            },
+        );
+        guardar_memoria_en(&ruta_pc, &mem_pc).unwrap();
+
+        // 2) Celular ya tiene 1 acierto propio + 1 regla propia
+        registrar_resultado_completo_en(
+            &ruta_cel,
+            "Control garantías 14:00",
+            &base_pc,
+            &base_pc,
+            "gemini",
+            "gemini-2.5-flash",
+            &[],
+            Some("Dr. Luis Mora"),
+            None,
+        )
+        .unwrap();
+        let mut mem_cel = preparar_snapshot_memoria_para_paquete_en(&ruta_cel).unwrap();
+        mem_cel.reglas.push(ReglaAprendida {
+            id: "reg-cel-1".into(),
+            tipo_error: "motivo".into(),
+            regla: "Si no hay fiscalía presencial marcar motivo Fiscalía".into(),
+            refuerzos: 2,
+            actualizada: "2026-11-21T09:00:00-05:00".into(),
+            estado: "prueba".into(),
+            campo_objetivo: "motivo".into(),
+            triggers: vec!["fiscal".into()],
+            alpha: 3.0,
+            beta: 2.0,
+            impresiones: 2,
+            aciertos_directos: 2,
+            fallos_directos: 0,
+            origen: "induccion_llm".into(),
+            modelo_alcance: "*".into(),
+            defensor_alcance: "*".into(),
+            defensores_confirmantes: vec!["luis mora".into()],
+            ultima_actualizacion: "2026-11-21T09:00:00-05:00".into(),
+            confianza_llm: 0.85,
+            aciertos_sombra: 0,
+            confirmaciones_sombra: 0,
+            origen_correccion_id: String::new(),
+        });
+        guardar_memoria_en(&ruta_cel, &mem_cel).unwrap();
+
+        // Ronda 1: PC -> Celular
+        let snap_pc_1 = preparar_snapshot_memoria_para_paquete_en(&ruta_pc).unwrap();
+        let res_1 = fusionar_memoria_ia_desde_paquete_en(&ruta_cel, &snap_pc_1).unwrap();
+        assert_eq!(res_1.reglas_nuevas, 1);
+        assert!(res_1.alias_nuevos >= 1);
+        assert_eq!(res_1.perfiles_actualizados, 1);
+
+        let cel_tras_1 = cargar_memoria_en(&ruta_cel);
+        assert_eq!(cel_tras_1.aciertos, 3); // 2 de PC + 1 de Celular
+        assert_eq!(cel_tras_1.llamadas_extraccion_total, 3);
+        assert_eq!(cel_tras_1.reglas.len(), 2);
+        let cnt_alias_j1 = cel_tras_1
+            .tabla_alias
+            .iter()
+            .filter(|a| a.entrada_norm == "j1 pmg")
+            .count();
+        assert_eq!(cnt_alias_j1, 1);
+
+        // Ronda 2 (ping-pong): Celular -> PC
+        let snap_cel_1 = preparar_snapshot_memoria_para_paquete_en(&ruta_cel).unwrap();
+        let res_2 = fusionar_memoria_ia_desde_paquete_en(&ruta_pc, &snap_cel_1).unwrap();
+        assert_eq!(res_2.reglas_nuevas, 1);
+
+        let pc_tras_2 = cargar_memoria_en(&ruta_pc);
+        assert_eq!(pc_tras_2.aciertos, 3);
+        assert_eq!(pc_tras_2.llamadas_extraccion_total, 3);
+        assert_eq!(pc_tras_2.reglas.len(), 2);
+
+        // Ronda 3 (ping-pong sin cambios nuevos): PC -> Celular y Celular -> PC otra vez
+        let snap_pc_2 = preparar_snapshot_memoria_para_paquete_en(&ruta_pc).unwrap();
+        let insp_rep = inspeccionar_fusion_memoria_ia_en(&ruta_cel, &snap_pc_2);
+        assert!(insp_rep.ya_sincronizado);
+        let res_3 = fusionar_memoria_ia_desde_paquete_en(&ruta_cel, &snap_pc_2).unwrap();
+        assert_eq!(res_3.cambios_totales, 0);
+
+        let snap_cel_2 = preparar_snapshot_memoria_para_paquete_en(&ruta_cel).unwrap();
+        let res_4 = fusionar_memoria_ia_desde_paquete_en(&ruta_pc, &snap_cel_2).unwrap();
+        assert_eq!(res_4.cambios_totales, 0);
+
+        let pc_estable = cargar_memoria_en(&ruta_pc);
+        let cel_estable = cargar_memoria_en(&ruta_cel);
+        assert_eq!(pc_estable.aciertos, 3);
+        assert_eq!(cel_estable.aciertos, 3);
+        assert_eq!(pc_estable.reglas.len(), 2);
+        assert_eq!(cel_estable.reglas.len(), 2);
+        let reg_pc_1_a = pc_estable.reglas.iter().find(|r| r.id == "reg-pc-1").unwrap();
+        let reg_pc_1_b = cel_estable.reglas.iter().find(|r| r.id == "reg-pc-1").unwrap();
+        assert_eq!(reg_pc_1_a.refuerzos, 3);
+        assert_eq!(reg_pc_1_b.refuerzos, 3);
+        assert!((reg_pc_1_a.alpha - 5.0).abs() < 1e-9);
+        assert!((reg_pc_1_b.alpha - 5.0).abs() < 1e-9);
+
+        // Ronda 4: PC suma +1 acierto nuevo -> Celular recibe exactamente +1 (total 4, no doble conteo)
+        registrar_resultado_completo_en(
+            &ruta_pc,
+            "Acusación 15:00",
+            &base_pc,
+            &base_pc,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+            None,
+        )
+        .unwrap();
+        let snap_pc_3 = preparar_snapshot_memoria_para_paquete_en(&ruta_pc).unwrap();
+        fusionar_memoria_ia_desde_paquete_en(&ruta_cel, &snap_pc_3).unwrap();
+        let cel_final = cargar_memoria_en(&ruta_cel);
+        assert_eq!(cel_final.aciertos, 4);
+        assert_eq!(cel_final.llamadas_extraccion_total, 4);
+
+        // Tercer equipo (PC <-> PC2) converge igual e incluye instancias_sincronizadas en telemetría
+        let mut mem_pc2 = MemoriaAprendizaje::default();
+        incrementar_aciertos(&mut mem_pc2, 2);
+        incrementar_llamadas_extraccion(&mut mem_pc2, 2);
+        guardar_memoria_en(&ruta_pc2, &mem_pc2).unwrap();
+        let snap_pc2 = preparar_snapshot_memoria_para_paquete_en(&ruta_pc2).unwrap();
+        fusionar_memoria_ia_desde_paquete_en(&ruta_cel, &snap_pc2).unwrap();
+        let cel_con_3_equipos = cargar_memoria_en(&ruta_cel);
+        assert_eq!(cel_con_3_equipos.aciertos, 6); // 3 PC + 1 Celular + 2 PC2
+        assert_eq!(cel_con_3_equipos.instancias_sincronizadas.len(), 2);
+
+        let ruta_export_dev = exportar_aprendizaje_en(&ruta_cel, &dir).unwrap();
+        let dev_json: PaqueteExportacion =
+            serde_json::from_str(&fs::read_to_string(ruta_export_dev).unwrap()).unwrap();
+        assert_eq!(dev_json.aciertos, 6);
+        assert!(dev_json.fuentes_importadas.len() >= 2);
 
         let _ = fs::remove_dir_all(&dir);
     }

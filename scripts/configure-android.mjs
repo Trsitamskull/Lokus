@@ -4,7 +4,7 @@
  * (`src-tauri/gen/android/`) para producción:
  * - MainActivity.kt: edge-to-edge con insets reales (barras del sistema + recorte + teclado IME),
  *   botón Atrás inteligente conectado a Svelte y puente nativo `window.LokusAndroid`
- *   (MediaStore Descargas/Lokus + Hoja de Compartir vía FileProvider + sincronización de tema).
+ *   (Hoja de Compartir directa vía FileProvider sin duplicar en Descargas + respaldo MediaStore opcional + sincronización de tema).
  * - proguard-lokus.pro: preserva `@JavascriptInterface` bajo optimización R8 en builds release.
  * - AndroidManifest.xml: `windowSoftInputMode="adjustResize"`.
  * - res/xml/file_paths.xml: rutas `cache-path` y `files-path` para FileProvider.
@@ -249,11 +249,10 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
-    fun saveToDownloadsAndShare(
+    fun shareFile(
       base64Data: String,
       fileName: String,
-      mimeType: String,
-      openShare: Boolean
+      mimeType: String
     ): String {
       val response = JSONObject()
       return try {
@@ -261,39 +260,60 @@ class MainActivity : TauriActivity() {
         val safeMime = mimeType.trim().ifEmpty { "application/octet-stream" }
         val bytes = Base64.decode(base64Data, Base64.DEFAULT)
 
-        val savedLocation = saveBytesToDownloads(bytes, safeName, safeMime)
-        var shared = false
-
-        if (openShare) {
-          val shareFile = prepareShareFile(bytes, safeName)
-          val contentUri = FileProvider.getUriForFile(
-            this@MainActivity,
-            "\${packageName}.fileprovider",
-            shareFile
-          )
-          runOnUiThread {
-            if (isFinishing || isDestroyed) return@runOnUiThread
-            try {
-              val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                type = safeMime
-                putExtra(Intent.EXTRA_STREAM, contentUri)
-                putExtra(Intent.EXTRA_SUBJECT, safeName)
-                clipData = ClipData.newRawUri(safeName, contentUri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-              }
-              val chooser = Intent.createChooser(sendIntent, "Compartir $safeName").apply {
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-              }
-              startActivity(chooser)
-            } catch (_: Exception) {
+        val shareFile = prepareShareFile(bytes, safeName)
+        val contentUri = FileProvider.getUriForFile(
+          this@MainActivity,
+          "\${packageName}.fileprovider",
+          shareFile
+        )
+        runOnUiThread {
+          if (isFinishing || isDestroyed) return@runOnUiThread
+          try {
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+              type = safeMime
+              putExtra(Intent.EXTRA_STREAM, contentUri)
+              putExtra(Intent.EXTRA_SUBJECT, safeName)
+              clipData = ClipData.newRawUri(safeName, contentUri)
+              addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
+            val chooser = Intent.createChooser(sendIntent, "Compartir $safeName").apply {
+              addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(chooser)
+          } catch (_: Exception) {
           }
-          shared = true
         }
 
         response.put("ok", true)
+        response.put("shared", true)
+        response.toString()
+      } catch (e: Exception) {
+        response.put("ok", false)
+        response.put("error", e.message ?: "Error al compartir archivo en Android")
+        response.toString()
+      }
+    }
+
+    @JavascriptInterface
+    fun saveToDownloadsAndShare(
+      base64Data: String,
+      fileName: String,
+      mimeType: String,
+      openShare: Boolean
+    ): String {
+      if (openShare) {
+        return shareFile(base64Data, fileName, mimeType)
+      }
+      val response = JSONObject()
+      return try {
+        val safeName = sanitizeExportFileName(fileName)
+        val safeMime = mimeType.trim().ifEmpty { "application/octet-stream" }
+        val bytes = Base64.decode(base64Data, Base64.DEFAULT)
+        val savedLocation = saveBytesToDownloads(bytes, safeName, safeMime)
+
+        response.put("ok", true)
         response.put("savedLocation", savedLocation)
-        response.put("shared", shared)
+        response.put("shared", false)
         response.toString()
       } catch (e: Exception) {
         response.put("ok", false)

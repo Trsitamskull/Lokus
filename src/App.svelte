@@ -254,18 +254,17 @@
 
   async function entregarArchivoExportadoEnAndroid(ruta, mensajeEscritorio, duracion = 4500) {
     const puente = obtenerPuenteAndroid();
-    if (!puente || typeof puente.saveToDownloadsAndShare !== "function") {
+    const tieneShare = typeof puente?.shareFile === "function";
+    const tieneSave = typeof puente?.saveToDownloadsAndShare === "function";
+    if (!puente || (!tieneShare && !tieneSave)) {
       mostrarToast(mensajeEscritorio, "success", duracion);
       return;
     }
     try {
       const archivo = await invoke("cmd_leer_archivo_exportado", { ruta });
-      const rawRes = puente.saveToDownloadsAndShare(
-        archivo.contenido_b64,
-        archivo.nombre,
-        archivo.mime,
-        true
-      );
+      const rawRes = tieneShare
+        ? puente.shareFile(archivo.contenido_b64, archivo.nombre, archivo.mime)
+        : puente.saveToDownloadsAndShare(archivo.contenido_b64, archivo.nombre, archivo.mime, true);
       let res = null;
       try {
         res = typeof rawRes === "string" ? JSON.parse(rawRes) : rawRes;
@@ -273,7 +272,9 @@
       if (res?.ok) {
         invoke("cmd_limpiar_archivo_exportado", { ruta }).catch(() => {});
         mostrarToast(
-          `Guardado en ${res.savedLocation || `Descargas/Lokus/${archivo.nombre}`} y listo para compartir`,
+          res.savedLocation
+            ? `Guardado en ${res.savedLocation}`
+            : `Listo para compartir o guardar: ${archivo.nombre}`,
           "success",
           5000
         );
@@ -907,13 +908,13 @@
         tipoPaquete: tipoExportacion,
       });
       modalActivo = null;
-      await entregarArchivoExportadoEnAndroid(
-        ruta,
+      const mensajeExito =
         tipoExportacion === "completo"
           ? `Respaldo completo guardado en: ${ruta}`
-          : `Estadísticas exportadas en: ${ruta}`,
-        5000
-      );
+          : tipoExportacion === "aprendizaje_ia"
+            ? `Aprendizaje de IA exportado en: ${ruta}`
+            : `Estadísticas exportadas en: ${ruta}`;
+      await entregarArchivoExportadoEnAndroid(ruta, mensajeExito, 5000);
     } catch (e) {
       mostrarToast(String(e), "error", 4500);
     } finally {
@@ -972,10 +973,25 @@
       if (res.planillas_omitidas + res.resumenes_omitidos > 0) {
         partes.push(`${res.planillas_omitidas + res.resumenes_omitidos} repetido(s) omitido(s)`);
       }
+      if (res.ia_fusionada) {
+        const novedadesIa =
+          (res.ia_reglas_nuevas ?? 0) +
+          (res.ia_reglas_actualizadas ?? 0) +
+          (res.ia_correcciones_nuevas ?? 0) +
+          (res.ia_alias_nuevos ?? 0) +
+          (res.ia_perfiles_actualizados ?? 0);
+        partes.push(
+          novedadesIa > 0
+            ? `IA sincronizada (${novedadesIa} novedad(es))`
+            : "métricas de IA actualizadas"
+        );
+      }
       mostrarToast(
         partes.length > 0
           ? `Importación lista: ${partes.join(" · ")}`
-          : "Importación completada sin cambios (todo ya existía)",
+          : res.tipo_paquete === "aprendizaje_ia"
+            ? "Tu IA ya estaba sincronizada con ese archivo (0 duplicados)"
+            : "Importación completada sin cambios (todo ya existía)",
         "success",
         4800
       );

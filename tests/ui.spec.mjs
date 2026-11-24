@@ -222,6 +222,8 @@ function mockTauriInit(opts = {}) {
     responderAclaracionIa: [],
     descartarAclaracionIa: [],
     consolidarMemoriaIa: [],
+    exportarPaquete: [],
+    importarPaquete: [],
   };
 
   window.__TAURI_INTERNALS__ = {
@@ -685,6 +687,109 @@ function mockTauriInit(opts = {}) {
             },
             defensor: defensoresPorArchivo[args.nombre] ?? "",
           };
+        case "cmd_exportar_paquete": {
+          window.__LOKUS_TEST_CALLS__.exportarPaquete.push(args);
+          if (args.tipoPaquete === "aprendizaje_ia") {
+            return "/home/test/Descargas/lokus_ia_20261124_065000.lokus.json";
+          }
+          if (args.tipoPaquete === "estadisticas") {
+            return "/home/test/Descargas/lokus_estadisticas_20261124_065000.lokus.json";
+          }
+          return "/home/test/Descargas/lokus_respaldo_20261124_065000.lokus";
+        }
+        case "cmd_inspeccionar_importacion": {
+          let payload = null;
+          try {
+            const jsonText = decodeURIComponent(escape(atob(args.contenidoB64 || "")));
+            payload = JSON.parse(jsonText);
+          } catch {
+            payload = null;
+          }
+          if (payload?.tipo_paquete === "aprendizaje_ia") {
+            const yaSync = Boolean(opts?.iaYaSincronizada);
+            return {
+              tipo_paquete: "aprendizaje_ia",
+              exportado: "2026-11-24T06:50:00-05:00",
+              version_app: "5.3.0",
+              total_carpetas: 0,
+              total_planillas: 0,
+              planillas_nuevas: 0,
+              planillas_conflicto_id: 0,
+              planillas_conflicto_ruta: 0,
+              total_resumenes: 0,
+              resumenes_nuevos: 0,
+              resumenes_ya_en_disco: 0,
+              resumenes_ya_archivados: 0,
+              trae_configuracion: false,
+              defensores_en_paquete: 0,
+              juzgados_en_paquete: 0,
+              tipos_en_paquete: 0,
+              trae_aprendizaje_ia: true,
+              ia_reglas_en_paquete: 5,
+              ia_reglas_nuevas: yaSync ? 0 : 2,
+              ia_reglas_actualizables: yaSync ? 0 : 1,
+              ia_correcciones_en_paquete: 4,
+              ia_correcciones_nuevas: yaSync ? 0 : 2,
+              ia_alias_en_paquete: 3,
+              ia_alias_nuevos: yaSync ? 0 : 1,
+              ia_perfiles_en_paquete: 2,
+              ia_perfiles_actualizables: yaSync ? 0 : 1,
+              ia_ya_sincronizada: yaSync,
+            };
+          }
+          return {
+            tipo_paquete: "completo",
+            exportado: "2026-11-24T06:50:00-05:00",
+            version_app: "5.3.0",
+            total_carpetas: 1,
+            total_planillas: 1,
+            planillas_nuevas: 1,
+            planillas_conflicto_id: 0,
+            planillas_conflicto_ruta: 0,
+            total_resumenes: 0,
+            resumenes_nuevos: 0,
+            resumenes_ya_en_disco: 0,
+            resumenes_ya_archivados: 0,
+            trae_configuracion: true,
+            defensores_en_paquete: 2,
+            juzgados_en_paquete: 1,
+            tipos_en_paquete: 1,
+            trae_aprendizaje_ia: false,
+            ia_reglas_en_paquete: 0,
+            ia_reglas_nuevas: 0,
+            ia_reglas_actualizables: 0,
+            ia_correcciones_en_paquete: 0,
+            ia_correcciones_nuevas: 0,
+            ia_alias_en_paquete: 0,
+            ia_alias_nuevos: 0,
+            ia_perfiles_en_paquete: 0,
+            ia_perfiles_actualizables: 0,
+            ia_ya_sincronizada: false,
+          };
+        }
+        case "cmd_importar_paquete": {
+          window.__LOKUS_TEST_CALLS__.importarPaquete.push(args);
+          const yaSync = Boolean(opts?.iaYaSincronizada);
+          return {
+            tipo_paquete: "aprendizaje_ia",
+            carpetas_creadas: 0,
+            planillas_importadas: 0,
+            planillas_reemplazadas: 0,
+            planillas_omitidas: 0,
+            resumenes_importados: 0,
+            resumenes_reemplazados: 0,
+            resumenes_omitidos: 0,
+            config_fusionada: false,
+            ia_fusionada: !yaSync,
+            ia_reglas_nuevas: yaSync ? 0 : 2,
+            ia_reglas_actualizadas: yaSync ? 0 : 1,
+            ia_correcciones_nuevas: yaSync ? 0 : 2,
+            ia_ejemplos_nuevos: yaSync ? 0 : 1,
+            ia_alias_nuevos: yaSync ? 0 : 1,
+            ia_perfiles_actualizados: yaSync ? 0 : 1,
+            ia_consolidaciones_nuevas: 0,
+          };
+        }
         default:
           return null;
       }
@@ -1843,11 +1948,18 @@ test.describe("Lokus UI smoke checks", () => {
         setTheme: (isLight) => {
           window.__ANDROID_BRIDGE_CALLS__.themes.push(Boolean(isLight));
         },
+        shareFile: (b64, fileName, mime) => {
+          window.__ANDROID_BRIDGE_CALLS__.exports.push({ b64, fileName, mime, mode: "share" });
+          return JSON.stringify({
+            ok: true,
+            shared: true,
+          });
+        },
         saveToDownloadsAndShare: (b64, fileName, mime, openShare) => {
           window.__ANDROID_BRIDGE_CALLS__.exports.push({ b64, fileName, mime, openShare });
           return JSON.stringify({
             ok: true,
-            savedLocation: `Descargas/Lokus/${fileName}`,
+            savedLocation: openShare ? undefined : `Descargas/Lokus/${fileName}`,
             shared: Boolean(openShare),
           });
         },
@@ -1891,10 +2003,10 @@ test.describe("Lokus UI smoke checks", () => {
     await expect(btnOpciones).toBeVisible();
     await btnOpciones.click();
 
-    // Exportar planilla Excel debe invocar el puente Android (MediaStore + Share Sheet)
+    // Exportar planilla Excel debe invocar el puente Android directo (Share Sheet sin duplicado en Descargas)
     await page.getByRole("button", { name: "Exportar copia a Descargas" }).click();
     await expect(page.locator(".toast")).toContainText(
-      "Guardado en Descargas/Lokus/audiencias_enero.xlsx y listo para compartir"
+      "Listo para compartir o guardar: audiencias_enero.xlsx"
     );
 
     const bridgeCalls = await page.evaluate(() => window.__ANDROID_BRIDGE_CALLS__);
@@ -1903,7 +2015,7 @@ test.describe("Lokus UI smoke checks", () => {
     expect(bridgeCalls.exports[0].mime).toBe(
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
-    expect(bridgeCalls.exports[0].openShare).toBe(true);
+    expect(bridgeCalls.exports[0].mode).toBe("share");
     const cleanedExports = await page.evaluate(() => window.__LOKUS_CLEANED_EXPORTS__ || []);
     expect(cleanedExports).toContain(
       "/data/user/0/com.josebustamante.gestoraudiencias/files/exportaciones/audiencias_enero.xlsx"
@@ -1985,6 +2097,59 @@ test.describe("Lokus UI smoke checks", () => {
 
     const backRoot = await page.evaluate(() => window.__lokusHandleAndroidBack());
     expect(backRoot).toBe("exit");
+
+    expect(errors).toEqual([]);
+  });
+
+  test("portabilidad permite exportar e importar solo aprendizaje de IA entre equipos sin duplicados", async ({
+    page,
+  }) => {
+    const errors = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+
+    await page.addInitScript(mockTauriInit, { configured: true });
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Exportar o importar datos" }).click();
+    const dialog = page.locator("dialog[open]");
+    await expect(dialog).toBeVisible();
+
+    await expect(dialog.getByText("Copia completa de Lokus (.lokus)")).toBeVisible();
+    await expect(dialog.getByText("Solo aprendizaje de IA (.lokus.json)")).toBeVisible();
+    await expect(dialog.getByText("Solo estadísticas (.lokus.json)")).toBeVisible();
+
+    await dialog.getByText("Solo aprendizaje de IA (.lokus.json)").click();
+    await dialog.getByRole("button", { name: "Exportar a Descargas" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByText(/Aprendizaje de IA exportado en:.*lokus_ia_/)).toBeVisible();
+
+    const exportCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.exportarPaquete);
+    expect(exportCalls).toHaveLength(1);
+    expect(exportCalls[0].tipoPaquete).toBe("aprendizaje_ia");
+
+    await page.getByRole("button", { name: "Exportar o importar datos" }).click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("tab", { name: /Importar/i }).click();
+
+    await dialog.locator('input[type="file"]').setInputFiles({
+      name: "lokus_ia_celular.lokus.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify({ app: "Lokus", tipo_paquete: "aprendizaje_ia" })),
+    });
+
+    await expect(dialog.getByText("Paquete detectado: Aprendizaje de IA")).toBeVisible();
+    await expect(dialog.getByText(/Aprendizaje IA:/)).toBeVisible();
+    await expect(dialog.getByText(/2\s*regla\(s\) nueva\(s\)/)).toBeVisible();
+
+    await dialog.getByRole("button", { name: "Confirmar importación" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByText(/IA sincronizada \(7 novedad\(es\)\)/)).toBeVisible();
+
+    const importCalls = await page.evaluate(() => window.__LOKUS_TEST_CALLS__.importarPaquete);
+    expect(importCalls).toHaveLength(1);
 
     expect(errors).toEqual([]);
   });

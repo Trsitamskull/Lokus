@@ -7,7 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
-use umya_spreadsheet::{reader, writer, OrientationValues, PageSetup, Spreadsheet, Worksheet};
+use umya_spreadsheet::{
+    reader, writer, OrientationValues, PageSetup, SheetViewValues, Spreadsheet, Worksheet,
+};
 
 use crate::models::{
     buscar_posible_duplicado, extraer_numeros_radicado, extraer_prefijo_dane_radicado,
@@ -762,12 +764,24 @@ pub fn carpeta_descargas() -> Result<PathBuf, String> {
         .ok_or_else(|| "No se pudo localizar la carpeta de Descargas".to_string())
 }
 
+#[cfg(test)]
 fn contiene_printer_settings_zip(ruta: &Path) -> bool {
     let Ok(bytes) = fs::read(ruta) else {
         return false;
     };
     const AGUJA: &[u8] = b"xl/printerSettings/";
     bytes.windows(AGUJA.len()).any(|w| w == AGUJA)
+}
+
+/// Reescribe un `.xlsx` existente pasándolo por `guardar_libro` para eliminar configuraciones
+/// dependientes de impresora/red (`printerSettings*.bin`, DPI, `paperSize`, `PageLayout`).
+pub(crate) fn sanear_archivo_excel_en(ruta: &Path) {
+    if !ruta.is_file() {
+        return;
+    }
+    if let Ok(mut book) = reader::xlsx::read(ruta) {
+        let _ = guardar_libro(&mut book, ruta);
+    }
 }
 
 pub(crate) fn descargar_archivo_en(
@@ -800,13 +814,11 @@ pub(crate) fn descargar_archivo_en(
         contador += 1;
     }
 
-    // Planillas generadas antes de limpiar printerSettings pueden contener binarios DEVMODE
-    // de otro PC Windows que bloquean a Excel en la primera apertura; se sanean al exportar.
-    if contiene_printer_settings_zip(origen) {
-        if let Ok(mut book) = reader::xlsx::read(origen) {
-            if guardar_libro(&mut book, &destino).is_ok() {
-                return Ok(destino.to_string_lossy().to_string());
-            }
+    // Reempaquetar siempre al exportar para eliminar cualquier metadato de impresora
+    // (printerSettings*.bin, DPI, paperSize o vista PageLayout) que bloquee a Excel en Windows.
+    if let Ok(mut book) = reader::xlsx::read(origen) {
+        if guardar_libro(&mut book, &destino).is_ok() {
+            return Ok(destino.to_string_lossy().to_string());
         }
     }
 
@@ -927,9 +939,9 @@ fn restaurar_respaldo_en(ruta_excel: &Path, archivo_respaldo: &str) -> Result<()
         return Err("La versión de respaldo seleccionada ya no existe.".to_string());
     }
 
-    // Validar que el respaldo sea un Excel legible y copiarlo primero a un archivo temporal
+    // Validar que el respaldo sea un Excel legible y reescribirlo saneado en temporal
     // antes de rotar respaldos (para no eliminar el propio respaldo elegido si era el más antiguo).
-    let _ = reader::xlsx::read(&origen)
+    let mut book = reader::xlsx::read(&origen)
         .map_err(|e| format!("El respaldo seleccionado está dañado: {}", e))?;
 
     let parent = ruta_excel.parent().unwrap_or_else(|| Path::new("."));
@@ -940,7 +952,7 @@ fn restaurar_respaldo_en(ruta_excel: &Path, archivo_respaldo: &str) -> Result<()
     let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp_ruta = parent.join(format!(".{}.{}.{}.tmp", file_name, std::process::id(), seq));
 
-    fs::copy(&origen, &tmp_ruta)
+    guardar_libro(&mut book, &tmp_ruta)
         .map_err(|e| format!("No se pudo preparar la restauración: {}", e))?;
 
     let _ = crear_respaldo_en(ruta_excel);
@@ -964,18 +976,14 @@ pub fn restaurar_respaldo(nombre_archivo: &str, archivo_respaldo: &str) -> Resul
     Ok(())
 }
 
-/// Elimina binarios `printerSettings*.bin` (DEVMODE Windows) conservando márgenes,
-/// escala y orientación, para evitar bloqueos de impresora al abrir en otro equipo Windows.
+/// Elimina binarios `printerSettings*.bin` (DEVMODE Windows), atributos de página dependientes
+/// de impresora (`horizontalDpi`, `verticalDpi`, `paperSize`, `fitToWidth`/`fitToHeight`) y
+/// vistas de diseño de página (`PageLayout`/`PageBreakPreview`), conservando orientación y escala
+/// para evitar consultas al spooler de impresora al abrir en Windows.
 fn limpiar_printer_settings_libro(book: &mut Spreadsheet) {
     for ws in book.get_sheet_collection_mut() {
         let actual = ws.get_page_setup();
-        if actual.get_object_data().is_none() {
-            continue;
-        }
         let mut limpio = PageSetup::default();
-        if *actual.get_paper_size() > 0 {
-            limpio.set_paper_size(*actual.get_paper_size());
-        }
         match actual.get_orientation() {
             OrientationValues::Landscape => {
                 limpio.set_orientation(OrientationValues::Landscape);
@@ -988,19 +996,22 @@ fn limpiar_printer_settings_libro(book: &mut Spreadsheet) {
         if *actual.get_scale() > 0 {
             limpio.set_scale(*actual.get_scale());
         }
-        if *actual.get_fit_to_height() > 0 {
-            limpio.set_fit_to_height(*actual.get_fit_to_height());
-        }
-        if *actual.get_fit_to_width() > 0 {
-            limpio.set_fit_to_width(*actual.get_fit_to_width());
-        }
-        if *actual.get_horizontal_dpi() > 0 {
-            limpio.set_horizontal_dpi(*actual.get_horizontal_dpi());
-        }
-        if *actual.get_vertical_dpi() > 0 {
-            limpio.set_vertical_dpi(*actual.get_vertical_dpi());
-        }
         ws.set_page_setup(limpio);
+
+        let mut views = ws.get_sheets_views().clone();
+        let mut cambio_view = false;
+        for sv in views.get_sheet_view_list_mut() {
+            if matches!(
+                sv.get_view(),
+                SheetViewValues::PageLayout | SheetViewValues::PageBreakPreview
+            ) {
+                sv.set_view(SheetViewValues::Normal);
+                cambio_view = true;
+            }
+        }
+        if cambio_view {
+            ws.set_sheets_views(views);
+        }
     }
 }
 
@@ -3339,8 +3350,20 @@ mod tests {
 
         let book = reader::xlsx::read(&ruta).unwrap();
         let ws = book.get_sheet(&0).unwrap();
-        assert!(ws.get_page_setup().get_object_data().is_none());
-        assert_eq!(*ws.get_page_setup().get_scale(), 33);
+        let ps = ws.get_page_setup();
+        assert!(ps.get_object_data().is_none());
+        assert_eq!(*ps.get_scale(), 33);
+        assert!(matches!(ps.get_orientation(), OrientationValues::Portrait));
+        assert_eq!(*ps.get_horizontal_dpi(), 0);
+        assert_eq!(*ps.get_vertical_dpi(), 0);
+        assert_eq!(*ps.get_paper_size(), 0);
+        assert_eq!(*ps.get_fit_to_width(), 0);
+        assert_eq!(*ps.get_fit_to_height(), 0);
+        assert!(ws
+            .get_sheets_views()
+            .get_sheet_view_list()
+            .iter()
+            .all(|v| matches!(v.get_view(), SheetViewValues::Normal)));
         assert_eq!(ws.get_cell((2, FILA_DEFENSOR)).unwrap().get_value(), "DEFENSOR PÚBLICO: Laura Gómez");
         assert_eq!(ws.get_cell((7, FILA_TOTALES)).unwrap().get_value(), "1");
         assert_eq!(ws.get_cell((10, FILA_TOTALES)).unwrap().get_value(), "1");
@@ -3469,6 +3492,72 @@ mod tests {
 
         let reg_fin = cargar_registro_estadisticas_en(&dir);
         assert_eq!(reg_fin.ids_por_ruta.get(&r3), Some(&id_orig));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_descargar_y_sanear_elimina_dpi_papersize_y_page_layout_sin_printer_bin() {
+        let dir = preparar_temp_dir("sanear_dpi_papersize");
+        let descargas = dir.join("Descargas");
+        let ruta = dir.join("planilla_sin_bin_con_dpi.xlsx");
+
+        // Simular planilla sin xl/printerSettings/*.bin pero con atributos de impresora
+        // heredados de ONLYOFFICE/Excel (horizontalDpi, paperSize, fitToWidth, PageLayout).
+        let mut book =
+            reader::xlsx::read_reader(std::io::Cursor::new(PLANTILLA_BYTES), true).unwrap();
+        let mut ps = PageSetup::default();
+        ps.set_paper_size(9);
+        ps.set_scale(33);
+        ps.set_orientation(OrientationValues::Portrait);
+        ps.set_fit_to_width(1);
+        ps.set_fit_to_height(1);
+        ps.set_horizontal_dpi(600);
+        ps.set_vertical_dpi(600);
+        {
+            let ws = book.get_sheet_mut(&0).unwrap();
+            ws.set_page_setup(ps);
+            let mut views = ws.get_sheets_views().clone();
+            for sv in views.get_sheet_view_list_mut() {
+                sv.set_view(SheetViewValues::PageLayout);
+            }
+            ws.set_sheets_views(views);
+            escribir_defensor_en_hoja(ws, "Carlos Mendoza");
+        }
+        writer::xlsx::write(&book, &ruta).unwrap();
+        assert!(!contiene_printer_settings_zip(&ruta));
+
+        let exportado = descargar_archivo_en(&ruta, &descargas).unwrap();
+        let ruta_exp = Path::new(&exportado);
+        let book_exp = reader::xlsx::read(ruta_exp).unwrap();
+        let ws_exp = book_exp.get_sheet(&0).unwrap();
+        let ps_exp = ws_exp.get_page_setup();
+        assert_eq!(*ps_exp.get_horizontal_dpi(), 0);
+        assert_eq!(*ps_exp.get_vertical_dpi(), 0);
+        assert_eq!(*ps_exp.get_paper_size(), 0);
+        assert_eq!(*ps_exp.get_fit_to_width(), 0);
+        assert_eq!(*ps_exp.get_fit_to_height(), 0);
+        assert_eq!(*ps_exp.get_scale(), 33);
+        assert!(matches!(ps_exp.get_orientation(), OrientationValues::Portrait));
+        assert!(ws_exp
+            .get_sheets_views()
+            .get_sheet_view_list()
+            .iter()
+            .all(|v| matches!(v.get_view(), SheetViewValues::Normal)));
+
+        // También sanear in-place (ruta usada al importar paquetes .lokus)
+        sanear_archivo_excel_en(&ruta);
+        let book_in = reader::xlsx::read(&ruta).unwrap();
+        let ps_in = book_in.get_sheet(&0).unwrap().get_page_setup();
+        assert_eq!(*ps_in.get_horizontal_dpi(), 0);
+        assert_eq!(*ps_in.get_paper_size(), 0);
+        assert!(book_in
+            .get_sheet(&0)
+            .unwrap()
+            .get_sheets_views()
+            .get_sheet_view_list()
+            .iter()
+            .all(|v| matches!(v.get_view(), SheetViewValues::Normal)));
 
         let _ = fs::remove_dir_all(&dir);
     }
