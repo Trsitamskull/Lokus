@@ -10,12 +10,28 @@
       "actualizada": "2025-09-21T00:00:00-05:00",
       "estado": "activa",
       "campo_objetivo": "juzgado",
-      "triggers": ["cto", "mpal", "pcto", "juzgado", "circuito", "conocimiento"],
+      "triggers": [
+        "cto",
+        "mpal",
+        "pcto",
+        "juzgado",
+        "circuito",
+        "conocimiento"
+      ],
       "alpha": 6.0,
       "beta": 1.0,
+      "impresiones": 0,
+      "aciertos_directos": 0,
+      "fallos_directos": 0,
       "origen": "base_invariante",
       "modelo_alcance": "*",
-      "ultima_actualizacion": "2025-09-21T00:00:00-05:00"
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2025-09-21T00:00:00-05:00",
+      "confianza_llm": 0.0,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": ""
     },
     {
       "id": "base-jerarquia-causas-reacciones",
@@ -25,12 +41,30 @@
       "actualizada": "2025-09-21T00:00:00-05:00",
       "estado": "activa",
       "campo_objetivo": "motivo",
-      "triggers": ["solicite", "pedi", "reprogram", "fiscal", "juez", "inpec", "fracas", "fracsa"],
+      "triggers": [
+        "solicite",
+        "pedi",
+        "reprogram",
+        "fiscal",
+        "juez",
+        "inpec",
+        "fracas",
+        "fracsa"
+      ],
       "alpha": 6.0,
       "beta": 1.0,
+      "impresiones": 0,
+      "aciertos_directos": 0,
+      "fallos_directos": 0,
       "origen": "base_invariante",
       "modelo_alcance": "*",
-      "ultima_actualizacion": "2025-09-21T00:00:00-05:00"
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2025-09-21T00:00:00-05:00",
+      "confianza_llm": 0.0,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": ""
     },
     {
       "id": "base-defensor-confianza-contractual",
@@ -40,12 +74,333 @@
       "actualizada": "2025-09-21T00:00:00-05:00",
       "estado": "activa",
       "campo_objetivo": "motivo",
-      "triggers": ["contractual", "privado", "confianza", "abogado"],
+      "triggers": [
+        "contractual",
+        "privado",
+        "confianza",
+        "abogado"
+      ],
       "alpha": 6.0,
       "beta": 1.0,
+      "impresiones": 0,
+      "aciertos_directos": 0,
+      "fallos_directos": 0,
       "origen": "base_invariante",
       "modelo_alcance": "*",
-      "ultima_actualizacion": "2025-09-21T00:00:00-05:00"
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2025-09-21T00:00:00-05:00",
+      "confianza_llm": 0.0,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": ""
+    },
+    {
+      "id": "regla-20261119114551117-16",
+      "tipo_error": "estilo_observaciones",
+      "regla": "En observaciones, resume lo ocurrido en la audiencia sin presentar como parte de su resultado la fecha de una audiencia futura, y deja el juzgado vacío si la fuente no lo especifica.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-19T11:45:51.117159800-05:00",
+      "estado": "activa",
+      "campo_objetivo": "observaciones",
+      "triggers": [
+        "observaciones",
+        "resume",
+        "ocurrido",
+        "audiencia",
+        "presentar"
+      ],
+      "alpha": 23.778113615751575,
+      "beta": 4.09843645900421,
+      "impresiones": 75,
+      "aciertos_directos": 70,
+      "fallos_directos": 5,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T08:30:27.346029900-05:00",
+      "confianza_llm": 0.91,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261119114247552-12"
+    },
+    {
+      "id": "regla-20261123003855427-22",
+      "tipo_error": "estilo_observaciones",
+      "regla": "En observaciones, resume el resultado de la audiencia e indica la causa o responsable cuando fracase; si se realiza, señala brevemente que se desarrolló de manera adecuada.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-23T00:38:55.426515100-05:00",
+      "estado": "activa",
+      "campo_objetivo": "observaciones",
+      "triggers": [
+        "observaciones",
+        "resume",
+        "resultado",
+        "audiencia",
+        "indica",
+        "causa",
+        "responsable"
+      ],
+      "alpha": 21.142008113770427,
+      "beta": 3.87558623589476,
+      "impresiones": 44,
+      "aciertos_directos": 41,
+      "fallos_directos": 3,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "david felipe ariza perez",
+      "defensores_confirmantes": [
+        "david felipe ariza perez"
+      ],
+      "ultima_actualizacion": "2026-11-23T08:30:27.346029900-05:00",
+      "confianza_llm": 0.86,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261123003802891-18"
+    },
+    {
+      "id": "regla-20261123003455351-6",
+      "tipo_error": "juzgado",
+      "regla": "En el nombre del juzgado, desarrolla la abreviatura «MPAL» como «Municipal».",
+      "refuerzos": 1,
+      "actualizada": "2026-11-23T00:34:55.350857600-05:00",
+      "estado": "activa",
+      "campo_objetivo": "juzgado",
+      "triggers": [
+        "nombre",
+        "juzgado",
+        "desarrolla",
+        "abreviatura",
+        "mpal",
+        "municipal"
+      ],
+      "alpha": 21.72136842591327,
+      "beta": 4.286062891338945,
+      "impresiones": 51,
+      "aciertos_directos": 49,
+      "fallos_directos": 2,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "david felipe ariza perez",
+      "defensores_confirmantes": [
+        "david felipe ariza perez"
+      ],
+      "ultima_actualizacion": "2026-11-23T08:30:27.346029900-05:00",
+      "confianza_llm": 0.98,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261123003339080-2"
+    },
+    {
+      "id": "regla-20261123081720770-70",
+      "tipo_error": "motivo",
+      "regla": "En reprogramaciones relacionadas con gestiones para el principio de oportunidad, registra el motivo como «Defensor Público» cuando la corrección del usuario así lo indique, aunque el texto mencione a la Fiscalía.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-23T08:17:20.768155600-05:00",
+      "estado": "activa",
+      "campo_objetivo": "motivo",
+      "triggers": [
+        "reprogramaciones",
+        "relacionadas",
+        "gestiones",
+        "principio",
+        "oportunidad",
+        "registra",
+        "motivo"
+      ],
+      "alpha": 16.2236133664817,
+      "beta": 3.0,
+      "impresiones": 22,
+      "aciertos_directos": 22,
+      "fallos_directos": 0,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "david felipe ariza perez",
+      "defensores_confirmantes": [
+        "david felipe ariza perez"
+      ],
+      "ultima_actualizacion": "2026-11-23T08:30:27.346029900-05:00",
+      "confianza_llm": 0.82,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261123080909213-51"
+    },
+    {
+      "id": "regla-20261123080512549-44",
+      "tipo_error": "motivo",
+      "regla": "Cuando una audiencia fracasa, registra como motivo la parte responsable indicada en el texto o en la corrección del usuario, y refleja esa causa en las observaciones.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-23T08:05:12.547171-05:00",
+      "estado": "activa",
+      "campo_objetivo": "motivo",
+      "triggers": [
+        "audiencia",
+        "fracasa",
+        "registra",
+        "motivo",
+        "responsable"
+      ],
+      "alpha": 19.020254319730093,
+      "beta": 3.989658198484928,
+      "impresiones": 34,
+      "aciertos_directos": 31,
+      "fallos_directos": 3,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "david felipe ariza perez",
+      "defensores_confirmantes": [
+        "david felipe ariza perez"
+      ],
+      "ultima_actualizacion": "2026-11-23T08:30:27.346029900-05:00",
+      "confianza_llm": 0.82,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261123004108178-30"
+    },
+    {
+      "id": "regla-20261122214447804-8",
+      "tipo_error": "motivo",
+      "regla": "Si el texto menciona únicamente la solicitud de un abogado y no lo identifica como defensor de confianza, clasifique el motivo como defensor público, según la preferencia indicada por el usuario.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-22T21:44:47.803314100-05:00",
+      "estado": "activa",
+      "campo_objetivo": "motivo",
+      "triggers": [
+        "si",
+        "texto",
+        "menciona",
+        "solicitud",
+        "abogado",
+        "no",
+        "identifica",
+        "j2pca",
+        "audiencia",
+        "continuacion"
+      ],
+      "alpha": 17.532084509933693,
+      "beta": 3.8153726976,
+      "impresiones": 28,
+      "aciertos_directos": 27,
+      "fallos_directos": 1,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-22T22:25:28.047931900-05:00",
+      "confianza_llm": 0.96,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261122214306987-6"
+    },
+    {
+      "id": "regla-20261122223823639-85",
+      "tipo_error": "motivo",
+      "regla": "Atribuye el motivo al actor sustentado por la fuente. No clasifiques a un abogado o defensor como defensor de confianza si la fuente no lo indica expresamente.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-22T22:38:23.639660-05:00",
+      "estado": "activa",
+      "campo_objetivo": "motivo",
+      "triggers": [
+        "atribuye",
+        "motivo",
+        "actor",
+        "sustentado",
+        "fuente",
+        "no",
+        "clasifiques",
+        "abogado",
+        "defensor",
+        "confianza"
+      ],
+      "alpha": 14.009916615684464,
+      "beta": 3.0,
+      "impresiones": 17,
+      "aciertos_directos": 17,
+      "fallos_directos": 0,
+      "origen": "consolidacion_ia",
+      "modelo_alcance": "*",
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T08:02:03.399806300-05:00",
+      "confianza_llm": 0.81,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261122222528052-83"
+    },
+    {
+      "id": "regla-20261122220534348-37",
+      "tipo_error": "estilo_observaciones",
+      "regla": "Cuando se reporta que la audiencia se realizó, redacta las observaciones con la fórmula breve «Se realizó audiencia de manera adecuada».",
+      "refuerzos": 1,
+      "actualizada": "2026-11-22T22:05:34.347753100-05:00",
+      "estado": "activa",
+      "campo_objetivo": "observaciones",
+      "triggers": [
+        "reporta",
+        "audiencia",
+        "realizo",
+        "redacta",
+        "observaciones",
+        "formula",
+        "j2pca",
+        "continuacion",
+        "juicio"
+      ],
+      "alpha": 11.922128440968075,
+      "beta": 4.588201367036577,
+      "impresiones": 16,
+      "aciertos_directos": 14,
+      "fallos_directos": 2,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-22T22:25:28.047931900-05:00",
+      "confianza_llm": 0.91,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261122215949226-24"
+    },
+    {
+      "id": "regla-20261123082425187-94",
+      "tipo_error": "estilo_observaciones",
+      "regla": "Resume los hechos y el resultado conforme a la fuente. Distingue entre audiencia instalada, suspendida, fracasada o reprogramada; no infieras causas ni agregues fechas futuras.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-23T08:24:25.186079900-05:00",
+      "estado": "activa",
+      "campo_objetivo": "observaciones",
+      "triggers": [
+        "resume",
+        "hechos",
+        "resultado",
+        "conforme",
+        "fuente",
+        "distingue",
+        "audiencia",
+        "observaciones",
+        "suspendida",
+        "fracasa",
+        "reprogramada"
+      ],
+      "alpha": 5.61568256,
+      "beta": 3.0,
+      "impresiones": 4,
+      "aciertos_directos": 4,
+      "fallos_directos": 0,
+      "origen": "consolidacion_ia",
+      "modelo_alcance": "*",
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T08:26:40.738548800-05:00",
+      "confianza_llm": 0.79,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261123081003814-54"
     }
   ],
   "correcciones": [
@@ -94,9 +449,11 @@
       ],
       "estado": "analizada",
       "regla_generada": "Si menciona 'fracasa por solicitud de la fiscalía', marcar realizada='NO' con motivo='Fiscalía' y anteponer 'Juzgado' al nombre del despacho si falta.",
+      "regla_id_asociada": "",
       "pregunta_ia": "",
       "nota_usuario": "",
-      "exportada": true
+      "exportada": true,
+      "defensor_clave": ""
     },
     {
       "id": "base-caso-cto-juzgado",
@@ -133,9 +490,894 @@
       ],
       "estado": "analizada",
       "regla_generada": "No expandir 'Cto' / 'CTO' como 'Circuito' en el campo juzgado; dejar la abreviación tal como viene en el texto.",
+      "regla_id_asociada": "",
       "pregunta_ia": "",
       "nota_usuario": "CTO puede ser Circuito o Conocimiento, mejor dejarlo abreviado.",
-      "exportada": true
+      "exportada": true,
+      "defensor_clave": ""
+    },
+    {
+      "id": "corr-20261119115444578-26",
+      "registrada": "2026-11-19T11:54:44.578524100-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "25 DE SEPTIEMBRE\n[PROCESADO] Rad: [RADICADO] J11 no se hizo audiencia juicio oral, no han podido notificar al procesado. Próxima fecha: 22 de enero 12: 00 m.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "25/09/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Usuario",
+        "observaciones": "No se realizó la audiencia porque no han podido notificar al procesado. Próxima fecha: 22 de enero a las 12:00 m."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "25/09/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Juez",
+        "observaciones": "No se realizó la audiencia porque no han podido notificar al procesado."
+      },
+      "campos": [
+        {
+          "campo": "motivo",
+          "valor_ia": "Usuario",
+          "valor_usuario": "Juez"
+        },
+        {
+          "campo": "observaciones",
+          "valor_ia": "No se realizó la audiencia porque no han podido notificar al procesado. Próxima fecha: 22 de enero a las 12:00 m.",
+          "valor_usuario": "No se realizó la audiencia porque no han podido notificar al procesado."
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Cuando la audiencia no se realiza porque no se ha podido notificar al procesado, atribuya el motivo al Juez y limite las observaciones a esa causa, sin incluir la próxima fecha.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": ""
+    },
+    {
+      "id": "corr-20261119115507586-29",
+      "registrada": "2026-11-19T11:55:07.585988200-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "25 DE SEPTIEMBRE\n[PROCESADO] Rad: [RADICADO] J11 no se hizo audiencia juicio oral, no han podido notificar al procesado. Próxima fecha: 22 de enero 12: 00 m.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "25/09/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Usuario",
+        "observaciones": "No se realizó la audiencia porque no han podido notificar al procesado. Próxima fecha: 22 de enero."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "25/09/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Juez",
+        "observaciones": "No se realizó la audiencia porque no han podido notificar al procesado."
+      },
+      "campos": [
+        {
+          "campo": "motivo",
+          "valor_ia": "Usuario",
+          "valor_usuario": "Juez"
+        },
+        {
+          "campo": "observaciones",
+          "valor_ia": "No se realizó la audiencia porque no han podido notificar al procesado. Próxima fecha: 22 de enero.",
+          "valor_usuario": "No se realizó la audiencia porque no han podido notificar al procesado."
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Cuando la audiencia no se realiza porque no se ha podido notificar al procesado, atribuya el motivo al Juez y limite las observaciones a esa causa, sin incluir la próxima fecha.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": ""
+    },
+    {
+      "id": "corr-20261122214306987-6",
+      "registrada": "2026-11-22T21:43:06.982684400-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "2.\tJ2PCA, AUDIENCIA DE CONTINUACIÓN DE JUICIO ORAL, para el día VEINTIUNO (21) DE OCTUBRE DE 2026 A LAS 8:30 A. M., en el proceso penal que se sigue en contra de [PROCESADO] [PROCESADO] [PROCESADO] [PROCESADO], identificado con C.C. [NUMERO], y [PROCESADO] [PROCESADO] [PROCESADO] [PROCESADO], identificado con C.C. [NUMERO]; por el delito de OMISIÓN AL AGENTE RETENEDOR O RECAUDADOR; con radicado No. [RADICADO], fracasa por solicitud de abogado de [PROCESADO] [PROCESADO]",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "21/10/2026",
+        "hora": "08:30",
+        "juzgado": "J2PCA",
+        "realizada": "NO",
+        "motivo": "Defensor Confianza",
+        "observaciones": ""
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de continuacion de juicio oral",
+        "fecha": "21/10/2026",
+        "hora": "08:30",
+        "juzgado": "Juzgado 2 Promiscuo del Circuito de Aguachica",
+        "realizada": "NO",
+        "motivo": "Defensor Público",
+        "observaciones": "La audiencia fracasa por causa atribuible a la defensa"
+      },
+      "campos": [
+        {
+          "campo": "tipo",
+          "valor_ia": "Audiencia de juicio oral",
+          "valor_usuario": "Audiencia de continuacion de juicio oral"
+        },
+        {
+          "campo": "juzgado",
+          "valor_ia": "J2PCA",
+          "valor_usuario": "Juzgado 2 Promiscuo del Circuito de Aguachica"
+        },
+        {
+          "campo": "motivo",
+          "valor_ia": "Defensor Confianza",
+          "valor_usuario": "Defensor Público"
+        },
+        {
+          "campo": "observaciones",
+          "valor_ia": "",
+          "valor_usuario": "La audiencia fracasa por causa atribuible a la defensa"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Si el texto menciona únicamente la solicitud de un abogado y no lo identifica como defensor de confianza, clasifique el motivo como defensor público, según la preferencia indicada por el usuario.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "por que hace la mencion a un abogado pero no especifica que sea \"defensor de confianza\" entonces por descarte es el defensor publico",
+      "exportada": true,
+      "defensor_clave": "ivan cordoba"
+    },
+    {
+      "id": "corr-20261122214617632-10",
+      "registrada": "2026-11-22T21:46:17.628469-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "3.\tTribunal penal de valledupar, AUDIENCIA LECTURA DECISIÓN - RAD. [RADICADO] - PROCESADO: [PROCESADO] - miércoles, veintiuno (21) de octubre de dos mil veintiséis (2.026) a las diez y quince de la mañana (10:15 a.m.), confirma sentencia de primera instancia.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de lectura de decisión",
+        "fecha": "21/10/2026",
+        "hora": "10:15",
+        "juzgado": "Tribunal Penal de Valledupar",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se confirma la sentencia de primera instancia."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de lectura de decisión",
+        "fecha": "21/10/2026",
+        "hora": "10:15",
+        "juzgado": "Tribunal Penal de Valledupar",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizo audiencia de manera adecuada"
+      },
+      "campos": [
+        {
+          "campo": "observaciones",
+          "valor_ia": "Se confirma la sentencia de primera instancia.",
+          "valor_usuario": "Se realizo audiencia de manera adecuada"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "En observaciones, resume únicamente la realización o el fracaso de la audiencia y su causa, sin incluir decisiones de fondo ni detalles de la nueva programación.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "ivan cordoba"
+    },
+    {
+      "id": "corr-20261122215757254-21",
+      "registrada": "2026-11-22T21:57:57.249046700-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "17.\tJ2PMA, día 3 de noviembre del presente año, a las 10,30 de la mañana, con el fin de llevar a cabo LA AUDIENCIA CONCENTRADA, dentro del proceso penal seguido contra [PROCESADO], por la conducta punible de VIOLENCIA INTRAFAMILIAR AGRAVADA. RAD-[RADICADO], fracasa por conexión con el juzgado, Se señala nuevamente el día 16 de febrero del año 2.027, a las 9 de la mañana.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - RAD-[RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "03/11/2026",
+        "hora": "10:30",
+        "juzgado": "Juzgado 2 Promiscuo Municipal de Aguachica",
+        "realizada": "NO",
+        "motivo": "Juez",
+        "observaciones": "Fracasó por problemas de conexión con el juzgado. Se señaló nuevamente para el 16/02/2027 a las 09:00."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - RAD-[RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "03/11/2026",
+        "hora": "10:30",
+        "juzgado": "Juzgado 2 Promiscuo Municipal de Aguachica",
+        "realizada": "NO",
+        "motivo": "Juez",
+        "observaciones": "Fracasó por problemas de conexión con el juzgado."
+      },
+      "campos": [
+        {
+          "campo": "observaciones",
+          "valor_ia": "Fracasó por problemas de conexión con el juzgado. Se señaló nuevamente para el 16/02/2027 a las 09:00.",
+          "valor_usuario": "Fracasó por problemas de conexión con el juzgado."
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "En observaciones, resume únicamente la realización o el fracaso de la audiencia y su causa, sin incluir decisiones de fondo ni detalles de la nueva programación.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "ivan cordoba"
+    },
+    {
+      "id": "corr-20261122215949226-24",
+      "registrada": "2026-11-22T21:59:49.222274700-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "18.\tJ2PCA, AUDIENCIA DE CONTINUACIÓN DE JUICIO ORAL para el día TRES (03) DE NOVIEMBRE DE 2026 A LAS 2:30 P. M. en el proceso penal que se sigue en contra de [PROCESADO], identificado con C.C. [NUMERO]; por el delito de HOMICIDIO. Radicado N.º [RADICADO], se instala audiencia y fiscalia informa que no cuenta con testigos para esa fecha.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de continuacion de juicio oral",
+        "fecha": "03/11/2026",
+        "hora": "14:30",
+        "juzgado": "Juzgado 2 Promiscuo del Circuito de Aguachica",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "La audiencia se instaló; la Fiscalía informó que no contaba con testigos para esa fecha."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de continuacion de juicio oral",
+        "fecha": "03/11/2026",
+        "hora": "14:30",
+        "juzgado": "Juzgado 2 Promiscuo del Circuito de Aguachica",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizo audiencia de manera adecuada"
+      },
+      "campos": [
+        {
+          "campo": "observaciones",
+          "valor_ia": "La audiencia se instaló; la Fiscalía informó que no contaba con testigos para esa fecha.",
+          "valor_usuario": "Se realizo audiencia de manera adecuada"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Cuando se reporta que la audiencia se realizó, redacta las observaciones con la fórmula breve «Se realizó audiencia de manera adecuada».",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "ivan cordoba"
+    },
+    {
+      "id": "corr-20261123003339080-2",
+      "registrada": "2026-11-23T00:33:39.076924200-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "1.\tPROCESO BAJO RADICADO [RADICADO], SEGUIDO [PROCESADO]:  AUDIENCIA DE JUICIO ORAL EL DÍA 21 DE OCTUBRE  EN EL JUZGADO 8 PENAL MPAL DONDE REPROGRAMO POR PROBLEMAS DE CONEXIÓN DE LA VICTIMA QUIEN ERA LA TESTIGO",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "21/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 8 Penal MPAL",
+        "realizada": "NO",
+        "motivo": "Víctima",
+        "observaciones": "La audiencia se reprogramó por problemas de conexión de la víctima, quien era testigo."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "21/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 8 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Víctima",
+        "observaciones": "La audiencia se reprogramó por problemas de conexión de la víctima, quien era testigo."
+      },
+      "campos": [
+        {
+          "campo": "juzgado",
+          "valor_ia": "Juzgado 8 Penal MPAL",
+          "valor_usuario": "Juzgado 8 Penal Municipal"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "En el nombre del juzgado, desarrolla la abreviatura «MPAL» como «Municipal».",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": false,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-20261123003452355-5",
+      "registrada": "2026-11-23T00:34:52.346537600-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "2.\tPROCESO BAJO RADICADO [RADICADO], SEGUIDO [PROCESADO] [PROCESADO] [PROCESADO] [PROCESADO] C.C [NUMERO] 2- [PROCESADO] [PROCESADO] [PROCESADO] [PROCESADO] C.C [NUMERO]:  AUDIENCIA CONCENTRADA EL DÍA 21 DE OCTUBRE  EN EL JUZGADO 5 PENAL MPAL DONDE SE SOLICITA LA REPROGRAMACIION EN ARAS DE UBICAR A LOS USUARIOS",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "21/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 5 Penal MPAL",
+        "realizada": "NO",
+        "motivo": "Usuario",
+        "observaciones": "Se solicita reprogramar la audiencia para ubicar a los usuarios."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "21/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 5 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Usuario",
+        "observaciones": "La audiencia fracasa para reprogramar la audiencia para ubicar a los usuarios."
+      },
+      "campos": [
+        {
+          "campo": "juzgado",
+          "valor_ia": "Juzgado 5 Penal MPAL",
+          "valor_usuario": "Juzgado 5 Penal Municipal"
+        },
+        {
+          "campo": "observaciones",
+          "valor_ia": "Se solicita reprogramar la audiencia para ubicar a los usuarios.",
+          "valor_usuario": "La audiencia fracasa para reprogramar la audiencia para ubicar a los usuarios."
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "En el nombre del juzgado, desarrolla la abreviatura «MPAL» como «Municipal».",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": false,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-20261123003802891-18",
+      "registrada": "2026-11-23T00:38:02.868828500-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "8.\tPROCESO BAJO RADICADO [RADICADO], SEGUIDO [PROCESADO]:  AUDIENCIA PRELIMINARES DE LEGALIIZACION, ACUSACION E IMPOSICION DE MEDIDA  EL DÍA 24 DE OCTUBRE Y 28 DE 0CTUBRE   EN EL JUZGADO 03 PENAL MPAL DONDE SE REALIZA AUDIENCIA DE LEGALIZACION DE CAPTURA",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de control de legalidad",
+        "fecha": "24/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 3 Penal Municipal",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se indica también el 28/10/2026. Se realizó audiencia de legalización de captura."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de control de legalidad",
+        "fecha": "24/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 3 Penal Municipal",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realiza audiencia de manera adecuada"
+      },
+      "campos": [
+        {
+          "campo": "observaciones",
+          "valor_ia": "Se indica también el 28/10/2026. Se realizó audiencia de legalización de captura.",
+          "valor_usuario": "Se realiza audiencia de manera adecuada"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "En observaciones, resume el resultado de la audiencia e indica la causa o responsable cuando fracase; si se realiza, señala brevemente que se desarrolló de manera adecuada.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": false,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-20261123003851250-21",
+      "registrada": "2026-11-23T00:38:51.244625900-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "9.\tPROCESO BAJO RADICADO [RADICADO], SEGUIDO [PROCESADO]:  AUDIENCIA CONCENTRADA  EL DÍA 26 DE OCTUBRE  EN EL JUZGADO 11 PENAL MPAL DONDE FRACASA POR FISCALIA",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "26/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Fiscalía",
+        "observaciones": ""
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "26/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Fiscalía",
+        "observaciones": "La audiencia fracasa por causa atribuible a la fiscalía"
+      },
+      "campos": [
+        {
+          "campo": "observaciones",
+          "valor_ia": "",
+          "valor_usuario": "La audiencia fracasa por causa atribuible a la fiscalía"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "En observaciones, resume el resultado de la audiencia e indica la causa o responsable cuando fracase; si se realiza, señala brevemente que se desarrolló de manera adecuada.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": false,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-20261123004108178-30",
+      "registrada": "2026-11-23T00:41:08.173144600-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "13.\tPROCESO BAJO RADICADO [RADICADO], SEGUIDO [PROCESADO] C.C.[NUMERO]:  AUDIENCIA DE JUICIO ORAL  EL DÍA 28 DE OCTUBRE  EN EL JUZGADO 09 PENAL MPAL DONDE FRACASA POR LAS PARTES",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "28/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 9 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "",
+        "observaciones": "La audiencia fracasó por causa atribuida a las partes."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "28/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 9 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Usuario",
+        "observaciones": "La audiencia fracasó por causa atribuida a las partes."
+      },
+      "campos": [
+        {
+          "campo": "motivo",
+          "valor_ia": "",
+          "valor_usuario": "Usuario"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Cuando una audiencia fracasa, registra como motivo la parte responsable indicada en el texto o en la corrección del usuario, y refleja esa causa en las observaciones.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": false,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-20261123080506572-43",
+      "registrada": "2026-11-23T08:05:06.568953600-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "19.\tPROCESO BAJO RADICADO [RADICADO], SEGUIDO [PROCESADO]:  AUDIENCIA CONCENTRADA  EL DÍA 30 DE OCTUBRE  EN EL JUZGADO 11 PENAL MPAL DONDE FRACASA",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "30/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "",
+        "observaciones": "La audiencia fracasó; no se indica la causa."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "30/10/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Fiscalía",
+        "observaciones": "La audiencia fracasó por causa de la fiscalía"
+      },
+      "campos": [
+        {
+          "campo": "motivo",
+          "valor_ia": "",
+          "valor_usuario": "Fiscalía"
+        },
+        {
+          "campo": "observaciones",
+          "valor_ia": "La audiencia fracasó; no se indica la causa.",
+          "valor_usuario": "La audiencia fracasó por causa de la fiscalía"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Cuando una audiencia fracasa, registra como motivo la parte responsable indicada en el texto o en la corrección del usuario, y refleja esa causa en las observaciones.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": false,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-20261123080909213-51",
+      "registrada": "2026-11-23T08:09:09.205736600-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "22.\tPROCESO BAJO RADICADO [RADICADO], SEGUIDO [PROCESADO] :  AUDIENCIA CONCENTRADA  EL DÍA 03 DE NOVIEMBRE  EN EL JUZGADO 11 PENAL MPAL DONDE SE REPROGRAMA TODA VEZ QUE SE PRESENTO LA  DOCUMENTACION PARA PRINCIPIO DE OPORTUNIDAD",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "03/11/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Fiscalía",
+        "observaciones": "La audiencia se reprogramó porque se presentó la documentación para principio de oportunidad."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "03/11/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Defensor Público",
+        "observaciones": "La audiencia se reprogramó porque se presentó la documentación para principio de oportunidad."
+      },
+      "campos": [
+        {
+          "campo": "motivo",
+          "valor_ia": "Fiscalía",
+          "valor_usuario": "Defensor Público"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "En reprogramaciones relacionadas con gestiones para el principio de oportunidad, registra el motivo como «Defensor Público» cuando la corrección del usuario así lo indique, aunque el texto mencione a la Fiscalía.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": false,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-20261123081714874-68",
+      "registrada": "2026-11-23T08:17:14.868854700-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "29.\tPROCESO BAJO RADICADO [RADICADO], adelantada contra [PROCESADO] :  AUDIENCIA DE JUICIO ORAL  EL DÍA 05 DE NOVIEMBRE  EN EL JUZGADO 08 PENAL MPAL DONDE SE REPROGRAMA POR FISCALIA   Y EN ARAS DE REUNIR LOS EMP  PARA EL PRINCIPIO DE OPORTUNIDAD YA QUE SE ESTA REALIZANDO EL TRATAMMIENTO CON PSICOLOGIA",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "05/11/2026",
+        "hora": "",
+        "juzgado": "Juzgado 8 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Fiscalía",
+        "observaciones": "La audiencia se reprogramó por causa de la Fiscalía, para reunir elementos materiales probatorios con miras a un principio de oportunidad. El procesado se encuentra realizando tratamiento psicológico."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "05/11/2026",
+        "hora": "",
+        "juzgado": "Juzgado 8 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Defensor Público",
+        "observaciones": "La audiencia se reprogramó por causa de la Fiscalía, para reunir elementos materiales probatorios con miras a un principio de oportunidad. El procesado se encuentra realizando tratamiento psicológico."
+      },
+      "campos": [
+        {
+          "campo": "motivo",
+          "valor_ia": "Fiscalía",
+          "valor_usuario": "Defensor Público"
+        }
+      ],
+      "estado": "analizada",
+      "regla_generada": "En reprogramaciones relacionadas con gestiones para el principio de oportunidad, registra el motivo como «Defensor Público» cuando la corrección del usuario así lo indique, aunque el texto mencione a la Fiscalía.",
+      "regla_id_asociada": "",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": false,
+      "defensor_clave": "david felipe ariza perez"
     }
-  ]
+  ],
+  "ejemplos_aciertos": [],
+  "metricas_campos": {},
+  "metricas_modelos": {},
+  "metricas_por_defensor": {},
+  "nombres_defensores": {},
+  "preferencias_estilo": {
+    "incluir_causas_secundarias_alpha": 3.0,
+    "incluir_causas_secundarias_beta": 1.0,
+    "incluir_reprogramacion_alpha": 3.0,
+    "incluir_reprogramacion_beta": 1.0,
+    "se_fija_aplazamiento_alpha": 2.0,
+    "se_fija_aplazamiento_beta": 2.0,
+    "instalada_reprogramada_si_alpha": 1.0,
+    "instalada_reprogramada_si_beta": 2.5
+  },
+  "preferencias_por_defensor": {},
+  "perfiles_sinteticos": {
+    "*": {
+      "ambito": "*",
+      "nombre_mostrar": "General (transversal)",
+      "resumen": "Conservar radicado, tipo, fecha, hora y realización según la fuente. Registrar el juzgado solo si está explícito; normalizar abreviaturas sin inferir datos. En observaciones, resumir hechos y resultado, distinguir suspensión, fracaso y reprogramación, sin añadir fechas futuras. Atribuir el motivo al actor sustentado...",
+      "version": 3,
+      "ultima_actualizacion": "2026-11-23T08:24:25.183001500-05:00"
+    }
+  },
+  "estados_consolidacion": {},
+  "consolidaciones_ia": [],
+  "estado_aclaracion": {
+    "alpha_resp": 2.0,
+    "beta_omit": 1.0,
+    "racha_omisiones": 0,
+    "turnos_sin_responder": 0,
+    "firmas_explicadas_recientes": []
+  },
+  "tabla_alias": [
+    {
+      "campo": "tipo",
+      "entrada_norm": "audiencia juicio oral",
+      "canonico": "Audiencia de juicio oral",
+      "alpha": 13.063698283267419,
+      "beta": 1.2,
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "j2pca",
+      "canonico": "Juzgado 2 Promiscuo del Circuito de Aguachica",
+      "alpha": 8.686650104376621,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "juzgado 2 promiscuo circuito aguachica",
+      "canonico": "Juzgado 2 Promiscuo del Circuito de Aguachica",
+      "alpha": 8.686650104376621,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "j3pca",
+      "canonico": "Juzgado 3 Penal del Circuito con Función de Conocimiento Aguachica",
+      "alpha": 7.213813047305029,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "juzgado 3 penal circuito funcion conocimiento aguachica",
+      "canonico": "Juzgado 3 Penal del Circuito con Función de Conocimiento Aguachica",
+      "alpha": 7.213813047305029,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "juzgado promiscuo municipal jagua ibirico",
+      "canonico": "Juzgado Promiscuo Municipal de La Jagua de Ibirico",
+      "alpha": 7.213813047305029,
+      "beta": 1.2,
+      "defensor_alcance": "julio cesar rojas daza",
+      "defensores_confirmantes": [
+        "julio cesar rojas daza"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "tipo",
+      "entrada_norm": "aplicacion principio oportunidad",
+      "canonico": "Aplicación principio de oportunidad",
+      "alpha": 7.213813047305029,
+      "beta": 1.2,
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "tipo",
+      "entrada_norm": "audiencia continuacion juicio oral",
+      "canonico": "Audiencia de continuacion de juicio oral",
+      "alpha": 6.431055257583738,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "j1pca",
+      "canonico": "Juzgado 1 Promiscuo del Circuito de Aguachica",
+      "alpha": 4.7663360000005,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "juzgado 1 promiscuo circuito aguachica",
+      "canonico": "Juzgado 1 Promiscuo del Circuito de Aguachica",
+      "alpha": 4.7663360000005,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "juzgado promiscuo municipal paso",
+      "canonico": "Juzgado Promiscuo Municipal del Paso",
+      "alpha": 4.7663360000005,
+      "beta": 1.2,
+      "defensor_alcance": "julio cesar rojas daza",
+      "defensores_confirmantes": [
+        "julio cesar rojas daza"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "tipo",
+      "entrada_norm": "audiencia preclusion",
+      "canonico": "Audiencia de preclusión",
+      "alpha": 4.7663360000005,
+      "beta": 1.2,
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "tipo",
+      "entrada_norm": "audiencia sentido fallo",
+      "canonico": "Audiencia de sentido de fallo",
+      "alpha": 4.7663360000005,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "j2pma",
+      "canonico": "Juzgado 2 Promiscuo Municipal de Aguachica",
+      "alpha": 3.8815999999848825,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "juzgado 2 promiscuo municipal aguachica",
+      "canonico": "Juzgado 2 Promiscuo Municipal de Aguachica",
+      "alpha": 3.8815999999848825,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "tipo",
+      "entrada_norm": "audiencia formulacion acusacion",
+      "canonico": "Audiencia de formulacion de acusacion",
+      "alpha": 3.8815999999848825,
+      "beta": 1.2,
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "tipo",
+      "entrada_norm": "audiencia verificacion allanamiento cargos",
+      "canonico": "Audiencia de verificación de allanamiento a cargos",
+      "alpha": 3.8815999999848825,
+      "beta": 1.2,
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "tipo",
+      "entrada_norm": "audiencia acusacion",
+      "canonico": "Audiencia de acusación",
+      "alpha": 3.6548832961279,
+      "beta": 1.2,
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "juzgado promiscuo 1 municipal chiriguana",
+      "canonico": "Juzgado Promiscuo Primero Municipal de Chiriguaná",
+      "alpha": 2.9599999999886673,
+      "beta": 1.2,
+      "defensor_alcance": "julio cesar rojas daza",
+      "defensores_confirmantes": [
+        "julio cesar rojas daza"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    },
+    {
+      "campo": "tipo",
+      "entrada_norm": "audiencia celebracion preacuerdo",
+      "canonico": "Audiencia de celebración de preacuerdo",
+      "alpha": 2.9599999999886673,
+      "beta": 1.2,
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": [
+        "ivan cordoba"
+      ],
+      "ultima_actualizacion": "2026-11-23T10:29:16.716664800-05:00"
+    }
+  ],
+  "cola_induccion": [],
+  "page_hinkley_campos": {},
+  "page_hinkley_modelos": {},
+  "enfriamiento_aclaracion": 0,
+  "llamadas_induccion_llm_total": 0,
+  "llamadas_extraccion_total": 0,
+  "llamadas_consolidacion_total": 0,
+  "semilla_rng": 6840346604449169409,
+  "exportacion_seq": 0,
+  "ultima_exportacion_previa": ""
 }

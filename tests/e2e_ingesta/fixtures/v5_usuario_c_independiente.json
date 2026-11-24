@@ -1,0 +1,355 @@
+{
+  "app": "Lokus",
+  "version_app": "5.2.0",
+  "formato": 5,
+  "exportado": "2026-11-12T15:00:00-05:00",
+  "instancia_id": "inst-user-c-003",
+  "exportacion_seq": 1,
+  "exportacion_id": "exp-20261112-0001",
+  "ultima_exportacion_previa": "",
+  "fuentes_importadas": [],
+  "aciertos": 25,
+  "total_reglas": 2,
+  "total_correcciones": 2,
+  "total_ejemplos_aciertos": 1,
+  "perfiles_defensores": 1,
+  "llamadas_induccion_llm_total": 3,
+  "llamadas_extraccion_total": 27,
+  "llamadas_consolidacion_total": 1,
+  "correcciones_por_campo": {
+    "motivo": 1,
+    "juzgado": 1
+  },
+  "metricas_por_campo": [
+    {
+      "campo": "motivo",
+      "evaluaciones": 27,
+      "aciertos": 26,
+      "correcciones": 1,
+      "precision_ewma": 0.96,
+      "confianza_q10": 0.81,
+      "drift_activo": false
+    }
+  ],
+  "metricas_por_modelo": [
+    {
+      "clave": "gemini:gemini-2.5-flash",
+      "evaluaciones": 27,
+      "aciertos": 25,
+      "correcciones": 2,
+      "precision_media": 0.9259259259259259
+    }
+  ],
+  "preferencias_estilo": {
+    "incluir_causas_secundarias_prob": 0.75,
+    "incluir_reprogramacion_prob": 0.75,
+    "se_fija_aplazamiento_prob": 0.5,
+    "instalada_reprogramada_si_prob": 0.25
+  },
+  "preferencias_por_defensor": {
+    "carlos mendez": {
+      "incluir_causas_secundarias_prob": 0.75,
+      "incluir_reprogramacion_prob": 0.75,
+      "se_fija_aplazamiento_prob": 0.5,
+      "instalada_reprogramada_si_prob": 0.25
+    }
+  },
+  "preferencias_raw": {
+    "incluir_causas_secundarias_alpha": 3.0,
+    "incluir_causas_secundarias_beta": 1.0,
+    "incluir_reprogramacion_alpha": 3.0,
+    "incluir_reprogramacion_beta": 1.0,
+    "se_fija_aplazamiento_alpha": 2.0,
+    "se_fija_aplazamiento_beta": 2.0,
+    "instalada_reprogramada_si_alpha": 1.0,
+    "instalada_reprogramada_si_beta": 3.0
+  },
+  "preferencias_por_defensor_raw": {
+    "carlos mendez": {
+      "incluir_causas_secundarias_alpha": 3.0,
+      "incluir_causas_secundarias_beta": 1.0,
+      "incluir_reprogramacion_alpha": 3.0,
+      "incluir_reprogramacion_beta": 1.0,
+      "se_fija_aplazamiento_alpha": 2.0,
+      "se_fija_aplazamiento_beta": 2.0,
+      "instalada_reprogramada_si_alpha": 1.0,
+      "instalada_reprogramada_si_beta": 3.0
+    }
+  },
+  "defensores_directorio": [
+    {
+      "clave": "carlos mendez",
+      "nombre": "Carlos Mendez",
+      "aciertos": 25,
+      "correcciones": 2,
+      "tasa_acierto": 0.9259259259259259,
+      "por_campo": []
+    }
+  ],
+  "resumen_patrones_generales": {
+    "total_defensores_activos": 1,
+    "top_juzgados_globales": [["Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha", 15]],
+    "top_tipos_globales": [["Audiencia preliminar", 15]],
+    "top_horas_globales": [[10, 14]],
+    "reglas_transversales_promovidas": 1,
+    "errores_recurrentes_transversales": []
+  },
+  "grafo_asociaciones": {
+    "defensor_a_juzgados": {
+      "carlos mendez": { "Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha": 15 }
+    },
+    "defensor_a_tipos": {
+      "carlos mendez": { "Audiencia preliminar": 15 }
+    },
+    "defensor_sigla_a_juzgado": {},
+    "prefijo_radicado_a_juzgados": {},
+    "tipo_a_juzgados": {}
+  },
+  "perfiles_sinteticos": [
+    {
+      "ambito": "carlos mendez",
+      "nombre_mostrar": "Carlos Mendez",
+      "resumen": "Atiende audiencias preliminares en Riohacha.",
+      "version": 1,
+      "ultima_actualizacion": "2026-11-12T14:30:00-05:00"
+    }
+  ],
+  "consolidaciones_ia": [],
+  "alias_validados": [
+    {
+      "campo": "juzgado",
+      "entrada_norm": "j9pm",
+      "canonico": "Juzgado 9 Penal Municipal",
+      "defensor_alcance": "*",
+      "confianza_q10": 0.72
+    }
+  ],
+  "tabla_alias_raw": [
+    {
+      "campo": "juzgado",
+      "entrada_norm": "j9pm",
+      "canonico": "Juzgado 9 Penal Municipal",
+      "alpha": 5.0,
+      "beta": 1.0,
+      "defensor_alcance": "*",
+      "defensores_confirmantes": ["carlos mendez"],
+      "ultima_actualizacion": "2026-11-12T14:00:00-05:00"
+    }
+  ],
+  "patrones_abreviacion": [],
+  "juzgados_agregados_usuario": ["Juzgado 9 Penal Municipal"],
+  "tipos_audiencia_agregados_usuario": ["Audiencia de verificación de allanamiento a cargos"],
+  "uso_catalogos": {
+    "total_audiencias_contabilizadas": 25,
+    "sembrado_inicial_completado": true,
+    "sembrado_en": "2026-10-20T09:00:00-05:00",
+    "ultima_actualizacion": "2026-11-12T14:55:00-05:00",
+    "tipos_audiencia": {
+      "total_audiencias": 25,
+      "total_con_valor": 25,
+      "total_sin_especificar": 0,
+      "porcentaje_sin_especificar": 0.0,
+      "total_opciones_predeterminadas": 17,
+      "total_opciones_lista_usuario": 1,
+      "total_opciones_otra": 0,
+      "total_opciones_eliminadas_tras_uso": 0,
+      "nuevos_no_predeterminados": [
+        { "nombre": "Audiencia de verificación de allanamiento a cargos", "origen": "agregado_usuario", "conteo": 4, "porcentaje": 16.0 }
+      ],
+      "predeterminados_sin_uso": ["Alegatos de conclusión"],
+      "agregados_usuario_sin_uso": [],
+      "detalle": [
+        { "nombre": "Audiencia preliminar", "origen": "predeterminado", "conteo": 15, "porcentaje": 60.0 },
+        { "nombre": "Audiencia de verificación de allanamiento a cargos", "origen": "agregado_usuario", "conteo": 4, "porcentaje": 16.0 }
+      ]
+    },
+    "juzgados": {
+      "total_audiencias": 25,
+      "total_con_valor": 25,
+      "total_sin_especificar": 0,
+      "porcentaje_sin_especificar": 0.0,
+      "total_opciones_predeterminadas": 96,
+      "total_opciones_lista_usuario": 1,
+      "total_opciones_otra": 0,
+      "total_opciones_eliminadas_tras_uso": 0,
+      "nuevos_no_predeterminados": [
+        { "nombre": "Juzgado 9 Penal Municipal", "origen": "agregado_usuario", "conteo": 3, "porcentaje": 12.0 }
+      ],
+      "predeterminados_sin_uso": ["Juzgado 1 de Ejecución de Penas y Medidas de Seguridad de Santa Marta"],
+      "agregados_usuario_sin_uso": [],
+      "detalle": [
+        { "nombre": "Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha", "origen": "predeterminado", "conteo": 15, "porcentaje": 60.0 },
+        { "nombre": "Juzgado 9 Penal Municipal", "origen": "agregado_usuario", "conteo": 3, "porcentaje": 12.0 }
+      ]
+    },
+    "horas": {
+      "total_audiencias": 25,
+      "total_con_hora": 24,
+      "total_sin_hora": 1,
+      "porcentaje_sin_hora": 4.0,
+      "horas_rapidas_predeterminadas": [
+        { "hora_24": "08:00", "etiqueta_12h": "8:00 AM", "es_hora_rapida": true, "conteo": 5, "porcentaje": 20.0 },
+        { "hora_24": "09:00", "etiqueta_12h": "9:00 AM", "es_hora_rapida": true, "conteo": 5, "porcentaje": 20.0 },
+        { "hora_24": "10:00", "etiqueta_12h": "10:00 AM", "es_hora_rapida": true, "conteo": 14, "porcentaje": 56.0 },
+        { "hora_24": "14:00", "etiqueta_12h": "2:00 PM", "es_hora_rapida": true, "conteo": 0, "porcentaje": 0.0 },
+        { "hora_24": "15:00", "etiqueta_12h": "3:00 PM", "es_hora_rapida": true, "conteo": 0, "porcentaje": 0.0 },
+        { "hora_24": "16:00", "etiqueta_12h": "4:00 PM", "es_hora_rapida": true, "conteo": 0, "porcentaje": 0.0 }
+      ],
+      "horas_rapidas_sin_uso": ["14:00", "15:00", "16:00"],
+      "horas_mas_frecuentes_no_rapidas": [],
+      "detalle_por_hora_exacta": [
+        { "hora_24": "10:00", "etiqueta_12h": "10:00 AM", "es_hora_rapida": true, "conteo": 14, "porcentaje": 56.0 }
+      ],
+      "resumen_por_franja_horaria": [
+        { "franja": "Mañana (06:00-11:59)", "conteo": 24, "porcentaje": 96.0 }
+      ]
+    }
+  },
+  "reglas": [
+    {
+      "id": "regla-multi-confirmada",
+      "tipo_error": "motivo",
+      "regla": "Si no han podido notificar al procesado en el expediente, el motivo corresponde al Juez.",
+      "refuerzos": 3,
+      "actualizada": "2026-11-11T10:00:00-05:00",
+      "estado": "activa",
+      "campo_objetivo": "motivo",
+      "triggers": ["notificar", "procesado", "juez", "boleta"],
+      "alpha": 10.0,
+      "beta": 1.0,
+      "impresiones": 11,
+      "aciertos_directos": 11,
+      "fallos_directos": 0,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "*",
+      "defensor_alcance": "*",
+      "defensores_confirmantes": ["carlos mendez"],
+      "ultima_actualizacion": "2026-11-12T14:00:00-05:00",
+      "confianza_llm": 0.96,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-u-c-1"
+    },
+    {
+      "id": "regla-u-c-riohacha",
+      "tipo_error": "juzgado",
+      "regla": "Cuando diga J1CG Riohacha, mapear a Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha.",
+      "refuerzos": 2,
+      "actualizada": "2026-11-11T11:00:00-05:00",
+      "estado": "activa",
+      "campo_objetivo": "juzgado",
+      "triggers": ["j1cg", "riohacha", "garantias"],
+      "alpha": 7.0,
+      "beta": 1.0,
+      "impresiones": 8,
+      "aciertos_directos": 8,
+      "fallos_directos": 0,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "gemini:gemini-2.5-flash",
+      "defensor_alcance": "carlos mendez",
+      "defensores_confirmantes": ["carlos mendez"],
+      "ultima_actualizacion": "2026-11-12T14:00:00-05:00",
+      "confianza_llm": 0.92,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-u-c-2"
+    }
+  ],
+  "correcciones": [
+    {
+      "id": "corr-u-c-1",
+      "registrada": "2026-11-11T09:00:00-05:00",
+      "proveedor": "gemini",
+      "modelo": "gemini-2.5-flash",
+      "texto_original": "No comparece procesado porque el despacho no envió boleta de citación",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia preliminar",
+        "fecha": "11/11/2026",
+        "hora": "10:00",
+        "juzgado": "Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha",
+        "realizada": "NO",
+        "motivo": "Usuario",
+        "observaciones": "Sin citación."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia preliminar",
+        "fecha": "11/11/2026",
+        "hora": "10:00",
+        "juzgado": "Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha",
+        "realizada": "NO",
+        "motivo": "Juez",
+        "observaciones": "Falta de notificación del juzgado."
+      },
+      "campos": [
+        { "campo": "motivo", "valor_ia": "Usuario", "valor_usuario": "Juez" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Falta de notificación al procesado -> Juez.",
+      "regla_id_asociada": "regla-multi-confirmada",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "carlos mendez"
+    },
+    {
+      "id": "corr-u-c-2",
+      "registrada": "2026-11-11T10:30:00-05:00",
+      "proveedor": "gemini",
+      "modelo": "gemini-2.5-flash",
+      "texto_original": "Preliminar en J1CG Riohacha",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia preliminar",
+        "fecha": "11/11/2026",
+        "hora": "10:00",
+        "juzgado": "",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó audiencia de manera adecuada."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia preliminar",
+        "fecha": "11/11/2026",
+        "hora": "10:00",
+        "juzgado": "Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó audiencia de manera adecuada."
+      },
+      "campos": [
+        { "campo": "juzgado", "valor_ia": "", "valor_usuario": "Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Expandir J1CG Riohacha.",
+      "regla_id_asociada": "regla-u-c-riohacha",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "carlos mendez"
+    }
+  ],
+  "ejemplos_aciertos": [
+    {
+      "id": "ej-u-c-1",
+      "registrada": "2026-11-12T10:00:00-05:00",
+      "proveedor": "gemini",
+      "modelo": "gemini-2.5-flash",
+      "texto_anonimizado": "Audiencia preliminar en Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha a las 10:00 AM.",
+      "salida_anonimizada": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia preliminar",
+        "fecha": "12/11/2026",
+        "hora": "10:00",
+        "juzgado": "Juzgado 1 Penal Municipal con Función de Control de Garantías de Riohacha",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó audiencia de manera adecuada."
+      },
+      "reglas_inyectadas": ["regla-u-c-riohacha"],
+      "defensor_clave": "carlos mendez"
+    }
+  ]
+}

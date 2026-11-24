@@ -1,0 +1,93 @@
+{
+  "app": "Lokus",
+  "version_app": "5.1.0",
+  "formato": 4,
+  "exportado": "2026-11-01T10:00:00-05:00",
+  "aciertos": 0,
+  "total_reglas": 0,
+  "total_correcciones": 0,
+  "total_ejemplos_aciertos": 0,
+  "perfiles_defensores": 0,
+  "llamadas_induccion_llm_total": 0,
+  "llamadas_extraccion_total": 0,
+  "llamadas_consolidacion_total": 0,
+  "correcciones_por_campo": {},
+  "metricas_por_campo": [],
+  "metricas_por_modelo": [],
+  "preferencias_estilo": {
+    "incluir_causas_secundarias_prob": 0.5,
+    "incluir_reprogramacion_prob": 0.5,
+    "se_fija_aplazamiento_prob": 0.5,
+    "instalada_reprogramada_si_prob": 0.25
+  },
+  "preferencias_por_defensor": {},
+  "defensores_directorio": [],
+  "resumen_patrones_generales": {
+    "total_defensores_activos": 0,
+    "top_juzgados_globales": [],
+    "top_tipos_globales": [],
+    "top_horas_globales": [],
+    "reglas_transversales_promovidas": 0,
+    "errores_recurrentes_transversales": []
+  },
+  "grafo_asociaciones": {
+    "defensor_a_juzgados": {},
+    "defensor_a_tipos": {},
+    "defensor_sigla_a_juzgado": {},
+    "prefijo_radicado_a_juzgados": {},
+    "tipo_a_juzgados": {}
+  },
+  "perfiles_sinteticos": [],
+  "consolidaciones_ia": [],
+  "alias_validados": [],
+  "patrones_abreviacion": [],
+  "juzgados_agregados_usuario": [],
+  "tipos_audiencia_agregados_usuario": [],
+  "uso_catalogos": {
+    "total_audiencias_contabilizadas": 0,
+    "sembrado_inicial_completado": false,
+    "sembrado_en": "",
+    "ultima_actualizacion": "",
+    "tipos_audiencia": {
+      "total_audiencias": 0,
+      "total_con_valor": 0,
+      "total_sin_especificar": 0,
+      "porcentaje_sin_especificar": 0.0,
+      "total_opciones_predeterminadas": 17,
+      "total_opciones_lista_usuario": 0,
+      "total_opciones_otra": 0,
+      "total_opciones_eliminadas_tras_uso": 0,
+      "nuevos_no_predeterminados": [],
+      "predeterminados_sin_uso": [],
+      "agregados_usuario_sin_uso": [],
+      "detalle": []
+    },
+    "juzgados": {
+      "total_audiencias": 0,
+      "total_con_valor": 0,
+      "total_sin_especificar": 0,
+      "porcentaje_sin_especificar": 0.0,
+      "total_opciones_predeterminadas": 96,
+      "total_opciones_lista_usuario": 0,
+      "total_opciones_otra": 0,
+      "total_opciones_eliminadas_tras_uso": 0,
+      "nuevos_no_predeterminados": [],
+      "predeterminados_sin_uso": [],
+      "agregados_usuario_sin_uso": [],
+      "detalle": []
+    },
+    "horas": {
+      "total_audiencias": 0,
+      "total_con_hora": 0,
+      "total_sin_hora": 0,
+      "porcentaje_sin_hora": 0.0,
+      "horas_rapidas_predeterminadas": [],
+      "horas_rapidas_sin_uso": ["08:00", "09:00", "10:00", "14:00", "15:00", "16:00"],
+      "horas_mas_frecuentes_no_rapidas": [],
+      "detalle_por_hora_exacta": [],
+      "resumen_por_franja_horaria": []
+    }
+  },
+  "reglas": [],
+  "correcciones": []
+}

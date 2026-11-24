@@ -38,8 +38,8 @@ use crate::models::{
     TIPOS_AUDIENCIA,
 };
 use crate::uso_catalogos::{
-    asegurar_uso_inicializado_actual, asegurar_uso_inicializado_en,
-    construir_reporte_uso_catalogos, marcar_uso_compartido_en, ruta_uso_catalogos,
+    asegurar_uso_inicializado_actual, asegurar_uso_inicializado_en, cargar_uso_con_lock_en,
+    confirmar_uso_exportado_en, construir_reporte_uso_catalogos, ruta_uso_catalogos,
     ReporteUsoCatalogos, UsoCatalogos,
 };
 
@@ -85,7 +85,7 @@ const MAX_CHARS_LOTE_CONSOLIDACION: usize = 8000;
 const MAX_CHARS_RESUMEN_GENERAL: usize = 320;
 const MAX_CHARS_RESUMEN_DEFENSOR: usize = 380;
 const DEFAULT_SEMILLA_RNG: u64 = 0x5EED_CAFE_BABE_0001;
-pub const VERSION_FORMATO: u32 = 4;
+pub const VERSION_FORMATO: u32 = 5;
 const PALABRAS_VACIAS_NOMBRE: [&str; 7] = ["de", "del", "la", "las", "los", "y", "san"];
 
 pub const CAMPOS_AUDIENCIA: [&str; 8] = [
@@ -725,6 +725,10 @@ pub struct MemoriaAprendizaje {
     pub llamadas_consolidacion_total: u32,
     #[serde(default = "default_semilla_rng")]
     pub semilla_rng: u64,
+    #[serde(default)]
+    pub exportacion_seq: u64,
+    #[serde(default)]
+    pub ultima_exportacion_previa: String,
 }
 
 impl Default for MemoriaAprendizaje {
@@ -754,6 +758,8 @@ impl Default for MemoriaAprendizaje {
             llamadas_extraccion_total: 0,
             llamadas_consolidacion_total: 0,
             semilla_rng: DEFAULT_SEMILLA_RNG,
+            exportacion_seq: 0,
+            ultima_exportacion_previa: String::new(),
         }
     }
 }
@@ -777,6 +783,7 @@ pub struct ResumenAprendizaje {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct CampoDiagnostico {
     pub campo: String,
     pub evaluaciones: u32,
@@ -788,6 +795,7 @@ pub struct CampoDiagnostico {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct ModeloDiagnostico {
     pub clave: String,
     pub evaluaciones: u32,
@@ -797,6 +805,7 @@ pub struct ModeloDiagnostico {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct ReglaDiagnostico {
     pub id: String,
     pub estado: String,
@@ -812,6 +821,7 @@ pub struct ReglaDiagnostico {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct AliasDiagnostico {
     pub campo: String,
     pub entrada_norm: String,
@@ -822,6 +832,7 @@ pub struct AliasDiagnostico {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct PatronAbreviacionDiagnostico {
     pub campo: String,
     pub tipo_slot: String,
@@ -836,6 +847,7 @@ pub struct PatronAbreviacionDiagnostico {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct PreferenciasEstiloResumen {
     pub incluir_causas_secundarias_prob: f64,
     pub incluir_reprogramacion_prob: f64,
@@ -882,37 +894,55 @@ pub struct DiagnosticoAprendizaje {
     pub defensores_resumen: Vec<ResumenDefensorExport>,
 }
 
-#[derive(Debug, Serialize)]
-struct PaqueteExportacion {
-    app: &'static str,
-    version_app: &'static str,
-    formato: u32,
-    exportado: String,
-    aciertos: u32,
-    total_reglas: usize,
-    total_correcciones: usize,
-    total_ejemplos_aciertos: usize,
-    perfiles_defensores: usize,
-    llamadas_induccion_llm_total: u32,
-    llamadas_extraccion_total: u32,
-    llamadas_consolidacion_total: u32,
-    correcciones_por_campo: BTreeMap<String, usize>,
-    metricas_por_campo: Vec<CampoDiagnostico>,
-    metricas_por_modelo: Vec<ModeloDiagnostico>,
-    preferencias_estilo: PreferenciasEstiloResumen,
-    preferencias_por_defensor: BTreeMap<String, PreferenciasEstiloResumen>,
-    defensores_directorio: Vec<ResumenDefensorExport>,
-    resumen_patrones_generales: ResumenPatronesGenerales,
-    grafo_asociaciones: GrafoAsociaciones,
-    perfiles_sinteticos: Vec<PerfilSinteticoDefensor>,
-    consolidaciones_ia: Vec<RegistroConsolidacionIa>,
-    alias_validados: Vec<AliasDiagnostico>,
-    patrones_abreviacion: Vec<PatronAbreviacionDiagnostico>,
-    juzgados_agregados_usuario: Vec<String>,
-    tipos_audiencia_agregados_usuario: Vec<String>,
-    uso_catalogos: ReporteUsoCatalogos,
-    reglas: Vec<ReglaAprendida>,
-    correcciones: Vec<CorreccionIa>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaqueteExportacion {
+    pub app: String,
+    pub version_app: String,
+    pub formato: u32,
+    pub exportado: String,
+    #[serde(default)]
+    pub instancia_id: String,
+    #[serde(default)]
+    pub exportacion_seq: u64,
+    #[serde(default)]
+    pub exportacion_id: String,
+    #[serde(default)]
+    pub ultima_exportacion_previa: String,
+    #[serde(default)]
+    pub fuentes_importadas: Vec<String>,
+    pub aciertos: u32,
+    pub total_reglas: usize,
+    pub total_correcciones: usize,
+    pub total_ejemplos_aciertos: usize,
+    pub perfiles_defensores: usize,
+    pub llamadas_induccion_llm_total: u32,
+    pub llamadas_extraccion_total: u32,
+    pub llamadas_consolidacion_total: u32,
+    pub correcciones_por_campo: BTreeMap<String, usize>,
+    pub metricas_por_campo: Vec<CampoDiagnostico>,
+    pub metricas_por_modelo: Vec<ModeloDiagnostico>,
+    pub preferencias_estilo: PreferenciasEstiloResumen,
+    pub preferencias_por_defensor: BTreeMap<String, PreferenciasEstiloResumen>,
+    #[serde(default)]
+    pub preferencias_raw: Option<PreferenciasEstilo>,
+    #[serde(default)]
+    pub preferencias_por_defensor_raw: BTreeMap<String, PreferenciasEstilo>,
+    pub defensores_directorio: Vec<ResumenDefensorExport>,
+    pub resumen_patrones_generales: ResumenPatronesGenerales,
+    pub grafo_asociaciones: GrafoAsociaciones,
+    pub perfiles_sinteticos: Vec<PerfilSinteticoDefensor>,
+    pub consolidaciones_ia: Vec<RegistroConsolidacionIa>,
+    pub alias_validados: Vec<AliasDiagnostico>,
+    #[serde(default)]
+    pub tabla_alias_raw: Vec<AliasEstadistico>,
+    pub patrones_abreviacion: Vec<PatronAbreviacionDiagnostico>,
+    pub juzgados_agregados_usuario: Vec<String>,
+    pub tipos_audiencia_agregados_usuario: Vec<String>,
+    pub uso_catalogos: ReporteUsoCatalogos,
+    pub reglas: Vec<ReglaAprendida>,
+    pub correcciones: Vec<CorreccionIa>,
+    #[serde(default)]
+    pub ejemplos_aciertos: Vec<EjemploPositivo>,
 }
 
 pub(crate) fn memoria_base_embebida() -> &'static MemoriaAprendizaje {
@@ -930,16 +960,16 @@ pub(crate) fn cargar_memoria_local_snapshot() -> MemoriaAprendizaje {
     cargar_memoria_en(&ruta_memoria())
 }
 
-fn inferir_campo_objetivo_desde_tipo(tipo_error: &str) -> String {
+pub(crate) fn inferir_campo_objetivo_desde_tipo(tipo_error: &str) -> String {
     match tipo_error.trim().to_lowercase().as_str() {
-        "abreviacion" | "juzgado" => "juzgado".to_string(),
+        "abreviacion" | "juzgado" | "despacho" => "juzgado".to_string(),
         "realizacion" | "realizada" => "realizada".to_string(),
         "motivo" => "motivo".to_string(),
         "fecha" => "fecha".to_string(),
         "hora" => "hora".to_string(),
-        "tipo" => "tipo".to_string(),
+        "tipo" | "tipo_audiencia" => "tipo".to_string(),
         "radicado" => "radicado".to_string(),
-        "estilo_observaciones" | "observaciones" => "observaciones".to_string(),
+        "estilo_observaciones" | "observaciones" | "observacion" => "observaciones".to_string(),
         _ => "general".to_string(),
     }
 }
@@ -1003,7 +1033,7 @@ fn registrar_nombre_defensor(nombres: &mut BTreeMap<String, String>, raw: &str) 
     }
 }
 
-fn alcance_canonico(alcance: &str) -> String {
+pub(crate) fn alcance_canonico(alcance: &str) -> String {
     if es_alcance_general(alcance) {
         "*".to_string()
     } else {
@@ -1038,51 +1068,56 @@ pub(crate) fn preferencias_efectivas_con_base_para_defensor(
         }
     };
 
-    let mut combinada_gen = PreferenciasEstilo::default();
-    (
-        combinada_gen.incluir_causas_secundarias_alpha,
-        combinada_gen.incluir_causas_secundarias_beta,
-    ) = elegir_par(
-        pref_local_gen.incluir_causas_secundarias_alpha,
-        pref_local_gen.incluir_causas_secundarias_beta,
-        pref_base_gen.incluir_causas_secundarias_alpha,
-        pref_base_gen.incluir_causas_secundarias_beta,
-        def_estilo.incluir_causas_secundarias_alpha,
-        def_estilo.incluir_causas_secundarias_beta,
-    );
-    (
-        combinada_gen.incluir_reprogramacion_alpha,
-        combinada_gen.incluir_reprogramacion_beta,
-    ) = elegir_par(
-        pref_local_gen.incluir_reprogramacion_alpha,
-        pref_local_gen.incluir_reprogramacion_beta,
-        pref_base_gen.incluir_reprogramacion_alpha,
-        pref_base_gen.incluir_reprogramacion_beta,
-        def_estilo.incluir_reprogramacion_alpha,
-        def_estilo.incluir_reprogramacion_beta,
-    );
-    (
-        combinada_gen.se_fija_aplazamiento_alpha,
-        combinada_gen.se_fija_aplazamiento_beta,
-    ) = elegir_par(
-        pref_local_gen.se_fija_aplazamiento_alpha,
-        pref_local_gen.se_fija_aplazamiento_beta,
-        pref_base_gen.se_fija_aplazamiento_alpha,
-        pref_base_gen.se_fija_aplazamiento_beta,
-        def_estilo.se_fija_aplazamiento_alpha,
-        def_estilo.se_fija_aplazamiento_beta,
-    );
-    (
-        combinada_gen.instalada_reprogramada_si_alpha,
-        combinada_gen.instalada_reprogramada_si_beta,
-    ) = elegir_par(
-        pref_local_gen.instalada_reprogramada_si_alpha,
-        pref_local_gen.instalada_reprogramada_si_beta,
-        pref_base_gen.instalada_reprogramada_si_alpha,
-        pref_base_gen.instalada_reprogramada_si_beta,
-        def_estilo.instalada_reprogramada_si_alpha,
-        def_estilo.instalada_reprogramada_si_beta,
-    );
+    let mezclar_sobre = |superior: &PreferenciasEstilo, base_actual: &PreferenciasEstilo| -> PreferenciasEstilo {
+        let mut out = PreferenciasEstilo::default();
+        (
+            out.incluir_causas_secundarias_alpha,
+            out.incluir_causas_secundarias_beta,
+        ) = elegir_par(
+            superior.incluir_causas_secundarias_alpha,
+            superior.incluir_causas_secundarias_beta,
+            base_actual.incluir_causas_secundarias_alpha,
+            base_actual.incluir_causas_secundarias_beta,
+            def_estilo.incluir_causas_secundarias_alpha,
+            def_estilo.incluir_causas_secundarias_beta,
+        );
+        (
+            out.incluir_reprogramacion_alpha,
+            out.incluir_reprogramacion_beta,
+        ) = elegir_par(
+            superior.incluir_reprogramacion_alpha,
+            superior.incluir_reprogramacion_beta,
+            base_actual.incluir_reprogramacion_alpha,
+            base_actual.incluir_reprogramacion_beta,
+            def_estilo.incluir_reprogramacion_alpha,
+            def_estilo.incluir_reprogramacion_beta,
+        );
+        (
+            out.se_fija_aplazamiento_alpha,
+            out.se_fija_aplazamiento_beta,
+        ) = elegir_par(
+            superior.se_fija_aplazamiento_alpha,
+            superior.se_fija_aplazamiento_beta,
+            base_actual.se_fija_aplazamiento_alpha,
+            base_actual.se_fija_aplazamiento_beta,
+            def_estilo.se_fija_aplazamiento_alpha,
+            def_estilo.se_fija_aplazamiento_beta,
+        );
+        (
+            out.instalada_reprogramada_si_alpha,
+            out.instalada_reprogramada_si_beta,
+        ) = elegir_par(
+            superior.instalada_reprogramada_si_alpha,
+            superior.instalada_reprogramada_si_beta,
+            base_actual.instalada_reprogramada_si_alpha,
+            base_actual.instalada_reprogramada_si_beta,
+            def_estilo.instalada_reprogramada_si_alpha,
+            def_estilo.instalada_reprogramada_si_beta,
+        );
+        out
+    };
+
+    let mut combinada = mezclar_sobre(pref_local_gen, pref_base_gen);
 
     if !def_clave.is_empty() {
         let local_def = local
@@ -1096,14 +1131,14 @@ pub(crate) fn preferencias_efectivas_con_base_para_defensor(
             .find(|(k, _)| coincide_alcance_defensor(k, &def_clave))
             .map(|(_, v)| v);
 
-        if let Some(p_loc) = local_def {
-            return p_loc.clone();
-        }
         if let Some(p_bas) = base_def {
-            return p_bas.clone();
+            combinada = mezclar_sobre(p_bas, &combinada);
+        }
+        if let Some(p_loc) = local_def {
+            combinada = mezclar_sobre(p_loc, &combinada);
         }
     }
-    combinada_gen
+    combinada
 }
 
 /// Devuelve las preferencias efectivas para un defensor dado (heredando del Cuaderno General si no tiene perfil propio aún).
@@ -1585,10 +1620,7 @@ pub fn migrar_memoria_v1_a_v2(memoria: &mut MemoriaAprendizaje) {
             }
         }
         if r.triggers.is_empty() {
-            r.triggers = tokenizar_judicial(&r.regla)
-                .into_iter()
-                .take(8)
-                .collect();
+            r.triggers = extraer_triggers_texto(&r.regla, 8);
         }
         if r.ultima_actualizacion.is_empty() {
             r.ultima_actualizacion = r.actualizada.clone();
@@ -2433,7 +2465,7 @@ pub fn detectar_correcciones(
 // Reglas aprendidas y selección de contexto para el prompt (Fase 2 y 3)
 // ---------------------------------------------------------------------------
 
-fn es_misma_regla(a: &str, b: &str) -> bool {
+pub(crate) fn es_misma_regla(a: &str, b: &str) -> bool {
     if equivalentes_texto(a, b) {
         return true;
     }
@@ -2453,11 +2485,114 @@ fn es_misma_regla(a: &str, b: &str) -> bool {
     ta == tb || (sim >= 0.85 && (ta.is_subset(&tb) || tb.is_subset(&ta)))
 }
 
-fn extraer_triggers_texto(texto: &str, max_triggers: usize) -> Vec<String> {
+pub(crate) fn es_trigger_valido(tok_norm: &str) -> bool {
+    if tok_norm.is_empty()
+        || tok_norm == "_rad_"
+        || tok_norm.contains('[')
+        || tok_norm.contains(']')
+        || tok_norm.chars().all(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+    !matches!(
+        tok_norm,
+        "enero"
+            | "febrero"
+            | "marzo"
+            | "abril"
+            | "mayo"
+            | "junio"
+            | "julio"
+            | "agosto"
+            | "septiembre"
+            | "setiembre"
+            | "octubre"
+            | "noviembre"
+            | "diciembre"
+            | "lunes"
+            | "martes"
+            | "miercoles"
+            | "jueves"
+            | "viernes"
+            | "sabado"
+            | "domingo"
+            | "dia"
+            | "dias"
+            | "numero"
+            | "telefono"
+            | "proceso"
+            | "bajo"
+            | "rad"
+            | "radicado"
+            | "nro"
+            | "seguido"
+            | "seguida"
+            | "adelantado"
+            | "adelantada"
+            | "contra"
+            | "dentro"
+            | "cabo"
+            | "llevar"
+            | "fin"
+            | "aras"
+            | "vez"
+            | "como"
+            | "cuando"
+            | "donde"
+            | "porque"
+            | "sin"
+            | "entre"
+            | "sobre"
+            | "ante"
+            | "desde"
+            | "hasta"
+            | "hacia"
+            | "se"
+            | "su"
+            | "sus"
+            | "ha"
+            | "han"
+            | "hay"
+            | "ser"
+            | "estar"
+            | "esta"
+            | "este"
+            | "eso"
+            | "esa"
+            | "ese"
+            | "parte"
+            | "partes"
+            | "una"
+            | "uno"
+            | "dos"
+            | "tres"
+            | "mil"
+            | "ano"
+            | "anos"
+            | "presente"
+            | "dicho"
+            | "dicha"
+            | "mismo"
+            | "misma"
+            | "cual"
+            | "quien"
+            | "solo"
+            | "solamente"
+            | "unicamente"
+    )
+}
+
+pub(crate) fn extraer_triggers_texto(texto: &str, max_triggers: usize) -> Vec<String> {
+    let mut texto_limpio = texto.to_lowercase();
+    for marcador in ["[procesado]", "[radicado]", "[numero]", "[telefono]"] {
+        if texto_limpio.contains(marcador) {
+            texto_limpio = texto_limpio.replace(marcador, " ");
+        }
+    }
     let mut vistos = BTreeSet::new();
     let mut out = Vec::new();
-    for tok in tokenizar_judicial(texto) {
-        if tok == "_rad_" {
+    for tok in tokenizar_judicial(&texto_limpio) {
+        if !es_trigger_valido(&tok) {
             continue;
         }
         if vistos.insert(tok.clone()) {
@@ -2556,8 +2691,7 @@ pub(crate) fn agregar_regla_interna_con_defensor(
     let mut triggers = extraer_triggers_texto(&regla, 8);
     for t in triggers_extra {
         let limpio = quitar_tildes(&t.trim().to_lowercase());
-        if !limpio.is_empty() && limpio != "_rad_" && !triggers.contains(&limpio) && triggers.len() < 12
-        {
+        if es_trigger_valido(&limpio) && !triggers.contains(&limpio) && triggers.len() < 12 {
             triggers.push(limpio);
         }
     }
@@ -2820,7 +2954,11 @@ pub fn seleccionar_contexto_detallado_para_defensor<'a>(
     todas_reglas.extend(reglas_local_ap.iter().copied());
     for r_base in base.reglas.iter().filter(|r| regla_aplica_a_defensor(r)) {
         let alc_base = alcance_canonico(&r_base.defensor_alcance);
+        let es_invariante = r_base.origen == "base_invariante" || r_base.id.starts_with("base-");
         let duplicada_en_local = reglas_local_ap.iter().any(|r_loc| {
+            if es_invariante && !matches!(r_loc.estado.as_str(), "activa" | "") {
+                return false;
+            }
             r_loc.id == r_base.id
                 || (es_misma_regla(&r_loc.regla, &r_base.regla)
                     && alcance_canonico(&r_loc.defensor_alcance) == alc_base)
@@ -3505,8 +3643,10 @@ fn es_termino_estructural_judicial(tok_fold: &str) -> bool {
     matches!(
         tok_fold,
         "juzgado"
+            | "juzgados"
             | "juez"
             | "audiencia"
+            | "audiencias"
             | "penal"
             | "circuito"
             | "municipal"
@@ -3518,10 +3658,13 @@ fn es_termino_estructural_judicial(tok_fold: &str) -> bool {
             | "mixto"
             | "mixta"
             | "despacho"
+            | "despachos"
             | "tribunal"
+            | "tribunales"
             | "superior"
             | "sala"
             | "ejecucion"
+            | "pena"
             | "penas"
             | "medidas"
             | "seguridad"
@@ -3576,6 +3719,38 @@ fn es_termino_estructural_judicial(tok_fold: &str) -> bool {
             | "telefono"
             | "inpec"
             | "icbf"
+            | "arma"
+            | "armas"
+            | "campo"
+            | "campos"
+            | "fuente"
+            | "fuentes"
+            | "sigla"
+            | "siglas"
+            | "acta"
+            | "actas"
+            | "delito"
+            | "delitos"
+            | "proceso"
+            | "procesos"
+            | "planilla"
+            | "planillas"
+            | "regla"
+            | "reglas"
+            | "correccion"
+            | "correcciones"
+            | "abreviatura"
+            | "abreviaturas"
+            | "motivo"
+            | "motivos"
+            | "observacion"
+            | "observaciones"
+            | "nro"
+            | "cui"
+            | "prision"
+            | "fuego"
+            | "municion"
+            | "municiones"
     )
 }
 
@@ -4107,6 +4282,253 @@ fn extraer_frases_procesado(
     (tokens_fold, subfrases, permite_coma)
 }
 
+fn toponimos_judiciales_colombia() -> &'static HashSet<String> {
+    static TOPONIMOS: OnceLock<HashSet<String>> = OnceLock::new();
+    TOPONIMOS.get_or_init(|| {
+        let mut set: HashSet<String> = [
+            "san alberto",
+            "san juan del cesar",
+            "san juan cesar",
+            "san martin",
+            "san diego",
+            "el paso",
+            "del paso",
+            "san marcos",
+            "san jacinto",
+            "san onofre",
+            "san sebastian",
+            "san andres",
+            "san gil",
+            "san vicente",
+            "san jose",
+            "san pedro",
+            "san pablo",
+            "san luis",
+            "san carlos",
+            "san antonio",
+            "san francisco",
+            "santa marta",
+            "santa rosa",
+            "santa ana",
+            "santa barbara",
+            "cesar",
+            "magdalena",
+            "guajira",
+            "la guajira",
+            "santander",
+            "norte de santander",
+            "bucaramanga",
+            "barrancabermeja",
+            "ocana",
+            "cucuta",
+            "bogota",
+            "medellin",
+            "cali",
+            "barranquilla",
+            "cartagena",
+            "valledupar",
+            "aguachica",
+            "agustin codazzi",
+            "bosconia",
+            "chiriguana",
+            "chimichagua",
+            "curumani",
+            "la jagua de ibirico",
+            "jagua ibirico",
+            "el copey",
+            "cienaga",
+            "fundacion",
+            "el banco",
+            "plato",
+            "pivijay",
+            "aracataca",
+            "riohacha",
+            "maicao",
+            "fonseca",
+            "villanueva",
+            "uribia",
+            "barrancas",
+            "pailitas",
+            "pelaya",
+            "astrea",
+            "becerril",
+            "gamarra",
+            "la paz",
+            "manaure",
+            "pueblo bello",
+            "rio de oro",
+            "tamalameque",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        for j in crate::estadistica_ia::juzgados_base() {
+            let base = j.split(" - ").next().unwrap_or(j);
+            let norm = normalizar_clave_catalogo(base);
+            for sep in [
+                "municipal de ",
+                "circuito de ",
+                "especializado de ",
+                "adolescentes de ",
+                "seguridad de ",
+                "judicial de ",
+                "garantias de ",
+                "conocimiento de ",
+            ] {
+                if let Some(pos) = norm.rfind(sep) {
+                    let suf = norm[pos + sep.len()..].trim();
+                    let n_toks = suf.split_whitespace().count();
+                    if (1..=4).contains(&n_toks)
+                        && suf
+                            .split_whitespace()
+                            .any(|t| !es_termino_estructural_judicial(t))
+                    {
+                        set.insert(suf.to_string());
+                        let sin_sw: Vec<&str> = suf
+                            .split_whitespace()
+                            .filter(|t| !matches!(*t, "de" | "del" | "la" | "las" | "los"))
+                            .collect();
+                        if !sin_sw.is_empty() && sin_sw.len() <= 4 {
+                            set.insert(sin_sw.join(" "));
+                        }
+                    }
+                }
+            }
+        }
+        set
+    })
+}
+
+fn marcar_toponimos_en_juzgados(
+    texto: &str,
+    tokens: &[TokenSpan],
+    fold_buf: &str,
+    consumido: &[bool],
+    protegido: &mut [bool],
+) {
+    let n = tokens.len();
+    if n < 2 {
+        return;
+    }
+    let toponimos = toponimos_judiciales_colombia();
+    let mut probe = String::with_capacity(48);
+    let mut i = 0usize;
+    while i < n {
+        let inicio_fold = &fold_buf[tokens[i].fold_start..tokens[i].fold_end];
+        if !matches!(
+            inicio_fold,
+            "juzgado"
+                | "juzgados"
+                | "jdo"
+                | "jdos"
+                | "tribunal"
+                | "tribunales"
+                | "despacho"
+                | "despachos"
+        ) {
+            i += 1;
+            continue;
+        }
+        let max_j = (i + 15).min(n);
+        let mut j_end = i + 1;
+        while j_end < max_j {
+            let sep = &texto[tokens[j_end - 1].orig_end..tokens[j_end].orig_start];
+            if sep.contains(';') || sep.contains('\n') || sep.contains('\r') || sep.contains('\t') {
+                break;
+            }
+            let prev_fold = &fold_buf[tokens[j_end - 1].fold_start..tokens[j_end - 1].fold_end];
+            if sep.contains('.')
+                && !matches!(
+                    prev_fold,
+                    "jdo"
+                        | "jdos"
+                        | "mpal"
+                        | "ppal"
+                        | "cto"
+                        | "pcto"
+                        | "prom"
+                        | "mun"
+                        | "esp"
+                        | "nro"
+                        | "no"
+                        | "num"
+                        | "ejec"
+                        | "gtia"
+                        | "gtias"
+                        | "con"
+                        | "j"
+                        | "p"
+                )
+                && !prev_fold.chars().all(|c| c.is_ascii_digit())
+            {
+                break;
+            }
+            let tok_fold = &fold_buf[tokens[j_end].fold_start..tokens[j_end].fold_end];
+            if matches!(
+                tok_fold,
+                "contra"
+                    | "seguido"
+                    | "seguida"
+                    | "adelantado"
+                    | "adelantada"
+                    | "procesado"
+                    | "procesada"
+                    | "radicado"
+                    | "rad"
+                    | "delito"
+                    | "delitos"
+                    | "donde"
+                    | "fracasa"
+                    | "fracsa"
+                    | "reprograma"
+                    | "reprogramo"
+                    | "reprogramada"
+                    | "solicito"
+                    | "comparecio"
+                    | "asistio"
+                    | "informa"
+            ) {
+                break;
+            }
+            j_end += 1;
+        }
+
+        let mut k = i + 1;
+        while k < j_end {
+            let mut matched_len = 0usize;
+            for len in (1..=4).rev() {
+                if k + len > j_end {
+                    continue;
+                }
+                if (k..k + len).any(|idx| consumido[idx]) {
+                    continue;
+                }
+                probe.clear();
+                for idx in k..k + len {
+                    if idx > k {
+                        probe.push(' ');
+                    }
+                    probe.push_str(&fold_buf[tokens[idx].fold_start..tokens[idx].fold_end]);
+                }
+                if toponimos.contains(&probe) {
+                    matched_len = len;
+                    break;
+                }
+            }
+            if matched_len > 0 {
+                for p in &mut protegido[k..k + matched_len] {
+                    *p = true;
+                }
+                k += matched_len;
+            } else {
+                k += 1;
+            }
+        }
+        i = j_end;
+    }
+}
+
 /// Reemplaza únicamente el nombre del procesado, números de radicado, cédulas y teléfonos
 /// por marcadores (`[PROCESADO]`, `[RADICADO]`, `[TELEFONO]`, `[NUMERO]`), preservando los
 /// nombres reales de defensores públicos incluso si comparten un apellido con algún procesado.
@@ -4372,7 +4794,7 @@ impl Anonimizador {
             }
         }
 
-        // 2) Escudos de defensores sobre tokens no consumidos
+        // 2) Escudos de defensores y topónimos judiciales sobre tokens no consumidos
         let mut protegido: Vec<bool> = vec![false; n];
         if (self.tiene_palabras_procesado || !self.subfrases_procesado.esta_vacio())
             && !rangos_escudos.is_empty()
@@ -4386,6 +4808,9 @@ impl Anonimizador {
                     }
                 }
             }
+        }
+        if self.tiene_palabras_procesado || !self.subfrases_procesado.esta_vacio() {
+            marcar_toponimos_en_juzgados(texto, &tokens, &fold_buf, &consumido, &mut protegido);
         }
 
         // 3) Sub-frases compuestas con puntuación (`Juan-Carlos`, `O'Connor`) y palabras individuales
@@ -4449,14 +4874,39 @@ impl Anonimizador {
         }
 
         if self.tiene_palabras_procesado {
-            for i in 0..n {
+            let mut i = 0usize;
+            while i < n {
                 if consumido[i] || protegido[i] {
+                    i += 1;
                     continue;
                 }
                 let wid = word_ids[i];
                 if wid != SIN_ID && self.es_palabra_procesado[wid as usize] {
-                    reemplazo_fin[i] = Some(i);
+                    let mut fin = i;
+                    while fin + 1 < n
+                        && !consumido[fin + 1]
+                        && !protegido[fin + 1]
+                        && reemplazo_fin[fin + 1].is_none()
+                    {
+                        let wid_sig = word_ids[fin + 1];
+                        if wid_sig == SIN_ID || !self.es_palabra_procesado[wid_sig as usize] {
+                            break;
+                        }
+                        let sep = &texto[tokens[fin].orig_end..tokens[fin + 1].orig_start];
+                        let prev_fold = &fold_buf[tokens[fin].fold_start..tokens[fin].fold_end];
+                        if !matches!(
+                            clasificar_sep_nombre_procesado(sep, prev_fold),
+                            SepProcesado::Espacio
+                        ) {
+                            break;
+                        }
+                        fin += 1;
+                    }
+                    reemplazo_fin[i] = Some(fin);
                     hubo_reemplazo = true;
+                    i = fin + 1;
+                } else {
+                    i += 1;
                 }
             }
         }
@@ -5975,8 +6425,7 @@ pub fn aplicar_consolidacion_ia_en(
                         }
                         for t in &acc.triggers {
                             let tn = quitar_tildes(&t.trim().to_lowercase());
-                            if !tn.is_empty()
-                                && tn != "_rad_"
+                            if es_trigger_valido(&tn)
                                 && !dest.triggers.contains(&tn)
                                 && dest.triggers.len() < 12
                             {
@@ -6187,6 +6636,88 @@ pub fn aplicar_consolidacion_ia(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn observacion_contiene_reprogramacion_futura(obs: &str) -> bool {
+    let s = quitar_tildes(&obs.to_lowercase());
+    if s.trim().is_empty() {
+        return false;
+    }
+    let niega_fijacion = s.contains("no fijan fecha")
+        || s.contains("no se fijo nueva fecha")
+        || s.contains("sin nueva fecha")
+        || s.contains("sin fijar fecha");
+    if s.contains("proxima fecha")
+        || s.contains("proxima audiencia")
+        || s.contains("reprogramada para")
+        || s.contains("reprogramo para el")
+        || s.contains("reprogramo para la")
+        || s.contains("se senalo nuevamente")
+        || s.contains("senalo nuevamente")
+        || s.contains("senala nuevamente")
+    {
+        return true;
+    }
+    if !niega_fijacion && s.contains("nueva fecha") {
+        return true;
+    }
+    if !niega_fijacion
+        && (s.contains("se fijo")
+            || s.contains("fijo la")
+            || s.contains("fijo audiencia")
+            || s.contains("fijo su")
+            || s.contains("fije nueva"))
+        && (s.contains("continuacion")
+            || s.contains("audiencia")
+            || s.contains("fecha")
+            || s.contains("para el "))
+    {
+        return true;
+    }
+    false
+}
+
+fn actualizar_preferencia_reprogramacion_en_memoria(
+    memoria: &mut MemoriaAprendizaje,
+    prediccion: &AudienciaInput,
+    final_usuario: &AudienciaInput,
+    def_clave: &str,
+) {
+    const MAX_ESS_PREF: f64 = 12.0;
+    let pred_lower = prediccion.observaciones.to_lowercase();
+    let fin_lower = final_usuario.observaciones.to_lowercase();
+    // Evitar doble conteo cuando estadistica_ia ya procesó el marcador literal "reprogramada para:"
+    if pred_lower.contains("reprogramada para:") || fin_lower.contains("reprogramada para:") {
+        return;
+    }
+    let pred_tiene = observacion_contiene_reprogramacion_futura(&prediccion.observaciones);
+    let fin_tiene = observacion_contiene_reprogramacion_futura(&final_usuario.observaciones);
+    if !pred_tiene && !fin_tiene {
+        return;
+    }
+    let es_positiva = fin_tiene;
+    let aplicar = |pref: &mut PreferenciasEstilo, peso: f64| {
+        if es_positiva {
+            pref.incluir_reprogramacion_alpha += peso;
+        } else {
+            pref.incluir_reprogramacion_beta += peso;
+        }
+        normalizar_ess_par(
+            &mut pref.incluir_reprogramacion_alpha,
+            &mut pref.incluir_reprogramacion_beta,
+            MAX_ESS_PREF,
+        );
+    };
+    if !def_clave.is_empty() {
+        let pref_def = memoria
+            .preferencias_por_defensor
+            .entry(def_clave.to_string())
+            .or_insert_with(|| memoria.preferencias_estilo.clone());
+        aplicar(pref_def, 1.0);
+        aplicar(&mut memoria.preferencias_estilo, 0.35);
+    } else {
+        aplicar(&mut memoria.preferencias_estilo, 1.0);
+    }
+}
+
 pub fn registrar_resultado_completo_en(
     ruta: &Path,
     texto: &str,
@@ -6304,6 +6835,12 @@ pub fn registrar_resultado_completo_en(
         } else {
             Some(def_clave.as_str())
         },
+    );
+    actualizar_preferencia_reprogramacion_en_memoria(
+        &mut memoria,
+        prediccion,
+        final_usuario,
+        &def_clave,
     );
 
     let mut nueva_correccion = None;
@@ -6538,11 +7075,15 @@ pub fn aplicar_analisis_en(
             if !analisis.regla.trim().is_empty() {
                 let limpia = colapsar_espacios(&analisis.regla);
                 corr.regla_generada = limpia.clone();
-                let campo_obj = corr
-                    .campos
-                    .first()
-                    .map(|c| c.campo.clone())
-                    .unwrap_or_else(|| inferir_campo_objetivo_desde_tipo(&analisis.tipo_error));
+                let campo_inf = inferir_campo_objetivo_desde_tipo(&analisis.tipo_error);
+                let campo_obj = if campo_inf != "general" {
+                    campo_inf
+                } else {
+                    corr.campos
+                        .first()
+                        .map(|c| c.campo.clone())
+                        .unwrap_or(campo_inf)
+                };
                 let triggers =
                     regenerar_triggers_correccion(&corr.texto_original, &limpia, &corr.nota_usuario);
                 regla_a_registrar = Some((
@@ -6571,6 +7112,12 @@ pub fn aplicar_analisis_en(
             if let Some(existente) = memoria.reglas.iter_mut().find(|r| r.id == id_asociado) {
                 if !tipo.trim().is_empty() && tipo.trim() != "general" {
                     existente.tipo_error = tipo.trim().to_lowercase();
+                }
+                if existente.origen != "base_invariante"
+                    && !existente.id.starts_with("base-")
+                    && campo_obj != "general"
+                {
+                    existente.campo_objetivo = campo_obj.clone();
                 }
                 if regla.len() >= 6 && regla.len() <= 240 {
                     existente.regla = regla.clone();
@@ -6880,7 +7427,12 @@ pub fn aplicar_analisis_cluster_en(
         }
     } else {
         let mut triggers_unificados: Vec<String> = Vec::new();
-        let mut campo_obj = String::new();
+        let campo_inf = inferir_campo_objetivo_desde_tipo(&analisis.tipo_error);
+        let mut campo_obj = if campo_inf != "general" {
+            campo_inf
+        } else {
+            String::new()
+        };
         let mut modelo_alcance = "*".to_string();
         let mut rep_id = String::new();
         let mut defensores_cluster: Vec<String> = Vec::new();
@@ -6893,11 +7445,9 @@ pub fn aplicar_analisis_cluster_en(
                 rep_id = c.id.clone();
             }
             if campo_obj.is_empty() {
-                campo_obj = c
-                    .campos
-                    .first()
-                    .map(|cf| cf.campo.clone())
-                    .unwrap_or_else(|| inferir_campo_objetivo_desde_tipo(&analisis.tipo_error));
+                if let Some(cf) = c.campos.first() {
+                    campo_obj = cf.campo.clone();
+                }
             }
             modelo_alcance = format!("{}:{}", c.proveedor, c.modelo);
             let dk = normalizar_clave_defensor(&c.defensor_clave);
@@ -6909,6 +7459,9 @@ pub fn aplicar_analisis_cluster_en(
                     triggers_unificados.push(t);
                 }
             }
+        }
+        if campo_obj.is_empty() {
+            campo_obj = "general".to_string();
         }
 
         let defensor_alcance_regla = if defensores_cluster.len() == 1 {
@@ -7019,6 +7572,61 @@ fn construir_preferencias_resumen(pref: &PreferenciasEstilo) -> PreferenciasEsti
     }
 }
 
+fn clave_plantilla_juzgado(valor: &str) -> Option<String> {
+    let sin_slot = valor.replace("{N}", " ").replace("{n}", " ");
+    let norm = normalizar_clave_catalogo(&sin_slot);
+    if !norm.starts_with("juzgado ") && !norm.starts_with("tribunal ") {
+        return None;
+    }
+    let es_num_u_ordinal = |t: &str| -> bool {
+        t.chars().all(|c| c.is_ascii_digit())
+            || matches!(
+                t,
+                "1ro"
+                    | "2do"
+                    | "3ro"
+                    | "4to"
+                    | "5to"
+                    | "6to"
+                    | "7mo"
+                    | "8vo"
+                    | "9no"
+                    | "10mo"
+                    | "primero"
+                    | "segundo"
+                    | "tercero"
+                    | "cuarto"
+                    | "quinto"
+                    | "sexto"
+                    | "septimo"
+                    | "octavo"
+                    | "noveno"
+                    | "decimo"
+            )
+    };
+    let toks: Vec<&str> = norm
+        .split_whitespace()
+        .filter(|t| !es_num_u_ordinal(t))
+        .collect();
+    if toks.len() < 3 {
+        return None;
+    }
+    Some(toks.join(" "))
+}
+
+fn plantillas_juzgados_oficiales() -> &'static HashSet<String> {
+    static PLANTILLAS: OnceLock<HashSet<String>> = OnceLock::new();
+    PLANTILLAS.get_or_init(|| {
+        let mut set = HashSet::new();
+        for j in crate::estadistica_ia::juzgados_base() {
+            if let Some(plantilla) = clave_plantilla_juzgado(j) {
+                set.insert(plantilla);
+            }
+        }
+        set
+    })
+}
+
 fn claves_catalogo_oficiales() -> &'static HashSet<String> {
     static OFICIALES: OnceLock<HashSet<String>> = OnceLock::new();
     OFICIALES.get_or_init(|| {
@@ -7041,7 +7649,14 @@ fn claves_catalogo_oficiales() -> &'static HashSet<String> {
 
 fn es_juzgado_o_tipo_oficial(valor: &str) -> bool {
     let norm = normalizar_clave_catalogo(valor);
-    !norm.is_empty() && claves_catalogo_oficiales().contains(&norm)
+    if norm.is_empty() {
+        return false;
+    }
+    if claves_catalogo_oficiales().contains(&norm) {
+        return true;
+    }
+    clave_plantilla_juzgado(valor)
+        .is_some_and(|plantilla| plantillas_juzgados_oficiales().contains(&plantilla))
 }
 
 fn anonimizar_valor_catalogo(valor: &str, anon: &Anonimizador) -> String {
@@ -7783,6 +8398,36 @@ pub fn obtener_diagnostico_aprendizaje_en(ruta: &Path) -> DiagnosticoAprendizaje
     construir_diagnostico_desde_memoria(&memoria, None, &[])
 }
 
+fn anonimizar_ejemplo_positivo_con_global(
+    e: &EjemploPositivo,
+    anon_global: &Anonimizador,
+    cache_cat: &CacheCatalogoAnon<'_>,
+) -> EjemploPositivo {
+    EjemploPositivo {
+        id: e.id.clone(),
+        registrada: e.registrada.clone(),
+        proveedor: e.proveedor.clone(),
+        modelo: e.modelo.clone(),
+        texto_anonimizado: anon_global.aplicar(&e.texto_anonimizado),
+        salida_anonimizada: AudienciaInput {
+            radicado: anon_global.aplicar(&e.salida_anonimizada.radicado),
+            tipo: cache_cat.anonimizar(&e.salida_anonimizada.tipo),
+            fecha: e.salida_anonimizada.fecha.clone(),
+            hora: e.salida_anonimizada.hora.clone(),
+            juzgado: cache_cat.anonimizar(&e.salida_anonimizada.juzgado),
+            realizada: e.salida_anonimizada.realizada.clone(),
+            motivo: e.salida_anonimizada.motivo.clone(),
+            observaciones: anon_global.aplicar(&e.salida_anonimizada.observaciones),
+        },
+        reglas_inyectadas: e.reglas_inyectadas.clone(),
+        defensor_clave: if e.defensor_clave.trim().is_empty() {
+            String::new()
+        } else {
+            normalizar_clave_defensor(&e.defensor_clave)
+        },
+    }
+}
+
 pub fn exportar_aprendizaje_completo_con_priors_en(
     ruta: &Path,
     ruta_uso: Option<&Path>,
@@ -7800,9 +8445,11 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             s_tmp.tipos_audiencia = tipos_usuario.to_vec();
             asegurar_uso_inicializado_en(r_uso, carp, &s_tmp)
         }
-        (Some(r_uso), None) => crate::uso_catalogos::cargar_uso_sin_lock_en(r_uso),
+        (Some(r_uso), None) => cargar_uso_con_lock_en(r_uso),
         _ => UsoCatalogos::default(),
     };
+    let instancia_id = uso.instancia_id.clone();
+    let fuentes_importadas: Vec<String> = uso.fuentes_importadas.iter().cloned().collect();
 
     let radicados_excel = carpeta_archivos
         .map(recolectar_radicados_en)
@@ -7823,6 +8470,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             && memoria.aciertos == 0
             && memoria.ejemplos_aciertos.is_empty()
             && memoria.consolidaciones_ia.is_empty()
+            && memoria.tabla_alias.is_empty()
             && juzgados_usuario.is_empty()
             && tipos_usuario.is_empty()
             && uso.total_audiencias_contabilizadas == 0
@@ -7832,6 +8480,16 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
                     .to_string(),
             );
         }
+
+        let ahora_dt = Local::now();
+        let exportado_ahora = ahora_dt.to_rfc3339();
+        let exportacion_seq = memoria.exportacion_seq.saturating_add(1);
+        let exportacion_id = format!(
+            "exp-{}-{}",
+            ahora_dt.format("%Y%m%d%H%M%S%3f"),
+            exportacion_seq
+        );
+        let ultima_exportacion_previa = memoria.ultima_exportacion_previa.clone();
 
         let mut correcciones_por_campo: BTreeMap<String, usize> = BTreeMap::new();
         for c in &memoria.correcciones {
@@ -7901,6 +8559,12 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             })
             .collect();
 
+        let ejemplos_aciertos_anon: Vec<EjemploPositivo> = memoria
+            .ejemplos_aciertos
+            .iter()
+            .map(|e| anonimizar_ejemplo_positivo_con_global(e, &anon_global, &cache_cat))
+            .collect();
+
         let juzgados_anon: Vec<String> = juzgados_usuario
             .iter()
             .map(|j| cache_cat.anonimizar(j))
@@ -7919,20 +8583,75 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
 
         let (metricas_por_campo, metricas_por_modelo, alias_validados, _) =
             construir_metricas_diagnostico(&memoria, &cache_cat);
-        let patrones_abreviacion = construir_patrones_diagnostico(&memoria, &cache_cat);
-        let preferencias_estilo = construir_preferencias_resumen(&memoria.preferencias_estilo);
-        let preferencias_por_defensor: BTreeMap<String, PreferenciasEstiloResumen> = memoria
-            .preferencias_por_defensor
+
+        let mut tabla_alias_raw: Vec<AliasEstadistico> = memoria
+            .tabla_alias
             .iter()
-            .filter_map(|(k, p)| {
-                let dk = normalizar_clave_defensor(k);
-                if dk.is_empty() {
-                    None
+            .map(|a| {
+                let (entrada_norm, canonico) = if a.campo == "juzgado" || a.campo == "tipo" {
+                    (
+                        cache_cat.anonimizar(&a.entrada_norm),
+                        cache_cat.anonimizar(&a.canonico),
+                    )
                 } else {
-                    Some((dk, construir_preferencias_resumen(p)))
+                    (
+                        anon_global.aplicar(&a.entrada_norm),
+                        anon_global.aplicar(&a.canonico),
+                    )
+                };
+                let mut confirmantes: Vec<String> = Vec::new();
+                for d in &a.defensores_confirmantes {
+                    let dk = normalizar_clave_defensor(d);
+                    if !dk.is_empty() && !confirmantes.contains(&dk) {
+                        confirmantes.push(dk);
+                    }
+                }
+                confirmantes.sort();
+                AliasEstadistico {
+                    campo: a.campo.clone(),
+                    entrada_norm,
+                    canonico,
+                    alpha: a.alpha,
+                    beta: a.beta,
+                    defensor_alcance: alcance_canonico(&a.defensor_alcance),
+                    defensores_confirmantes: confirmantes,
+                    ultima_actualizacion: a.ultima_actualizacion.clone(),
                 }
             })
             .collect();
+        tabla_alias_raw.sort_by(|a, b| {
+            let qa = limite_inferior_bayesiano(a.alpha, a.beta);
+            let qb = limite_inferior_bayesiano(b.alpha, b.beta);
+            qb.partial_cmp(&qa)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.campo.cmp(&b.campo))
+                .then_with(|| a.defensor_alcance.cmp(&b.defensor_alcance))
+                .then_with(|| a.entrada_norm.cmp(&b.entrada_norm))
+                .then_with(|| a.canonico.cmp(&b.canonico))
+        });
+
+        let patrones_abreviacion = construir_patrones_diagnostico(&memoria, &cache_cat);
+        let preferencias_estilo = construir_preferencias_resumen(&memoria.preferencias_estilo);
+        let preferencias_raw = Some(memoria.preferencias_estilo.clone());
+        let mut preferencias_por_defensor_raw: BTreeMap<String, PreferenciasEstilo> =
+            BTreeMap::new();
+        for (k, p) in &memoria.preferencias_por_defensor {
+            let dk = normalizar_clave_defensor(k);
+            if dk.is_empty() {
+                continue;
+            }
+            match preferencias_por_defensor_raw.get_mut(&dk) {
+                Some(dest) => fusionar_preferencias_estilo(dest, p),
+                None => {
+                    preferencias_por_defensor_raw.insert(dk, p.clone());
+                }
+            }
+        }
+        let preferencias_por_defensor: BTreeMap<String, PreferenciasEstiloResumen> =
+            preferencias_por_defensor_raw
+                .iter()
+                .map(|(dk, p)| (dk.clone(), construir_preferencias_resumen(p)))
+                .collect();
 
         let resumen_patrones_generales = construir_resumen_patrones_generales(
             &memoria,
@@ -8047,14 +8766,19 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             .collect();
 
         let paquete = PaqueteExportacion {
-            app: "Lokus",
-            version_app: env!("CARGO_PKG_VERSION"),
+            app: "Lokus".to_string(),
+            version_app: env!("CARGO_PKG_VERSION").to_string(),
             formato: VERSION_FORMATO,
-            exportado: Local::now().to_rfc3339(),
+            exportado: exportado_ahora.clone(),
+            instancia_id: instancia_id.clone(),
+            exportacion_seq,
+            exportacion_id,
+            ultima_exportacion_previa,
+            fuentes_importadas,
             aciertos: memoria.aciertos,
             total_reglas: reglas_anonimizadas.len(),
             total_correcciones: correcciones_anonimizadas.len(),
-            total_ejemplos_aciertos: memoria.ejemplos_aciertos.len(),
+            total_ejemplos_aciertos: ejemplos_aciertos_anon.len(),
             perfiles_defensores: defensores_directorio.len(),
             llamadas_induccion_llm_total: memoria.llamadas_induccion_llm_total,
             llamadas_extraccion_total: memoria.llamadas_extraccion_total,
@@ -8064,25 +8788,29 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
             metricas_por_modelo,
             preferencias_estilo,
             preferencias_por_defensor,
+            preferencias_raw,
+            preferencias_por_defensor_raw,
             defensores_directorio,
             resumen_patrones_generales,
             grafo_asociaciones,
             perfiles_sinteticos,
             consolidaciones_ia,
             alias_validados,
+            tabla_alias_raw,
             patrones_abreviacion,
             juzgados_agregados_usuario: juzgados_anon,
             tipos_audiencia_agregados_usuario: tipos_anon,
             uso_catalogos: reporte_uso,
             reglas: reglas_anonimizadas,
             correcciones: correcciones_anonimizadas,
+            ejemplos_aciertos: ejemplos_aciertos_anon,
         };
         let json = serde_json::to_string_pretty(&paquete)
             .map_err(|e| format!("Error preparando la exportación del aprendizaje: {}", e))?;
 
         fs::create_dir_all(carpeta_destino)
             .map_err(|e| format!("No se pudo acceder a la carpeta de destino: {}", e))?;
-        let base = format!("lokus_aprendizaje_ia_{}", Local::now().format("%Y%m%d_%H%M%S"));
+        let base = format!("lokus_aprendizaje_ia_{}", ahora_dt.format("%Y%m%d_%H%M%S"));
         let mut destino = carpeta_destino.join(format!("{}.json", base));
         let mut contador = 1;
         while destino.exists() {
@@ -8092,14 +8820,21 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
         fs::write(&destino, json)
             .map_err(|e| format!("No se pudo guardar el archivo de aprendizaje: {}", e))?;
 
-        let mut cambio_mem = false;
+        let tiene_actividad_ia = ruta.exists()
+            || !memoria.correcciones.is_empty()
+            || !memoria.reglas.is_empty()
+            || memoria.aciertos > 0
+            || !memoria.ejemplos_aciertos.is_empty()
+            || !memoria.consolidaciones_ia.is_empty()
+            || !memoria.tabla_alias.is_empty();
+        memoria.exportacion_seq = exportacion_seq;
+        memoria.ultima_exportacion_previa = exportado_ahora;
         for c in memoria.correcciones.iter_mut() {
             if !c.exportada {
                 c.exportada = true;
-                cambio_mem = true;
             }
         }
-        if cambio_mem {
+        if tiene_actividad_ia {
             guardar_memoria_en(ruta, &memoria)?;
         }
 
@@ -8107,7 +8842,7 @@ pub fn exportar_aprendizaje_completo_con_priors_en(
     };
 
     if let Some(r_uso) = ruta_uso {
-        marcar_uso_compartido_en(r_uso)?;
+        confirmar_uso_exportado_en(r_uso, &instancia_id)?;
     }
 
     Ok(destino_str)
@@ -11748,6 +12483,664 @@ mod tests {
                 .any(|p| p.defensor_alcance == "jose daniel martinez" && p.patron_entrada == "jpm {N}"),
             "El patrón debe migrar al renombrar defensor: {:?}",
             diag_ren.patrones_abreviacion
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_f2_exportacion_formato_v5_secuencia_instancia_raw_y_ejemplos_anonimizados() {
+        use crate::uso_catalogos::{cargar_uso_sin_lock_en, NOMBRE_ARCHIVO_USO};
+
+        let dir = preparar_dir("f2_export_v5");
+        let ruta_mem = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let ruta_uso = dir.join(NOMBRE_ARCHIVO_USO);
+        let descargas = dir.join("descargas");
+
+        let mut uso = UsoCatalogos::default();
+        uso.version = 1;
+        uso.instancia_id = "inst-f2-test".into();
+        uso.sembrado_inicial = true;
+        uso.total_audiencias_contabilizadas = 3;
+        uso.pendientes_compartir = 2;
+        uso.fuentes_importadas.insert("inst-peer-b".into());
+        uso.fuentes_importadas.insert("inst-peer-a".into());
+        fs::write(&ruta_uso, serde_json::to_string_pretty(&uso).unwrap()).unwrap();
+
+        let mut mem = MemoriaAprendizaje::default();
+        mem.aciertos = 1;
+        mem.preferencias_estilo.incluir_reprogramacion_beta = 4.2;
+        let mut pref_def = PreferenciasEstilo::default();
+        pref_def.instalada_reprogramada_si_alpha = 6.5;
+        mem.preferencias_por_defensor
+            .insert("Dr. José Daniel".into(), pref_def);
+        mem.tabla_alias = vec![
+            AliasEstadistico {
+                campo: "juzgado".into(),
+                entrada_norm: "juzgado libre carlos mendoza".into(),
+                canonico: "Juzgado Libre Carlos Mendoza".into(),
+                alpha: 1.5, // q10 < 0.30 (solo candidato, omitido en alias_validados pero conservado en tabla_alias_raw)
+                beta: 1.2,
+                defensor_alcance: "Dr. José Daniel".into(),
+                defensores_confirmantes: vec!["Dr. José Daniel".into()],
+                ultima_actualizacion: "2026-11-23T10:00:00-05:00".into(),
+            },
+            AliasEstadistico {
+                campo: "juzgado".into(),
+                entrada_norm: "jpm1 san alberto".into(),
+                canonico: "Juzgado 1 Promiscuo Municipal de San Alberto".into(),
+                alpha: 4.0,
+                beta: 1.2,
+                defensor_alcance: "*".into(),
+                defensores_confirmantes: vec!["jose daniel".into()],
+                ultima_actualizacion: "2026-11-23T10:05:00-05:00".into(),
+            },
+        ];
+        mem.ejemplos_aciertos.push(EjemploPositivo {
+            id: "pos-f2".into(),
+            registrada: "2026-11-23T10:00:00-05:00".into(),
+            proveedor: "openai".into(),
+            modelo: "gpt-5-mini".into(),
+            texto_anonimizado: "Audiencia de CARLOS MENDOZA rad 200016001075202500999 cel 3105559988".into(),
+            salida_anonimizada: AudienciaInput {
+                radicado: "CARLOS MENDOZA - 200016001075202500999".into(),
+                tipo: "Audiencia de acusación".into(),
+                fecha: "23/11/2026".into(),
+                hora: "09:00".into(),
+                juzgado: "Juzgado 1 Promiscuo Municipal de San Alberto".into(),
+                realizada: "SI".into(),
+                motivo: String::new(),
+                observaciones: "Asistió CARLOS MENDOZA cel 3105559988".into(),
+            },
+            reglas_inyectadas: vec!["base-1".into()],
+            defensor_clave: "Dr. José Daniel".into(),
+        });
+        mem.correcciones.push(CorreccionIa {
+            id: "corr-f2".into(),
+            registrada: "2026-11-23T10:10:00-05:00".into(),
+            proveedor: "openai".into(),
+            modelo: "gpt-5-mini".into(),
+            texto_original: "Caso CARLOS MENDOZA 200016001075202500999".into(),
+            prediccion: AudienciaInput {
+                radicado: "CARLOS MENDOZA - 200016001075202500999".into(),
+                ..audiencia_base()
+            },
+            final_usuario: AudienciaInput {
+                radicado: "CARLOS MENDOZA - 200016001075202500999".into(),
+                ..audiencia_base()
+            },
+            campos: vec![],
+            estado: "pendiente".into(),
+            regla_generada: String::new(),
+            regla_id_asociada: String::new(),
+            pregunta_ia: String::new(),
+            nota_usuario: String::new(),
+            exportada: false,
+            defensor_clave: "jose daniel".into(),
+        });
+        guardar_memoria_en(&ruta_mem, &mem).unwrap();
+
+        let arch1 = exportar_aprendizaje_completo_con_priors_en(
+            &ruta_mem,
+            Some(&ruta_uso),
+            None,
+            None,
+            &descargas,
+            &[],
+            &[],
+            &["Dr. José Daniel".into()],
+        )
+        .unwrap();
+        let p1: PaqueteExportacion =
+            serde_json::from_str(&fs::read_to_string(&arch1).unwrap()).unwrap();
+        assert_eq!(p1.formato, 5);
+        assert_eq!(p1.instancia_id, "inst-f2-test");
+        assert_eq!(p1.exportacion_seq, 1);
+        assert!(p1.exportacion_id.starts_with("exp-"));
+        assert_eq!(p1.ultima_exportacion_previa, "");
+        assert_eq!(
+            p1.fuentes_importadas,
+            vec!["inst-peer-a".to_string(), "inst-peer-b".to_string()]
+        );
+        assert_eq!(p1.alias_validados.len(), 1);
+        assert_eq!(p1.tabla_alias_raw.len(), 2);
+        let raw_bajo = p1
+            .tabla_alias_raw
+            .iter()
+            .find(|a| a.defensor_alcance == "jose daniel")
+            .expect("alias de bajo q10 debe estar en tabla_alias_raw");
+        assert!((raw_bajo.alpha - 1.5).abs() < 1e-9);
+        assert!((raw_bajo.beta - 1.2).abs() < 1e-9);
+        assert!(!raw_bajo.canonico.to_lowercase().contains("mendoza"));
+        assert!(p1
+            .tabla_alias_raw
+            .iter()
+            .any(|a| a.canonico == "Juzgado 1 Promiscuo Municipal de San Alberto"));
+        assert!((p1.preferencias_raw.as_ref().unwrap().incluir_reprogramacion_beta - 4.2).abs() < 1e-9);
+        assert!(
+            (p1.preferencias_por_defensor_raw["jose daniel"].instalada_reprogramada_si_alpha - 6.5)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(p1.total_ejemplos_aciertos, 1);
+        assert_eq!(p1.ejemplos_aciertos.len(), 1);
+        let ej_str = serde_json::to_string(&p1.ejemplos_aciertos).unwrap();
+        assert!(!ej_str.to_lowercase().contains("mendoza"), "{}", ej_str);
+        assert!(!ej_str.contains("200016001075202500999"), "{}", ej_str);
+        assert!(!ej_str.contains("3105559988"), "{}", ej_str);
+        assert!(ej_str.contains("Juzgado 1 Promiscuo Municipal de San Alberto"));
+        assert_eq!(cargar_uso_sin_lock_en(&ruta_uso).pendientes_compartir, 0);
+
+        let arch2 = exportar_aprendizaje_completo_con_priors_en(
+            &ruta_mem,
+            Some(&ruta_uso),
+            None,
+            None,
+            &descargas,
+            &[],
+            &[],
+            &["Dr. José Daniel".into()],
+        )
+        .unwrap();
+        let p2: PaqueteExportacion =
+            serde_json::from_str(&fs::read_to_string(&arch2).unwrap()).unwrap();
+        assert_eq!(p2.exportacion_seq, 2);
+        assert_eq!(p2.ultima_exportacion_previa, p1.exportado);
+        assert_eq!(p2.instancia_id, "inst-f2-test");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_f2_exportacion_error_escritura_no_corrompe_secuencia_ni_pendientes() {
+        use crate::uso_catalogos::{cargar_uso_sin_lock_en, NOMBRE_ARCHIVO_USO};
+
+        let dir = preparar_dir("f2_export_err");
+        let ruta_mem = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        let ruta_uso = dir.join(NOMBRE_ARCHIVO_USO);
+        let archivo_como_carpeta = dir.join("no_es_directorio");
+        fs::write(&archivo_como_carpeta, b"bloqueo").unwrap();
+
+        let mut uso = UsoCatalogos::default();
+        uso.version = 1;
+        uso.instancia_id = "inst-err".into();
+        uso.total_audiencias_contabilizadas = 1;
+        uso.pendientes_compartir = 2;
+        fs::write(&ruta_uso, serde_json::to_string_pretty(&uso).unwrap()).unwrap();
+
+        let mut mem = MemoriaAprendizaje::default();
+        mem.aciertos = 1;
+        mem.correcciones.push(CorreccionIa {
+            id: "corr-err".into(),
+            registrada: "2026-11-23T10:00:00-05:00".into(),
+            proveedor: "openai".into(),
+            modelo: "gpt-5-mini".into(),
+            texto_original: "Texto".into(),
+            prediccion: audiencia_base(),
+            final_usuario: audiencia_base(),
+            campos: vec![],
+            estado: "pendiente".into(),
+            regla_generada: String::new(),
+            regla_id_asociada: String::new(),
+            pregunta_ia: String::new(),
+            nota_usuario: String::new(),
+            exportada: false,
+            defensor_clave: String::new(),
+        });
+        guardar_memoria_en(&ruta_mem, &mem).unwrap();
+
+        let res = exportar_aprendizaje_completo_con_priors_en(
+            &ruta_mem,
+            Some(&ruta_uso),
+            None,
+            None,
+            &archivo_como_carpeta,
+            &[],
+            &[],
+            &[],
+        );
+        assert!(res.is_err());
+
+        let mem_post = cargar_memoria_en(&ruta_mem);
+        assert_eq!(mem_post.exportacion_seq, 0);
+        assert_eq!(mem_post.ultima_exportacion_previa, "");
+        assert!(!mem_post.correcciones[0].exportada);
+        assert_eq!(cargar_uso_sin_lock_en(&ruta_uso).pendientes_compartir, 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_f2_deserializacion_retrocompatible_formato_4_y_migracion_memoria() {
+        let json_v4 = r#"{
+          "app": "Lokus",
+          "version_app": "5.1.0",
+          "formato": 4,
+          "exportado": "2026-11-23T10:29:16.716664800-05:00",
+          "aciertos": 71,
+          "total_reglas": 1,
+          "total_correcciones": 1,
+          "total_ejemplos_aciertos": 71,
+          "perfiles_defensores": 1,
+          "llamadas_induccion_llm_total": 11,
+          "llamadas_extraccion_total": 99,
+          "llamadas_consolidacion_total": 6,
+          "correcciones_por_campo": { "motivo": 1 },
+          "metricas_por_campo": [{
+            "campo": "motivo",
+            "evaluaciones": 10,
+            "aciertos": 9,
+            "correcciones": 1,
+            "precision_ewma": 0.9,
+            "confianza_q10": 0.7,
+            "drift_activo": false
+          }],
+          "metricas_por_modelo": [{
+            "clave": "openai:gpt-5-mini",
+            "evaluaciones": 10,
+            "aciertos": 9,
+            "correcciones": 1,
+            "precision_media": 0.9
+          }],
+          "preferencias_estilo": {
+            "incluir_causas_secundarias_prob": 0.5,
+            "incluir_reprogramacion_prob": 0.75,
+            "se_fija_aplazamiento_prob": 0.75,
+            "instalada_reprogramada_si_prob": 0.5
+          },
+          "preferencias_por_defensor": {},
+          "defensores_directorio": [{
+            "clave": "jose daniel",
+            "nombre": "Dr. José Daniel",
+            "audiencias_excel": 10,
+            "aciertos_ia": 5,
+            "correcciones_ia": 1,
+            "reglas_propias": 0
+          }],
+          "resumen_patrones_generales": {
+            "total_defensores_activos": 1,
+            "top_juzgados_globales": [],
+            "top_tipos_globales": [],
+            "top_horas_globales": [],
+            "reglas_transversales_promovidas": 0,
+            "errores_recurrentes_transversales": []
+          },
+          "grafo_asociaciones": {},
+          "perfiles_sinteticos": [],
+          "consolidaciones_ia": [],
+          "alias_validados": [{
+            "campo": "juzgado",
+            "entrada_norm": "j1pm san alberto",
+            "canonico": "Juzgado 1 Promiscuo Municipal de San Alberto",
+            "defensor_alcance": "*",
+            "confianza_q10": 0.42
+          }],
+          "patrones_abreviacion": [],
+          "juzgados_agregados_usuario": [],
+          "tipos_audiencia_agregados_usuario": [],
+          "uso_catalogos": {
+            "total_audiencias_contabilizadas": 12,
+            "sembrado_inicial_completado": true,
+            "sembrado_en": "2026-11-01T10:00:00-05:00",
+            "ultima_actualizacion": "2026-11-23T10:00:00-05:00",
+            "tipos_audiencia": {
+              "total_audiencias": 12,
+              "total_con_valor": 12,
+              "total_sin_especificar": 0,
+              "porcentaje_sin_especificar": 0.0,
+              "total_opciones_predeterminadas": 16,
+              "total_opciones_lista_usuario": 0,
+              "total_opciones_otra": 0,
+              "total_opciones_eliminadas_tras_uso": 0,
+              "nuevos_no_predeterminados": [],
+              "predeterminados_sin_uso": [],
+              "agregados_usuario_sin_uso": [],
+              "detalle": []
+            },
+            "juzgados": {
+              "total_audiencias": 12,
+              "total_con_valor": 12,
+              "total_sin_especificar": 0,
+              "porcentaje_sin_especificar": 0.0,
+              "total_opciones_predeterminadas": 97,
+              "total_opciones_lista_usuario": 0,
+              "total_opciones_otra": 0,
+              "total_opciones_eliminadas_tras_uso": 0,
+              "nuevos_no_predeterminados": [],
+              "predeterminados_sin_uso": [],
+              "agregados_usuario_sin_uso": [],
+              "detalle": []
+            },
+            "horas": {
+              "total_audiencias": 12,
+              "total_con_hora": 12,
+              "total_sin_hora": 0,
+              "porcentaje_sin_hora": 0.0,
+              "horas_rapidas_predeterminadas": [],
+              "horas_rapidas_sin_uso": [],
+              "horas_mas_frecuentes_no_rapidas": [],
+              "detalle_por_hora_exacta": [],
+              "resumen_por_franja_horaria": []
+            }
+          },
+          "reglas": [{
+            "id": "r-v4",
+            "tipo_error": "motivo",
+            "regla": "Si no notificaron al procesado marcar Juez",
+            "refuerzos": 2,
+            "actualizada": "2026-11-23T10:00:00-05:00",
+            "estado": "activa",
+            "campo_objetivo": "motivo",
+            "triggers": ["notificaron", "procesado"],
+            "alpha": 3.0,
+            "beta": 3.0,
+            "impresiones": 1,
+            "aciertos_directos": 1,
+            "fallos_directos": 0,
+            "origen": "mitigacion_modelo",
+            "modelo_alcance": "*",
+            "defensor_alcance": "*",
+            "defensores_confirmantes": [],
+            "ultima_actualizacion": "2026-11-23T10:00:00-05:00",
+            "confianza_llm": 0.9,
+            "aciertos_sombra": 0,
+            "confirmaciones_sombra": 0,
+            "origen_correccion_id": ""
+          }],
+          "correcciones": []
+        }"#;
+
+        let paq: PaqueteExportacion = serde_json::from_str(json_v4).unwrap();
+        assert_eq!(paq.version_app, "5.1.0");
+        assert_eq!(paq.formato, 4);
+        assert_eq!(paq.aciertos, 71);
+        assert_eq!(paq.instancia_id, "");
+        assert_eq!(paq.exportacion_seq, 0);
+        assert_eq!(paq.exportacion_id, "");
+        assert_eq!(paq.ultima_exportacion_previa, "");
+        assert!(paq.fuentes_importadas.is_empty());
+        assert!(paq.tabla_alias_raw.is_empty());
+        assert!(paq.preferencias_raw.is_none());
+        assert!(paq.preferencias_por_defensor_raw.is_empty());
+        assert!(paq.ejemplos_aciertos.is_empty());
+
+        let dir = preparar_dir("f2_migracion_v4_v5");
+        let ruta_mem = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+        fs::write(&ruta_mem, r#"{"version": 4, "aciertos": 9}"#).unwrap();
+        let mem = cargar_memoria_en(&ruta_mem);
+        assert_eq!(mem.version, VERSION_FORMATO);
+        assert_eq!(mem.aciertos, 9);
+        assert_eq!(mem.exportacion_seq, 0);
+        assert_eq!(mem.ultima_exportacion_previa, "");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_f3a_anonimizador_protege_municipios_juzgados_y_terminos_judiciales_sin_fugas() {
+        let anon = Anonimizador::desde_radicados(&[
+            "ALBERTO CESAR PEÑA ARMAS - 200016001075202500111",
+            "FUENTES CAMPO - 200016001075202500222",
+            "CARLOS MENDOZA - 200016001075202500333",
+        ]);
+        let cache = CacheCatalogoAnon::new(&anon);
+
+        assert_eq!(
+            cache.anonimizar("Juzgado 1 Promiscuo Municipal de San Alberto"),
+            "Juzgado 1 Promiscuo Municipal de San Alberto"
+        );
+        assert_eq!(
+            cache.anonimizar("Juzgado 2 Penal del Circuito de San Juan del Cesar"),
+            "Juzgado 2 Penal del Circuito de San Juan del Cesar"
+        );
+        assert_eq!(
+            anon.aplicar("Despacho Judicial: Juzgado Promiscuo Municipal de San Alberto - Cesar, con funciones de conocimiento."),
+            "Despacho Judicial: Juzgado Promiscuo Municipal de San Alberto - Cesar, con funciones de conocimiento."
+        );
+        assert_eq!(
+            anon.aplicar("juzgado 1 promiscuo municipal san alberto"),
+            "juzgado 1 promiscuo municipal san alberto"
+        );
+        assert_eq!(
+            anon.aplicar("una pena de 55 meses de prisión por PORTE DE ARMAS DE FUEGO; no completes ese campo en las fuentes"),
+            "una pena de 55 meses de prisión por PORTE DE ARMAS DE FUEGO; no completes ese campo en las fuentes"
+        );
+
+        assert_eq!(
+            anon.aplicar("Audiencia contra Alberto Cesar; Carlos Mendoza no asistió."),
+            "Audiencia contra [PROCESADO]; [PROCESADO] no asistió."
+        );
+        assert_eq!(
+            cache.anonimizar("Juzgado 1 de Carlos Mendoza"),
+            "Juzgado 1 de [PROCESADO]"
+        );
+        assert_eq!(
+            cache.anonimizar("Juzgado Libre CARLOS 123456"),
+            "Juzgado Libre [PROCESADO] [NUMERO]"
+        );
+    }
+
+    #[test]
+    fn test_f3b_campo_objetivo_desde_tipo_error_y_triggers_sin_ruido() {
+        let dir = preparar_dir("f3b_campo_y_triggers");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+
+        let pred = AudienciaInput {
+            radicado: "CARLOS - 200016001075202600001".into(),
+            tipo: "Audiencia de imputación".into(),
+            fecha: "23/09/2026".into(),
+            hora: "09:00".into(),
+            juzgado: "J2PCA".into(),
+            realizada: "NO".into(),
+            motivo: "Usuario".into(),
+            observaciones: "No compareció".into(),
+        };
+        let fin = AudienciaInput {
+            radicado: "CARLOS - 200016001075202600001".into(),
+            tipo: "Audiencia concentrada".into(),
+            fecha: "23/09/2026".into(),
+            hora: "09:00".into(),
+            juzgado: "Juzgado 2 Penal del Circuito de Valledupar".into(),
+            realizada: "NO".into(),
+            motivo: "Juez".into(),
+            observaciones: "Reprogramada porque el despacho no notificó al procesado.".into(),
+        };
+
+        let (_, c1) = registrar_resultado_en(
+            &ruta,
+            "1. Proceso bajo radicado 20001-60-01075-2026-00001 del 23 de septiembre de 2026 en J2PCA mpal: no notificaron al procesado [PROCESADO]",
+            &pred,
+            &fin,
+            "openai",
+            "gpt-5-mini",
+        )
+        .unwrap();
+        let id1 = c1.unwrap().id;
+
+        aplicar_analisis_en(
+            &ruta,
+            &id1,
+            &AnalisisCorreccionIa {
+                es_error_de_ia: true,
+                tipo_error: "motivo".into(),
+                regla: "Si no notificaron al procesado marcar Juez".into(),
+                confianza: 0.9,
+                necesita_aclaracion: false,
+                pregunta: String::new(),
+            },
+        )
+        .unwrap();
+        let mem1 = cargar_memoria_en(&ruta);
+        assert_eq!(mem1.reglas[0].campo_objetivo, "motivo");
+        let tr = &mem1.reglas[0].triggers;
+        for ruido in ["20001", "2026", "23", "septiembre", "proceso", "bajo", "radicado", "[procesado]"] {
+            assert!(!tr.contains(&ruido.to_string()), "trigger ruidoso {}: {:?}", ruido, tr);
+        }
+        assert!(tr.contains(&"j2pca".to_string()), "{:?}", tr);
+        assert!(tr.contains(&"mpal".to_string()), "{:?}", tr);
+        assert!(tr.contains(&"notificaron".to_string()), "{:?}", tr);
+        assert!(tr.contains(&"procesado".to_string()), "{:?}", tr);
+
+        // Actualización en sitio de regla no-base actualiza campo_objetivo desde tipo_error
+        aplicar_analisis_en(
+            &ruta,
+            &id1,
+            &AnalisisCorreccionIa {
+                es_error_de_ia: true,
+                tipo_error: "estilo_observaciones".into(),
+                regla: "Indicar cuando el despacho no notificó al procesado".into(),
+                confianza: 0.92,
+                necesita_aclaracion: false,
+                pregunta: String::new(),
+            },
+        )
+        .unwrap();
+        let mem2 = cargar_memoria_en(&ruta);
+        assert_eq!(mem2.reglas[0].campo_objetivo, "observaciones");
+
+        // Fallback a campos.first() únicamente cuando tipo_error es "otro"/"general"
+        let (_, c2) = registrar_resultado_en(
+            &ruta,
+            "Otro caso distinto en J2PCA",
+            &pred,
+            &fin,
+            "openai",
+            "gpt-5-mini",
+        )
+        .unwrap();
+        let id2 = c2.unwrap().id;
+        aplicar_analisis_en(
+            &ruta,
+            &id2,
+            &AnalisisCorreccionIa {
+                es_error_de_ia: true,
+                tipo_error: "otro".into(),
+                regla: "Regla general distinta para fallback de campo".into(),
+                confianza: 0.85,
+                necesita_aclaracion: false,
+                pregunta: String::new(),
+            },
+        )
+        .unwrap();
+        let mem3 = cargar_memoria_en(&ruta);
+        assert_eq!(mem3.reglas[1].campo_objetivo, "tipo");
+
+        // Clúster multi-campo con tipo_error = "motivo" asigna campo_objetivo = "motivo"
+        let (_, c3) = registrar_resultado_en(&ruta, "Cluster texto 1", &pred, &fin, "openai", "gpt-5-mini").unwrap();
+        let (_, c4) = registrar_resultado_en(&ruta, "Cluster texto 2", &pred, &fin, "openai", "gpt-5-mini").unwrap();
+        aplicar_analisis_cluster_en(
+            &ruta,
+            "clu-test",
+            &[c3.unwrap().id, c4.unwrap().id],
+            &AnalisisCorreccionIa {
+                es_error_de_ia: true,
+                tipo_error: "motivo".into(),
+                regla: "Regla de clúster sobre motivo de no realización".into(),
+                confianza: 0.9,
+                necesita_aclaracion: false,
+                pregunta: String::new(),
+            },
+        )
+        .unwrap();
+        let mem4 = cargar_memoria_en(&ruta);
+        assert_eq!(mem4.reglas.last().unwrap().campo_objetivo, "motivo");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_f3c_preferencia_reprogramacion_se_adapta_sin_doble_conteo() {
+        let dir = preparar_dir("f3c_reprogramacion");
+        let ruta = dir.join(NOMBRE_ARCHIVO_MEMORIA);
+
+        let frases_ia = [
+            "No compareció la Fiscalía. Se fijó nueva fecha para el 20/11/2026.",
+            "Juez sin conexión. Próxima fecha: 22 de enero de 2027.",
+            "Usuario no asistió. Se señaló nuevamente para el 05/12/2026.",
+            "Aplazada por Fiscalía. Se fijó su continuación para el 10/12/2026.",
+        ];
+        for (i, obs_ia) in frases_ia.iter().enumerate() {
+            let mut pred = audiencia_base();
+            pred.realizada = "NO".into();
+            pred.motivo = "Fiscalía".into();
+            pred.observaciones = (*obs_ia).to_string();
+
+            let mut fin = pred.clone();
+            fin.observaciones = "La audiencia se reprogramó por Fiscalía.".into();
+
+            registrar_resultado_completo_en(
+                &ruta,
+                &format!("Caso {} fiscalía fallida", i),
+                &pred,
+                &fin,
+                "openai",
+                "gpt-5-mini",
+                &[],
+                Some("Dra. Ana Pérez"),
+                None,
+            )
+            .unwrap();
+        }
+
+        let mem = cargar_memoria_en(&ruta);
+        let p_def = &mem.preferencias_por_defensor["ana perez"];
+        let prob_def = p_def.incluir_reprogramacion_alpha
+            / (p_def.incluir_reprogramacion_alpha + p_def.incluir_reprogramacion_beta);
+        assert!(p_def.incluir_reprogramacion_beta > p_def.incluir_reprogramacion_alpha);
+        assert!(prob_def < 0.45, "prob_def={}", prob_def);
+        assert!(mem.preferencias_estilo.incluir_reprogramacion_beta > 1.0);
+
+        // Explicación del resultado actual (sin fecha futura) conservada NO infla alpha
+        let alpha_antes = p_def.incluir_reprogramacion_alpha;
+        let mut pred_res = audiencia_base();
+        pred_res.realizada = "NO".into();
+        pred_res.motivo = "Fiscalía".into();
+        pred_res.observaciones = "La audiencia se reprogramó por Fiscalía.".into();
+        registrar_resultado_completo_en(
+            &ruta,
+            "Caso resultado sin fecha futura",
+            &pred_res,
+            &pred_res,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+            None,
+        )
+        .unwrap();
+        let mem2 = cargar_memoria_en(&ruta);
+        assert!(
+            (mem2.preferencias_por_defensor["ana perez"].incluir_reprogramacion_alpha - alpha_antes)
+                .abs()
+                < 1e-9
+        );
+
+        // Con el marcador literal "Reprogramada para:", solo estadistica_ia actualiza (sin doble conteo)
+        let beta_antes = mem2.preferencias_por_defensor["ana perez"].incluir_reprogramacion_beta;
+        let mut pred_lit = audiencia_base();
+        pred_lit.realizada = "NO".into();
+        pred_lit.motivo = "Fiscalía".into();
+        pred_lit.observaciones = "Reprogramada para: 15/12/2026".into();
+        let mut fin_lit = pred_lit.clone();
+        fin_lit.observaciones = "Se solicitó reprogramación.".into();
+        registrar_resultado_completo_en(
+            &ruta,
+            "Caso literal reprogramada para",
+            &pred_lit,
+            &fin_lit,
+            "openai",
+            "gpt-5-mini",
+            &[],
+            Some("Dra. Ana Pérez"),
+            None,
+        )
+        .unwrap();
+        let mem3 = cargar_memoria_en(&ruta);
+        let beta_despues = mem3.preferencias_por_defensor["ana perez"].incluir_reprogramacion_beta;
+        assert!(
+            (beta_despues - (beta_antes + 1.0)).abs() < 1e-9,
+            "antes={}, despues={}",
+            beta_antes,
+            beta_despues
         );
 
         let _ = fs::remove_dir_all(&dir);

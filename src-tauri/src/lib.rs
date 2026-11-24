@@ -3,6 +3,7 @@ pub mod aprendizaje;
 pub mod config;
 pub mod estadistica_ia;
 pub mod excel;
+pub mod ingesta;
 pub mod models;
 pub mod paquete;
 pub mod patrones_abreviacion;
@@ -582,6 +583,7 @@ async fn cmd_importar_paquete(
     ejecutar_en_hilo_io(move || importar_paquete(&contenido_b64, &modo_conflicto, importar_config))
         .await
 }
+
 
 #[tauri::command]
 async fn cmd_obtener_estadisticas(

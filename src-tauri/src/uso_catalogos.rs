@@ -60,7 +60,8 @@ pub struct UsoCatalogos {
     pub paquetes_importados: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct ItemUsoCatalogo {
     pub nombre: String,
     /// `"predeterminado"` | `"agregado_usuario"` | `"otra"` | `"eliminado_de_lista"`
@@ -69,7 +70,8 @@ pub struct ItemUsoCatalogo {
     pub porcentaje: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct ReporteUsoCampoCatalogo {
     pub total_audiencias: u32,
     pub total_con_valor: u32,
@@ -85,7 +87,8 @@ pub struct ReporteUsoCampoCatalogo {
     pub detalle: Vec<ItemUsoCatalogo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct ItemUsoHora {
     pub hora_24: String,
     pub etiqueta_12h: String,
@@ -94,14 +97,16 @@ pub struct ItemUsoHora {
     pub porcentaje: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct ItemUsoFranja {
     pub franja: String,
     pub conteo: u32,
     pub porcentaje: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct ReporteUsoHoras {
     pub total_audiencias: u32,
     pub total_con_hora: u32,
@@ -114,7 +119,8 @@ pub struct ReporteUsoHoras {
     pub resumen_por_franja_horaria: Vec<ItemUsoFranja>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct ReporteUsoCatalogos {
     pub total_audiencias_contabilizadas: u32,
     pub sembrado_inicial_completado: bool,
@@ -225,6 +231,11 @@ fn franja_de_hora(hh_mm: &str) -> &'static str {
         16..=17 => FRANJAS_ORDEN[6],
         _ => FRANJAS_ORDEN[7],
     }
+}
+
+pub fn cargar_uso_con_lock_en(ruta: &Path) -> UsoCatalogos {
+    let _guard = BLOQUEO_USO.lock().unwrap_or_else(|e| e.into_inner());
+    cargar_uso_sin_lock_en(ruta)
 }
 
 pub fn cargar_uso_sin_lock_en(ruta: &Path) -> UsoCatalogos {
@@ -709,6 +720,26 @@ pub fn registrar_cambio_lista_usuario_actual(
     );
 }
 
+pub fn confirmar_uso_exportado_en(
+    ruta_uso: &Path,
+    instancia_id_exportada: &str,
+) -> Result<(), String> {
+    let _guard = BLOQUEO_USO.lock().unwrap_or_else(|e| e.into_inner());
+    let falta_archivo = !ruta_uso.exists();
+    let mut uso = cargar_uso_sin_lock_en(ruta_uso);
+    let id_limpio = instancia_id_exportada.trim();
+    let necesita_persistir_id = !id_limpio.is_empty() && (falta_archivo || uso.instancia_id != id_limpio);
+    if necesita_persistir_id {
+        uso.instancia_id = id_limpio.to_string();
+    }
+    let habia_pendientes = uso.pendientes_compartir > 0;
+    uso.pendientes_compartir = 0;
+    if habia_pendientes || necesita_persistir_id {
+        guardar_uso_sin_lock_en(ruta_uso, &uso)?;
+    }
+    Ok(())
+}
+
 pub fn marcar_uso_compartido_en(ruta_uso: &Path) -> Result<(), String> {
     let _guard = BLOQUEO_USO.lock().unwrap_or_else(|e| e.into_inner());
     let mut uso = cargar_uso_sin_lock_en(ruta_uso);
@@ -893,6 +924,12 @@ pub fn fusionar_uso_importado_en(
             if !paq.instancia_id.trim().is_empty() {
                 local.fuentes_importadas.insert(paq.instancia_id.clone());
                 local.paquetes_importados.insert(firma_paquete);
+            }
+            for f in &paq.fuentes_importadas {
+                let f_trim = f.trim();
+                if !f_trim.is_empty() && f_trim != local.instancia_id {
+                    local.fuentes_importadas.insert(f_trim.to_string());
+                }
             }
         }
         sincronizar_listas_usuario_en_uso(&mut local, settings, &ahora);
@@ -1275,7 +1312,10 @@ mod tests {
             &settings.tipos_audiencia,
             &|s| s.to_string(),
         );
-        assert_eq!(rep.tipos_audiencia.total_opciones_predeterminadas, 17);
+        assert_eq!(
+            rep.tipos_audiencia.total_opciones_predeterminadas,
+            TIPOS_AUDIENCIA.len() - 1
+        );
         assert_eq!(rep.juzgados.total_opciones_predeterminadas, juzgados_base().len());
         assert_eq!(rep.horas.horas_rapidas_predeterminadas.len(), 6);
 

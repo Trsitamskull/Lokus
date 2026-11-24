@@ -4,6 +4,7 @@ version = "5.2.1"
 description = "Gestor de Audiencias Judiciales - Sistema Profesional en Rust + Tauri"
 authors = ["Jose David Bustamante Sánchez"]
 edition = "2021"
+default-run = "Lokus"
 
 [lib]
 name = "lokus_audiencias_lib"
@@ -12,6 +13,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [[bin]]
 name = "Lokus"
 path = "src/main.rs"
+
+[[bin]]
+name = "lokus_ingestar"
+path = "src/bin/lokus_ingestar.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

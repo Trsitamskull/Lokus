@@ -1,0 +1,395 @@
+{
+  "app": "Lokus",
+  "version_app": "5.1.0",
+  "formato": 4,
+  "exportado": "2026-10-31T18:00:00-05:00",
+  "aciertos": 12,
+  "total_reglas": 3,
+  "total_correcciones": 4,
+  "total_ejemplos_aciertos": 12,
+  "perfiles_defensores": 1,
+  "llamadas_induccion_llm_total": 3,
+  "llamadas_extraccion_total": 16,
+  "llamadas_consolidacion_total": 1,
+  "correcciones_por_campo": {
+    "juzgado": 2,
+    "observaciones": 2
+  },
+  "metricas_por_campo": [
+    {
+      "campo": "juzgado",
+      "evaluaciones": 16,
+      "aciertos": 14,
+      "correcciones": 2,
+      "precision_ewma": 0.9,
+      "confianza_q10": 0.72,
+      "drift_activo": false
+    }
+  ],
+  "metricas_por_modelo": [
+    {
+      "clave": "openai:gpt-5-mini",
+      "evaluaciones": 16,
+      "aciertos": 12,
+      "correcciones": 4,
+      "precision_media": 0.75
+    }
+  ],
+  "preferencias_estilo": {
+    "incluir_causas_secundarias_prob": 0.75,
+    "incluir_reprogramacion_prob": 0.75,
+    "se_fija_aplazamiento_prob": 0.5,
+    "instalada_reprogramada_si_prob": 0.25
+  },
+  "preferencias_por_defensor": {
+    "david felipe ariza perez": {
+      "incluir_causas_secundarias_prob": 0.75,
+      "incluir_reprogramacion_prob": 0.75,
+      "se_fija_aplazamiento_prob": 0.5,
+      "instalada_reprogramada_si_prob": 0.25
+    }
+  },
+  "defensores_directorio": [
+    {
+      "clave": "david felipe ariza perez",
+      "nombre": "David Felipe Ariza Perez",
+      "aciertos": 12,
+      "correcciones": 4,
+      "tasa_acierto": 0.75,
+      "por_campo": []
+    }
+  ],
+  "resumen_patrones_generales": {
+    "total_defensores_activos": 1,
+    "top_juzgados_globales": [["Juzgado 9 Penal Municipal", 8]],
+    "top_tipos_globales": [["Audiencia de juicio oral", 12]],
+    "top_horas_globales": [[8, 10]],
+    "reglas_transversales_promovidas": 0,
+    "errores_recurrentes_transversales": []
+  },
+  "grafo_asociaciones": {
+    "defensor_a_juzgados": {
+      "david felipe ariza perez": { "Juzgado 9 Penal Municipal": 8 }
+    },
+    "defensor_a_tipos": {
+      "david felipe ariza perez": { "Audiencia de juicio oral": 12 }
+    },
+    "defensor_sigla_a_juzgado": {},
+    "prefijo_radicado_a_juzgados": {},
+    "tipo_a_juzgados": {}
+  },
+  "perfiles_sinteticos": [
+    {
+      "ambito": "david felipe ariza perez",
+      "nombre_mostrar": "David Felipe Ariza Perez",
+      "resumen": "Preferencia por Juzgado 9 Penal Municipal y observaciones concisas.",
+      "version": 1,
+      "ultima_actualizacion": "2026-10-31T17:00:00-05:00"
+    }
+  ],
+  "consolidaciones_ia": [],
+  "alias_validados": [
+    {
+      "campo": "juzgado",
+      "entrada_norm": "j9pm",
+      "canonico": "Juzgado 9 Penal Municipal",
+      "defensor_alcance": "david felipe ariza perez",
+      "confianza_q10": 0.68
+    }
+  ],
+  "patrones_abreviacion": [],
+  "juzgados_agregados_usuario": ["Juzgado 9 Penal Municipal"],
+  "tipos_audiencia_agregados_usuario": ["Audiencia de sentido de fallo"],
+  "uso_catalogos": {
+    "total_audiencias_contabilizadas": 20,
+    "sembrado_inicial_completado": true,
+    "sembrado_en": "2026-10-01T09:00:00-05:00",
+    "ultima_actualizacion": "2026-10-31T17:45:00-05:00",
+    "tipos_audiencia": {
+      "total_audiencias": 20,
+      "total_con_valor": 20,
+      "total_sin_especificar": 0,
+      "porcentaje_sin_especificar": 0.0,
+      "total_opciones_predeterminadas": 17,
+      "total_opciones_lista_usuario": 1,
+      "total_opciones_otra": 0,
+      "total_opciones_eliminadas_tras_uso": 0,
+      "nuevos_no_predeterminados": [
+        { "nombre": "Audiencia de sentido de fallo", "origen": "agregado_usuario", "conteo": 3, "porcentaje": 15.0 }
+      ],
+      "predeterminados_sin_uso": ["Alegatos de conclusión"],
+      "agregados_usuario_sin_uso": [],
+      "detalle": [
+        { "nombre": "Audiencia de juicio oral", "origen": "predeterminado", "conteo": 12, "porcentaje": 60.0 },
+        { "nombre": "Audiencia de sentido de fallo", "origen": "agregado_usuario", "conteo": 3, "porcentaje": 15.0 }
+      ]
+    },
+    "juzgados": {
+      "total_audiencias": 20,
+      "total_con_valor": 20,
+      "total_sin_especificar": 0,
+      "porcentaje_sin_especificar": 0.0,
+      "total_opciones_predeterminadas": 96,
+      "total_opciones_lista_usuario": 1,
+      "total_opciones_otra": 0,
+      "total_opciones_eliminadas_tras_uso": 0,
+      "nuevos_no_predeterminados": [
+        { "nombre": "Juzgado 9 Penal Municipal", "origen": "agregado_usuario", "conteo": 8, "porcentaje": 40.0 }
+      ],
+      "predeterminados_sin_uso": ["Juzgado 1 de Ejecución de Penas y Medidas de Seguridad de Santa Marta"],
+      "agregados_usuario_sin_uso": [],
+      "detalle": [
+        { "nombre": "Juzgado 9 Penal Municipal", "origen": "agregado_usuario", "conteo": 8, "porcentaje": 40.0 }
+      ]
+    },
+    "horas": {
+      "total_audiencias": 20,
+      "total_con_hora": 18,
+      "total_sin_hora": 2,
+      "porcentaje_sin_hora": 10.0,
+      "horas_rapidas_predeterminadas": [
+        { "hora_24": "08:00", "etiqueta_12h": "8:00 AM", "es_hora_rapida": true, "conteo": 10, "porcentaje": 50.0 },
+        { "hora_24": "09:00", "etiqueta_12h": "9:00 AM", "es_hora_rapida": true, "conteo": 5, "porcentaje": 25.0 },
+        { "hora_24": "10:00", "etiqueta_12h": "10:00 AM", "es_hora_rapida": true, "conteo": 0, "porcentaje": 0.0 },
+        { "hora_24": "14:00", "etiqueta_12h": "2:00 PM", "es_hora_rapida": true, "conteo": 0, "porcentaje": 0.0 },
+        { "hora_24": "15:00", "etiqueta_12h": "3:00 PM", "es_hora_rapida": true, "conteo": 0, "porcentaje": 0.0 },
+        { "hora_24": "16:00", "etiqueta_12h": "4:00 PM", "es_hora_rapida": true, "conteo": 0, "porcentaje": 0.0 }
+      ],
+      "horas_rapidas_sin_uso": ["10:00", "14:00", "15:00", "16:00"],
+      "horas_mas_frecuentes_no_rapidas": [
+        { "hora_24": "07:30", "etiqueta_12h": "7:30 AM", "es_hora_rapida": false, "conteo": 3, "porcentaje": 15.0 }
+      ],
+      "detalle_por_hora_exacta": [
+        { "hora_24": "08:00", "etiqueta_12h": "8:00 AM", "es_hora_rapida": true, "conteo": 10, "porcentaje": 50.0 },
+        { "hora_24": "07:30", "etiqueta_12h": "7:30 AM", "es_hora_rapida": false, "conteo": 3, "porcentaje": 15.0 }
+      ],
+      "resumen_por_franja_horaria": [
+        { "franja": "Mañana (06:00-11:59)", "conteo": 18, "porcentaje": 90.0 }
+      ]
+    }
+  },
+  "reglas": [
+    {
+      "id": "regla-u-a-shared",
+      "tipo_error": "juzgado",
+      "regla": "Expandir j9pm a Juzgado 9 Penal Municipal para el defensor de Valledupar.",
+      "refuerzos": 2,
+      "actualizada": "2026-10-15T10:00:00-05:00",
+      "estado": "activa",
+      "campo_objetivo": "juzgado",
+      "triggers": ["j9pm", "juzgado", "penal", "municipal"],
+      "alpha": 8.0,
+      "beta": 1.5,
+      "impresiones": 10,
+      "aciertos_directos": 9,
+      "fallos_directos": 1,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-5-mini",
+      "defensor_alcance": "david felipe ariza perez",
+      "defensores_confirmantes": ["david felipe ariza perez"],
+      "ultima_actualizacion": "2026-10-25T10:00:00-05:00",
+      "confianza_llm": 0.93,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-u-a-m1-1"
+    },
+    {
+      "id": "regla-u-a-m1-evicted",
+      "tipo_error": "observaciones",
+      "regla": "Resumir brevemente las suspensiones de audiencia concentrada.",
+      "refuerzos": 2,
+      "actualizada": "2026-10-05T10:00:00-05:00",
+      "estado": "activa",
+      "campo_objetivo": "observaciones",
+      "triggers": ["concentrada", "suspension", "observaciones"],
+      "alpha": 6.0,
+      "beta": 1.5,
+      "impresiones": 6,
+      "aciertos_directos": 5,
+      "fallos_directos": 1,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-5-mini",
+      "defensor_alcance": "david felipe ariza perez",
+      "defensores_confirmantes": ["david felipe ariza perez"],
+      "ultima_actualizacion": "2026-10-12T10:00:00-05:00",
+      "confianza_llm": 0.89,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-u-a-m1-evicted"
+    },
+    {
+      "id": "regla-u-a-prueba",
+      "tipo_error": "motivo",
+      "regla": "Si no comparece el fiscal, asignar motivo Fiscalía.",
+      "refuerzos": 1,
+      "actualizada": "2026-10-20T10:00:00-05:00",
+      "estado": "prueba",
+      "campo_objetivo": "motivo",
+      "triggers": ["comparece", "fiscal", "motivo"],
+      "alpha": 4.0,
+      "beta": 2.0,
+      "impresiones": 4,
+      "aciertos_directos": 3,
+      "fallos_directos": 1,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-5-mini",
+      "defensor_alcance": "david felipe ariza perez",
+      "defensores_confirmantes": ["david felipe ariza perez"],
+      "ultima_actualizacion": "2026-10-20T10:00:00-05:00",
+      "confianza_llm": 0.85,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-u-a-m1-2"
+    }
+  ],
+  "correcciones": [
+    {
+      "id": "corr-u-a-m1-evicted",
+      "registrada": "2026-10-03T09:00:00-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-5-mini",
+      "texto_original": "Audiencia concentrada suspendida en j9pm",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "03/10/2026",
+        "hora": "08:00",
+        "juzgado": "Juzgado 9 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Fiscalía",
+        "observaciones": "Audiencia suspendida con detalles largos."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "03/10/2026",
+        "hora": "08:00",
+        "juzgado": "Juzgado 9 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Fiscalía",
+        "observaciones": "Suspendida por solicitud de la Fiscalía."
+      },
+      "campos": [
+        { "campo": "observaciones", "valor_ia": "Audiencia suspendida con detalles largos.", "valor_usuario": "Suspendida por solicitud de la Fiscalía." }
+      ],
+      "estado": "analizada",
+      "regla_generada": "Resumir brevemente las suspensiones.",
+      "regla_id_asociada": "regla-u-a-m1-evicted",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-u-a-m1-1",
+      "registrada": "2026-10-14T10:00:00-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-5-mini",
+      "texto_original": "Juicio oral en j9pm sin novedad",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "14/10/2026",
+        "hora": "08:00",
+        "juzgado": "",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó audiencia de manera adecuada."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "14/10/2026",
+        "hora": "08:00",
+        "juzgado": "Juzgado 9 Penal Municipal",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó audiencia de manera adecuada."
+      },
+      "campos": [
+        { "campo": "juzgado", "valor_ia": "", "valor_usuario": "Juzgado 9 Penal Municipal" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "",
+      "regla_id_asociada": "regla-u-a-shared",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-u-a-m1-2",
+      "registrada": "2026-10-18T10:00:00-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-5-mini",
+      "texto_original": "No comparece fiscal en audiencia de sentido de fallo",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de sentido de fallo",
+        "fecha": "18/10/2026",
+        "hora": "09:00",
+        "juzgado": "Juzgado 9 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Juez",
+        "observaciones": "Aplazada por inasistencia del fiscal."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de sentido de fallo",
+        "fecha": "18/10/2026",
+        "hora": "09:00",
+        "juzgado": "Juzgado 9 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Fiscalía",
+        "observaciones": "Aplazada por inasistencia del fiscal."
+      },
+      "campos": [
+        { "campo": "motivo", "valor_ia": "Juez", "valor_usuario": "Fiscalía" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "",
+      "regla_id_asociada": "regla-u-a-prueba",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-u-a-m1-3",
+      "registrada": "2026-10-25T10:00:00-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-5-mini",
+      "texto_original": "Juicio oral en j9pm realizado",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "25/10/2026",
+        "hora": "08:00",
+        "juzgado": "",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Realizada."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "25/10/2026",
+        "hora": "08:00",
+        "juzgado": "Juzgado 9 Penal Municipal",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó audiencia de manera adecuada."
+      },
+      "campos": [
+        { "campo": "juzgado", "valor_ia": "", "valor_usuario": "Juzgado 9 Penal Municipal" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "",
+      "regla_id_asociada": "regla-u-a-shared",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "david felipe ariza perez"
+    }
+  ]
+}

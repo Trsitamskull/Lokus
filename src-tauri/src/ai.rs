@@ -172,6 +172,7 @@ fn expandir_abreviaciones_y_compacto(texto: &str, current_year: i32) -> String {
         (r"(?i)\bSE FIJO\b", "Se fijó nueva fecha"),
         (r"(?i)\bSIN NOVEDAD\b", "Se realizó sin novedad"),
         (r"(?i)\bSE EFECTUO\b", "Se efectuó correctamente"),
+        (r"(?i)\bEMP\b", "elementos materiales probatorios"),
     ];
 
     for (pat, rep) in reemplazos {
@@ -207,10 +208,7 @@ fn detectar_defensor_confianza(texto_lower: &str) -> bool {
         "abogado contractual",
         "abogado privado",
         "defensor privado",
-        "el abogado",
-        "su abogado",
         "abogado del procesado",
-        "abogado defensor",
         "defensor de confianza inasistente",
         "abogado contractual inasistente",
         "defensor confianza inasistente",
@@ -264,6 +262,11 @@ fn inferir_motivos(texto_original: &str) -> (String, Vec<String>) {
         ("fracasa por estar el despacho", "Juez"),
         ("ambos despachos en audiencia", "Juez"),
         ("error en la agenda", "Juez"),
+        ("no notificaron al procesado", "Juez"),
+        ("no han podido notificar al procesado", "Juez"),
+        ("no se ha podido notificar al procesado", "Juez"),
+        ("no se notifico al procesado", "Juez"),
+        ("falta de notificacion al procesado", "Juez"),
         // Fiscalía
         ("la fiscal no se conecto", "Fiscalía"),
         ("fiscal no se conecto", "Fiscalía"),
@@ -342,7 +345,6 @@ fn inferir_motivos(texto_original: &str) -> (String, Vec<String>) {
         ("no logre comunicarme", "Defensor Público"),
         ("realice conexion virtual", "Defensor Público"),
         // Usuario / Procesado
-        ("no notificaron al procesado", "Usuario"),
         ("procesado no comparecio", "Usuario"),
         ("usuario no se presento", "Usuario"),
         ("procesado ausente", "Usuario"),
@@ -451,6 +453,48 @@ fn mapear_tipo_audiencia_con_usuario(tipo_ia: &str, tipos_usuario: &[String]) ->
     }
 
     let mapeo_directo = [
+        (
+            "aplicacion principio de oportunidad",
+            "Aplicación principio de oportunidad",
+        ),
+        (
+            "principio de oportunidad",
+            "Aplicación principio de oportunidad",
+        ),
+        (
+            "celebracion de preacuerdo",
+            "Audiencia de celebración de preacuerdo",
+        ),
+        (
+            "continuacion de juicio oral",
+            "Audiencia de continuación de juicio oral",
+        ),
+        (
+            "continuacion juicio oral",
+            "Audiencia de continuación de juicio oral",
+        ),
+        (
+            "formulacion de acusacion",
+            "Audiencia de formulación de acusación",
+        ),
+        ("lectura de decision", "Audiencia de lectura de decisión"),
+        (
+            "libertad por vencimiento de terminos",
+            "Audiencia de libertad por vencimiento de términos",
+        ),
+        (
+            "vencimiento de terminos",
+            "Audiencia de libertad por vencimiento de términos",
+        ),
+        ("sentido de fallo", "Audiencia de sentido de fallo"),
+        (
+            "verificacion de allanamiento",
+            "Audiencia de verificación de allanamiento a cargos",
+        ),
+        (
+            "allanamiento a cargos",
+            "Audiencia de verificación de allanamiento a cargos",
+        ),
         ("alegatos de conclusion", "Alegatos de conclusión"),
         ("control de legalidad", "Audiencia de control de legalidad"),
         ("concentrada", "Audiencia concentrada"),
@@ -497,6 +541,35 @@ fn mapear_tipo_audiencia_con_usuario(tipo_ia: &str, tipos_usuario: &[String]) ->
     ("Otra".to_string(), limpio.to_string())
 }
 
+fn normalizar_clave_juzgado_flexible(texto: &str) -> String {
+    let base = normalizar_clave_catalogo(texto);
+    if base.is_empty() {
+        return base;
+    }
+    let tokens_raw: Vec<&str> = base.split_whitespace().collect();
+    let tiene_calificador_mpal = tokens_raw
+        .iter()
+        .any(|t| matches!(*t, "penal" | "promiscuo"));
+    let mut out: Vec<String> = Vec::with_capacity(tokens_raw.len());
+    for &tok in &tokens_raw {
+        if tok.chars().all(|c| c.is_ascii_digit()) {
+            let sin_ceros = tok.trim_start_matches('0');
+            out.push(if sin_ceros.is_empty() {
+                "0".to_string()
+            } else {
+                sin_ceros.to_string()
+            });
+        } else if tok == "mpal" && tiene_calificador_mpal {
+            out.push("municipal".to_string());
+        } else if tok == "funciones" {
+            out.push("funcion".to_string());
+        } else {
+            out.push(tok.to_string());
+        }
+    }
+    out.join(" ")
+}
+
 fn normalizar_juzgado_catalogo(juzgado_ia: &str, juzgados_usuario: &[String]) -> String {
     let limpio = limpiar_valor_opcional_vacio(juzgado_ia);
     if limpio.is_empty() {
@@ -517,6 +590,21 @@ fn normalizar_juzgado_catalogo(juzgado_ia: &str, juzgados_usuario: &[String]) ->
         .find(|j| normalizar_clave_catalogo(j) == norm)
     {
         return oficial.clone();
+    }
+    let norm_flex = normalizar_clave_juzgado_flexible(&limpio);
+    if !norm_flex.is_empty() {
+        if let Some(usr) = juzgados_usuario
+            .iter()
+            .find(|j| normalizar_clave_juzgado_flexible(j) == norm_flex)
+        {
+            return usr.clone();
+        }
+        if let Some(oficial) = juzgados_base()
+            .iter()
+            .find(|j| normalizar_clave_juzgado_flexible(j) == norm_flex)
+        {
+            return oficial.clone();
+        }
     }
     limpio
 }
@@ -922,17 +1010,17 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
    - FRACASO (SIEMPRE "se_realizo": "NO"): "se reprogramó", "será reprogramada", "se aplaza", "solicita aplazamiento", "se suspende", "se fija nueva fecha", "FRACSA", "FRACASA".
    - ÉXITO ("se_realizo": "SI", "motivo": ""): "se realizó con normalidad", "sin novedad", "se efectuó", "se emitió sentido de fallo", "se dio lectura", o si dice "¿Se realizó?: Sí" y la audiencia continuó pese a la ausencia de un tercero (incluso si se fija fecha posterior para continuar o leer fallo).
    - Si "se_realizo" es "NO", usa EXCLUSIVAMENTE uno de estos 8 valores en "motivo" (nunca pongas frases descriptivas en "motivo"):
-     1) "Juez": despacho en otra audiencia, ambos despachos ocupados, juez en vacaciones/comisión, sin titular, error en la agenda.
+     1) "Juez": despacho en otra audiencia, ambos despachos ocupados, juez en vacaciones/comisión, sin titular, error en la agenda, no notificaron al procesado.
      2) "Fiscalía": fiscal no se conectó / no compareció / no vino, fiscal reemplazado, no conoce la carpeta, solicitud de fiscalía, posible preacuerdo.
      3) "Defensor Público": primera persona ("solicité reprogramar", "pedí aplazamiento", "no pude contactar al procesado", "me fue imposible asistir") cuando NO exista una causa principal anterior (Juez/Fiscalía/INPEC/Usuario) que haya originado esa solicitud.
      4) "Defensor Confianza": abogado contractual, abogado privado, "def. confianza", "el abogado del procesado no compareció".
-     5) "Usuario": procesado no compareció, no notificaron al procesado, usuario ausente, problemas técnicos del usuario.
+     5) "Usuario": procesado no compareció, usuario ausente, problemas técnicos del usuario.
      6) "INPEC": INPEC no trasladó al detenido, problemas de traslado.
      7) "Víctima": víctima no compareció.
      8) "ICBF": representante del ICBF no compareció.
    - Si concurren una causa principal (ej. Fiscalía no se conectó) y una reacción del defensor ("por eso solicité reprogramar"), el "motivo" principal es la causa ("Fiscalía") y la reacción va a "observaciones".
 6. JUZGADOS Y ABREVIACIONES AMBIGUAS:
-   - Para abreviaciones ambiguas como "CTO" / "Cto" (que puede significar Circuito o Conocimiento), MPAL o PCTO, MANTÉN la abreviación original tal cual ("Juzgado 3 Cto Penal" -> "Juzgado 3 Cto Penal"); no adivines su expansión.
+   - Para abreviaciones ambiguas como "CTO" / "Cto" (que puede significar Circuito o Conocimiento) o PCTO, MANTÉN la abreviación original tal cual ("Juzgado 3 Cto Penal" -> "Juzgado 3 Cto Penal"); no adivines su expansión.
 7. OBSERVACIONES:
    - Incluye fechas de reprogramación, causas secundarias o incidencias técnicas. Si no hay detalles adicionales, deja el campo vacío "".
 {bloque_resumenes}{seccion_candidatos}{seccion_aprendizaje}
@@ -3935,6 +4023,58 @@ mod tests {
         assert_eq!(
             out_exactas.juzgado,
             "Juzgado 2 de Ejecución de Penas y Medidas de Seguridad de Valledupar"
+        );
+    }
+
+    #[test]
+    fn test_r5d_mejoras_extraccion_emp_notificacion_abogado_ceros_y_tipos_especificos() {
+        // 1) Expansión de EMP -> elementos materiales probatorios
+        let exp = expandir_abreviaciones_y_compacto(
+            "Se suspende por falta de descubrimiento de EMP por la fiscalía",
+            2026,
+        );
+        assert!(exp.contains("elementos materiales probatorios"), "{}", exp);
+
+        // 2) "no notificaron al procesado" -> Juez, mientras "procesado no comparecio" sigue -> Usuario
+        let (mot_not, _) = inferir_motivos("No se realizó porque no notificaron al procesado");
+        assert_eq!(mot_not, "Juez");
+        let (mot_han, _) =
+            inferir_motivos("No se hizo juicio oral, no han podido notificar al procesado");
+        assert_eq!(mot_han, "Juez");
+        let (mot_usr, _) =
+            inferir_motivos("Procesado no compareció y no notificaron al usuario");
+        assert_eq!(mot_usr, "Usuario");
+
+        // 3) "el abogado" genérico en 1ra persona no dispara falso positivo de Defensor Confianza
+        assert!(!detectar_defensor_confianza(
+            "aplazada por solicitud de el abogado"
+        ));
+        assert!(detectar_defensor_confianza(
+            "el abogado del procesado solicita reprogramacion"
+        ));
+
+        // 4) Ceros a la izquierda y MPAL con calificador en juzgados
+        assert_eq!(
+            normalizar_juzgado_catalogo("JUZGADO 06 PENAL MPAL", &[]),
+            "Juzgado 6 Penal Municipal"
+        );
+        assert_eq!(
+            normalizar_juzgado_catalogo("Juzgado 09 Penal Municipal", &[]),
+            "Juzgado 9 Penal Municipal"
+        );
+
+        // 5) Prioridad de tipos específicos de audiencia sobre colapso genérico
+        assert_eq!(
+            mapear_tipo_audiencia_con_usuario("Formulacion de acusacion", &[]).0,
+            "Audiencia de formulación de acusación"
+        );
+        assert_eq!(
+            mapear_tipo_audiencia_con_usuario("Continuacion de juicio oral", &[]).0,
+            "Audiencia de continuación de juicio oral"
+        );
+        assert_eq!(
+            mapear_tipo_audiencia_con_usuario("Principio de oportunidad", &[]).0,
+            "Aplicación principio de oportunidad"
         );
     }
 }

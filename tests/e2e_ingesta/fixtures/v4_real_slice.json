@@ -1,0 +1,721 @@
+{
+  "app": "Lokus",
+  "version_app": "5.1.0",
+  "formato": 4,
+  "exportado": "2026-11-23T10:29:16.716664800-05:00",
+  "aciertos": 71,
+  "total_reglas": 5,
+  "total_correcciones": 5,
+  "total_ejemplos_aciertos": 71,
+  "perfiles_defensores": 4,
+  "llamadas_induccion_llm_total": 11,
+  "llamadas_extraccion_total": 99,
+  "llamadas_consolidacion_total": 6,
+  "correcciones_por_campo": {
+    "juzgado": 2,
+    "motivo": 2,
+    "observaciones": 3,
+    "tipo": 1
+  },
+  "metricas_por_campo": [
+    {
+      "campo": "radicado",
+      "evaluaciones": 108,
+      "aciertos": 106,
+      "correcciones": 2,
+      "precision_ewma": 0.9999986,
+      "confianza_q10": 0.8154,
+      "drift_activo": false
+    },
+    {
+      "campo": "tipo",
+      "evaluaciones": 108,
+      "aciertos": 106,
+      "correcciones": 2,
+      "precision_ewma": 0.9999987,
+      "confianza_q10": 0.8157,
+      "drift_activo": false
+    },
+    {
+      "campo": "juzgado",
+      "evaluaciones": 108,
+      "aciertos": 92,
+      "correcciones": 16,
+      "precision_ewma": 0.9436,
+      "confianza_q10": 0.7411,
+      "drift_activo": false
+    },
+    {
+      "campo": "motivo",
+      "evaluaciones": 108,
+      "aciertos": 96,
+      "correcciones": 12,
+      "precision_ewma": 0.9933,
+      "confianza_q10": 0.7487,
+      "drift_activo": false
+    },
+    {
+      "campo": "observaciones",
+      "evaluaciones": 108,
+      "aciertos": 84,
+      "correcciones": 24,
+      "precision_ewma": 0.9961,
+      "confianza_q10": 0.7432,
+      "drift_activo": false
+    }
+  ],
+  "metricas_por_modelo": [
+    {
+      "clave": "openai:gpt-6-luna",
+      "evaluaciones": 108,
+      "aciertos": 71,
+      "correcciones": 37,
+      "precision_media": 0.6574074074074074
+    }
+  ],
+  "preferencias_estilo": {
+    "incluir_causas_secundarias_prob": 0.75,
+    "incluir_reprogramacion_prob": 0.75,
+    "se_fija_aplazamiento_prob": 0.5,
+    "instalada_reprogramada_si_prob": 0.2857142857142857
+  },
+  "preferencias_por_defensor": {
+    "david felipe ariza perez": {
+      "incluir_causas_secundarias_prob": 0.75,
+      "incluir_reprogramacion_prob": 0.75,
+      "se_fija_aplazamiento_prob": 0.5,
+      "instalada_reprogramada_si_prob": 0.2857142857142857
+    },
+    "ivan cordoba": {
+      "incluir_causas_secundarias_prob": 0.75,
+      "incluir_reprogramacion_prob": 0.75,
+      "se_fija_aplazamiento_prob": 0.5,
+      "instalada_reprogramada_si_prob": 0.2857142857142857
+    },
+    "julio cesar rojas daza": {
+      "incluir_causas_secundarias_prob": 0.75,
+      "incluir_reprogramacion_prob": 0.75,
+      "se_fija_aplazamiento_prob": 0.5,
+      "instalada_reprogramada_si_prob": 0.2857142857142857
+    }
+  },
+  "defensores_directorio": [
+    {
+      "clave": "camilo pino",
+      "nombre": "Camilo Pino",
+      "aciertos": 0,
+      "correcciones": 0,
+      "tasa_acierto": 0.0,
+      "por_campo": []
+    },
+    {
+      "clave": "david felipe ariza perez",
+      "nombre": "David Felipe Ariza Perez",
+      "aciertos": 41,
+      "correcciones": 12,
+      "tasa_acierto": 0.7735849056603774,
+      "por_campo": []
+    },
+    {
+      "clave": "ivan cordoba",
+      "nombre": "Ivan Cordoba",
+      "aciertos": 16,
+      "correcciones": 16,
+      "tasa_acierto": 0.5,
+      "por_campo": []
+    },
+    {
+      "clave": "julio cesar rojas daza",
+      "nombre": "Julio Cesar Rojas Daza",
+      "aciertos": 14,
+      "correcciones": 0,
+      "tasa_acierto": 1.0,
+      "por_campo": []
+    }
+  ],
+  "resumen_patrones_generales": {
+    "total_defensores_activos": 4,
+    "top_juzgados_globales": [
+      ["Juzgado 9 Penal Municipal", 13],
+      ["Juzgado 11 Penal Municipal", 12],
+      ["Juzgado 2 Promiscuo del Circuito de Aguachica", 9],
+      ["Juzgado 1 Promiscuo Municipal de San [PROCESADO]", 7],
+      ["Juzgado 10 Penal Municipal", 7]
+    ],
+    "top_tipos_globales": [
+      ["Audiencia de juicio oral", 45],
+      ["Audiencia concentrada", 32],
+      ["Audiencia de formulacion de acusacion", 10],
+      ["Aplicación principio de oportunidad", 7],
+      ["Audiencia de continuacion de juicio oral", 6]
+    ],
+    "top_horas_globales": [
+      [8, 17],
+      [9, 11],
+      [10, 10],
+      [7, 9],
+      [14, 9]
+    ],
+    "reglas_transversales_promovidas": 0,
+    "errores_recurrentes_transversales": [
+      {
+        "firma": "juzgado:normalizacion",
+        "campo": "juzgado",
+        "ocurrencias": 10,
+        "defensores_distintos": 2,
+        "ejemplo_anonimizado": "JUZGADO 06 PENAL MPAL"
+      },
+      {
+        "firma": "motivo:usuario->juez",
+        "campo": "motivo",
+        "ocurrencias": 4,
+        "defensores_distintos": 1,
+        "ejemplo_anonimizado": "no han podido notificar al procesado"
+      }
+    ]
+  },
+  "grafo_asociaciones": {
+    "defensor_a_juzgados": {
+      "david felipe ariza perez": {
+        "Juzgado 9 Penal Municipal": 13,
+        "Juzgado 11 Penal Municipal": 12,
+        "Juzgado 10 Penal Municipal": 7
+      },
+      "ivan cordoba": {
+        "Juzgado 1 Promiscuo Municipal de San [PROCESADO]": 7,
+        "Juzgado 2 Promiscuo del Circuito de Aguachica": 9
+      }
+    },
+    "defensor_a_tipos": {
+      "david felipe ariza perez": {
+        "Audiencia de juicio oral": 20,
+        "Audiencia concentrada": 15
+      }
+    },
+    "defensor_sigla_a_juzgado": {
+      "david felipe ariza perez": {
+        "j9": { "Juzgado 9 Penal Municipal": 5 }
+      }
+    },
+    "prefijo_radicado_a_juzgados": {
+      "20001": { "Juzgado 9 Penal Municipal": 10 }
+    },
+    "tipo_a_juzgados": {
+      "audiencia de juicio oral": { "Juzgado 9 Penal Municipal": 8 }
+    }
+  },
+  "perfiles_sinteticos": [
+    {
+      "ambito": "*",
+      "nombre_mostrar": "General (transversal)",
+      "resumen": "Conservar radicado, tipo, fecha, hora y realización según la fuente.",
+      "version": 3,
+      "ultima_actualizacion": "2026-11-23T08:24:25.183001500-05:00"
+    },
+    {
+      "ambito": "david felipe ariza perez",
+      "nombre_mostrar": "David Felipe Ariza Perez",
+      "resumen": "Normaliza MPAL como Municipal en el nombre del juzgado y no completes ese [PROCESADO] si la fuente no lo identifica.",
+      "version": 1,
+      "ultima_actualizacion": "2026-11-23T08:08:39.929428100-05:00"
+    }
+  ],
+  "consolidaciones_ia": [
+    {
+      "id": "cons-20261122202750813-1",
+      "fecha": "2026-11-22T20:27:50.812945-05:00",
+      "ambito": "*",
+      "nombre_ambito": "General (transversal)",
+      "modelo": "openai:gpt-6-luna",
+      "acciones_reglas": [],
+      "resumen_actualizado": "Conservar radicado, tipo, fecha, hora y realización según la fuente.",
+      "sugerencias_build": [
+        {
+          "categoria": "Normalización de despachos judiciales",
+          "ambito": "*",
+          "detalle": "Dejar el [PROCESADO] vacío cuando la fuente no lo especifica y consultar las [PROCESADO] disponibles.",
+          "evidencia": "Menciones abreviadas J11 y J10"
+        }
+      ],
+      "telemetria_disparo": {
+        "ambito": "*",
+        "presion": 0.0,
+        "umbral_adaptativo": 0.0,
+        "probabilidad_disparo": 0.0,
+        "muestra_rng": 0.0,
+        "manual": true,
+        "razones": ["consolidacion_manual"]
+      }
+    }
+  ],
+  "alias_validados": [
+    {
+      "campo": "juzgado",
+      "entrada_norm": "j9pm",
+      "canonico": "Juzgado 9 Penal Municipal",
+      "defensor_alcance": "david felipe ariza perez",
+      "confianza_q10": 0.72
+    },
+    {
+      "campo": "juzgado",
+      "entrada_norm": "1 municipal",
+      "canonico": "Juzgado Promiscuo Primero Municipal de Chiriguaná",
+      "defensor_alcance": "julio cesar rojas daza",
+      "confianza_q10": 0.4202515020637829
+    }
+  ],
+  "patrones_abreviacion": [
+    {
+      "campo": "juzgado",
+      "tipo_slot": "numerico",
+      "patron_entrada": "juzgado {N} penal mpal",
+      "patron_canonico": "Juzgado {N} Penal Municipal",
+      "defensor_alcance": "david felipe ariza perez",
+      "ejemplos_distintos": 9,
+      "total_instancias": 9,
+      "consistencia": 1.0,
+      "confianza_q10": 0.7697926661012406
+    },
+    {
+      "campo": "juzgado",
+      "tipo_slot": "numerico",
+      "patron_entrada": "j {N} pma",
+      "patron_canonico": "Juzgado {N} Promiscuo Municipal de Aguachica",
+      "defensor_alcance": "ivan cordoba",
+      "ejemplos_distintos": 2,
+      "total_instancias": 2,
+      "consistencia": 1.0,
+      "confianza_q10": 0.5625247988298323
+    }
+  ],
+  "juzgados_agregados_usuario": [
+    "Juzgado 1 Promiscuo Municipal de San [PROCESADO]",
+    "Juzgado 10 Penal Maunicipal",
+    "Juzgado 10 Penal Municipal",
+    "Juzgado 11 Penal Municipal",
+    "Juzgado 2 Promiscuo del Circuito de Aguachica",
+    "Juzgado 9 Penal Municipal"
+  ],
+  "tipos_audiencia_agregados_usuario": [
+    "Aplicación principio de oportunidad",
+    "Audiencia de continuacion de juicio oral",
+    "Audiencia de formulacion de acusacion",
+    "Audiencia de sentido de fallo"
+  ],
+  "uso_catalogos": {
+    "total_audiencias_contabilizadas": 141,
+    "sembrado_inicial_completado": true,
+    "sembrado_en": "2026-11-19T11:11:25.345266200-05:00",
+    "ultima_actualizacion": "2026-11-23T10:20:19.938821500-05:00",
+    "tipos_audiencia": {
+      "total_audiencias": 141,
+      "total_con_valor": 138,
+      "total_sin_especificar": 3,
+      "porcentaje_sin_especificar": 2.13,
+      "total_opciones_predeterminadas": 17,
+      "total_opciones_lista_usuario": 4,
+      "total_opciones_otra": 0,
+      "total_opciones_eliminadas_tras_uso": 0,
+      "nuevos_no_predeterminados": [
+        { "nombre": "Audiencia de formulacion de acusacion", "origen": "agregado_usuario", "conteo": 10, "porcentaje": 7.09 },
+        { "nombre": "Aplicación principio de oportunidad", "origen": "agregado_usuario", "conteo": 7, "porcentaje": 4.96 },
+        { "nombre": "Audiencia de continuacion de juicio oral", "origen": "agregado_usuario", "conteo": 6, "porcentaje": 4.26 },
+        { "nombre": "Audiencia de sentido de fallo", "origen": "agregado_usuario", "conteo": 4, "porcentaje": 2.84 }
+      ],
+      "predeterminados_sin_uso": [
+        "Alegatos de conclusión",
+        "Audiencia de conciliación",
+        "Audiencia de imputación",
+        "Audiencia de incidente de reparación integral",
+        "Audiencia de individualización de pena",
+        "Audiencia de nulidad",
+        "Audiencia de prórroga",
+        "Audiencia de revisión de medida",
+        "Audiencia de verificación de cumplimiento"
+      ],
+      "agregados_usuario_sin_uso": [],
+      "detalle": [
+        { "nombre": "Audiencia de juicio oral", "origen": "predeterminado", "conteo": 45, "porcentaje": 31.91 },
+        { "nombre": "Audiencia concentrada", "origen": "predeterminado", "conteo": 32, "porcentaje": 22.7 },
+        { "nombre": "Audiencia de formulacion de acusacion", "origen": "agregado_usuario", "conteo": 10, "porcentaje": 7.09 },
+        { "nombre": "Aplicación principio de oportunidad", "origen": "agregado_usuario", "conteo": 7, "porcentaje": 4.96 },
+        { "nombre": "Audiencia de continuacion de juicio oral", "origen": "agregado_usuario", "conteo": 6, "porcentaje": 4.26 },
+        { "nombre": "Audiencia de sentido de fallo", "origen": "agregado_usuario", "conteo": 4, "porcentaje": 2.84 },
+        { "nombre": "Alegatos de conclusión", "origen": "predeterminado", "conteo": 0, "porcentaje": 0.0 }
+      ]
+    },
+    "juzgados": {
+      "total_audiencias": 141,
+      "total_con_valor": 135,
+      "total_sin_especificar": 6,
+      "porcentaje_sin_especificar": 4.26,
+      "total_opciones_predeterminadas": 96,
+      "total_opciones_lista_usuario": 6,
+      "total_opciones_otra": 1,
+      "total_opciones_eliminadas_tras_uso": 0,
+      "nuevos_no_predeterminados": [
+        { "nombre": "Juzgado 9 Penal Municipal", "origen": "agregado_usuario", "conteo": 13, "porcentaje": 9.22 },
+        { "nombre": "Juzgado 11 Penal Municipal", "origen": "agregado_usuario", "conteo": 12, "porcentaje": 8.51 },
+        { "nombre": "Juzgado 2 Promiscuo del Circuito de Aguachica", "origen": "agregado_usuario", "conteo": 9, "porcentaje": 6.38 },
+        { "nombre": "Juzgado 1 Promiscuo Municipal de San [PROCESADO]", "origen": "agregado_usuario", "conteo": 7, "porcentaje": 4.96 },
+        { "nombre": "Juzgado 10 Penal Municipal", "origen": "agregado_usuario", "conteo": 7, "porcentaje": 4.96 },
+        { "nombre": "fdsafeasdfe", "origen": "otra", "conteo": 1, "porcentaje": 0.71 },
+        { "nombre": "Juzgado 10 Penal Maunicipal", "origen": "agregado_usuario", "conteo": 1, "porcentaje": 0.71 }
+      ],
+      "predeterminados_sin_uso": [
+        "Juzgado 1 de Ejecución de Penas y Medidas de Seguridad de Santa Marta",
+        "Juzgado 1 de Ejecución de Penas y Medidas de Seguridad de Valledupar"
+      ],
+      "agregados_usuario_sin_uso": [],
+      "detalle": [
+        { "nombre": "Juzgado 9 Penal Municipal", "origen": "agregado_usuario", "conteo": 13, "porcentaje": 9.22 },
+        { "nombre": "Juzgado 11 Penal Municipal", "origen": "agregado_usuario", "conteo": 12, "porcentaje": 8.51 },
+        { "nombre": "Juzgado 2 Promiscuo del Circuito de Aguachica", "origen": "agregado_usuario", "conteo": 9, "porcentaje": 6.38 },
+        { "nombre": "Juzgado 1 Promiscuo Municipal de San [PROCESADO]", "origen": "agregado_usuario", "conteo": 7, "porcentaje": 4.96 },
+        { "nombre": "Juzgado 10 Penal Municipal", "origen": "agregado_usuario", "conteo": 7, "porcentaje": 4.96 },
+        { "nombre": "fdsafeasdfe", "origen": "otra", "conteo": 1, "porcentaje": 0.71 },
+        { "nombre": "Juzgado 10 Penal Maunicipal", "origen": "agregado_usuario", "conteo": 1, "porcentaje": 0.71 },
+        { "nombre": "Juzgado 1 de Ejecución de Penas y Medidas de Seguridad de Santa Marta", "origen": "predeterminado", "conteo": 0, "porcentaje": 0.0 }
+      ]
+    },
+    "horas": {
+      "total_audiencias": 141,
+      "total_con_hora": 80,
+      "total_sin_hora": 61,
+      "porcentaje_sin_hora": 43.26,
+      "horas_rapidas_predeterminadas": [
+        { "hora_24": "08:00", "etiqueta_12h": "8:00 AM", "es_hora_rapida": true, "conteo": 17, "porcentaje": 12.06 },
+        { "hora_24": "09:00", "etiqueta_12h": "9:00 AM", "es_hora_rapida": true, "conteo": 11, "porcentaje": 7.8 },
+        { "hora_24": "10:00", "etiqueta_12h": "10:00 AM", "es_hora_rapida": true, "conteo": 10, "porcentaje": 7.09 },
+        { "hora_24": "14:00", "etiqueta_12h": "2:00 PM", "es_hora_rapida": true, "conteo": 9, "porcentaje": 6.38 },
+        { "hora_24": "15:00", "etiqueta_12h": "3:00 PM", "es_hora_rapida": true, "conteo": 5, "porcentaje": 3.55 },
+        { "hora_24": "16:00", "etiqueta_12h": "4:00 PM", "es_hora_rapida": true, "conteo": 0, "porcentaje": 0.0 }
+      ],
+      "horas_rapidas_sin_uso": ["16:00"],
+      "horas_mas_frecuentes_no_rapidas": [
+        { "hora_24": "07:30", "etiqueta_12h": "7:30 AM", "es_hora_rapida": false, "conteo": 8, "porcentaje": 5.67 },
+        { "hora_24": "08:30", "etiqueta_12h": "8:30 AM", "es_hora_rapida": false, "conteo": 6, "porcentaje": 4.26 },
+        { "hora_24": "14:30", "etiqueta_12h": "2:30 PM", "es_hora_rapida": false, "conteo": 6, "porcentaje": 4.26 },
+        { "hora_24": "11:00", "etiqueta_12h": "11:00 AM", "es_hora_rapida": false, "conteo": 5, "porcentaje": 3.55 }
+      ],
+      "detalle_por_hora_exacta": [
+        { "hora_24": "08:00", "etiqueta_12h": "8:00 AM", "es_hora_rapida": true, "conteo": 17, "porcentaje": 12.06 },
+        { "hora_24": "07:30", "etiqueta_12h": "7:30 AM", "es_hora_rapida": false, "conteo": 8, "porcentaje": 5.67 }
+      ],
+      "resumen_por_franja_horaria": [
+        { "franja": "Mañana (06:00-11:59)", "conteo": 63, "porcentaje": 44.68 },
+        { "franja": "Tarde (12:00-17:59)", "conteo": 17, "porcentaje": 12.06 }
+      ]
+    }
+  },
+  "reglas": [
+    {
+      "id": "regla-20261119114551117-16",
+      "tipo_error": "estilo_observaciones",
+      "regla": "En observaciones, resume lo ocurrido en la audiencia sin presentar la fecha de una audiencia futura.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-19T11:45:51.117159800-05:00",
+      "estado": "activa",
+      "campo_objetivo": "juzgado",
+      "triggers": ["observaciones", "resume", "audiencia", "23", "10", "2026", "2"],
+      "alpha": 23.778113615751575,
+      "beta": 4.09843645900421,
+      "impresiones": 75,
+      "aciertos_directos": 70,
+      "fallos_directos": 5,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-23T08:30:27.346029900-05:00",
+      "confianza_llm": 0.91,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261119114247552-12"
+    },
+    {
+      "id": "regla-20261119115511987-30",
+      "tipo_error": "motivo",
+      "regla": "Cuando la audiencia no se realiza porque no se ha podido notificar al procesado, atribuya el motivo al Juez.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-19T11:55:11.987604300-05:00",
+      "estado": "retirada",
+      "campo_objetivo": "motivo",
+      "triggers": ["audiencia", "no", "realiza", "notificar", "25", "septiembre"],
+      "alpha": 4.5863192576,
+      "beta": 4.844735999999999,
+      "impresiones": 5,
+      "aciertos_directos": 3,
+      "fallos_directos": 2,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "*",
+      "defensores_confirmantes": [],
+      "ultima_actualizacion": "2026-11-22T22:12:03.868918800-05:00",
+      "confianza_llm": 0.99,
+      "aciertos_sombra": 3,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261119115444578-26"
+    },
+    {
+      "id": "regla-20261122214447804-8",
+      "tipo_error": "motivo",
+      "regla": "Si el texto menciona únicamente la solicitud de un abogado y no lo identifica como defensor de confianza, clasifique el motivo como defensor público.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-22T21:44:47.803314100-05:00",
+      "estado": "activa",
+      "campo_objetivo": "tipo",
+      "triggers": ["solicitud", "abogado", "confianza", "2", "j2pca", "20001"],
+      "alpha": 17.532084509933693,
+      "beta": 3.8153726976,
+      "impresiones": 28,
+      "aciertos_directos": 27,
+      "fallos_directos": 1,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": ["ivan cordoba"],
+      "ultima_actualizacion": "2026-11-22T22:25:28.047931900-05:00",
+      "confianza_llm": 0.96,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261122214306987-6"
+    },
+    {
+      "id": "regla-20261122220534348-37",
+      "tipo_error": "estilo_observaciones",
+      "regla": "Cuando se reporta que la audiencia se realizó, redacta las observaciones con la fórmula breve Se realizó audiencia de manera adecuada.",
+      "refuerzos": 3,
+      "actualizada": "2026-11-22T22:05:34.347753100-05:00",
+      "estado": "activa",
+      "campo_objetivo": "observaciones",
+      "triggers": ["audiencia", "realizo", "observaciones", "adecuada"],
+      "alpha": 14.0,
+      "beta": 2.0,
+      "impresiones": 20,
+      "aciertos_directos": 18,
+      "fallos_directos": 2,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "*",
+      "defensores_confirmantes": ["david felipe ariza perez", "ivan cordoba"],
+      "ultima_actualizacion": "2026-11-23T08:30:27.346029900-05:00",
+      "confianza_llm": 0.95,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261122220400000-1"
+    },
+    {
+      "id": "regla-20261122221500000-99",
+      "tipo_error": "juzgado",
+      "regla": "Registrar el despacho Juzgado 1 Promiscuo Municipal de San [PROCESADO] cuando el texto diga San Alberto.",
+      "refuerzos": 1,
+      "actualizada": "2026-11-22T22:15:00.000000000-05:00",
+      "estado": "activa",
+      "campo_objetivo": "juzgado",
+      "triggers": ["san", "[PROCESADO]", "promiscuo", "municipal"],
+      "alpha": 5.0,
+      "beta": 2.0,
+      "impresiones": 5,
+      "aciertos_directos": 4,
+      "fallos_directos": 1,
+      "origen": "mitigacion_modelo",
+      "modelo_alcance": "openai:gpt-6-luna",
+      "defensor_alcance": "ivan cordoba",
+      "defensores_confirmantes": ["ivan cordoba"],
+      "ultima_actualizacion": "2026-11-23T08:00:00.000000000-05:00",
+      "confianza_llm": 0.88,
+      "aciertos_sombra": 0,
+      "confirmaciones_sombra": 0,
+      "origen_correccion_id": "corr-20261122215900000-2"
+    }
+  ],
+  "correcciones": [
+    {
+      "id": "corr-20261119114247552-12",
+      "registrada": "2026-11-19T11:42:47.552145600-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "23/10/2026\t2:30 pm\t[PROCESADO]\tFORMULACION DE ACUSACION\tfabricación Trafico porte o tenencia de [PROCESADO] de fuego\t[RADICADO]\tSe realiza la audiencia el juez aprueba la acusación",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de acusación",
+        "fecha": "23/10/2026",
+        "hora": "14:30",
+        "juzgado": "Juzgado 3 Cto Penal",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "El juez aprobó la acusación y fijó audiencia para el 22/01/2027."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de acusación",
+        "fecha": "23/10/2026",
+        "hora": "14:30",
+        "juzgado": "",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizo audiencia de manera adecuada y el juez aprobó la acusación"
+      },
+      "campos": [
+        { "campo": "juzgado", "valor_ia": "Juzgado 3 Cto Penal", "valor_usuario": "" },
+        { "campo": "observaciones", "valor_ia": "El juez aprobó la acusación y fijó audiencia para el 22/01/2027.", "valor_usuario": "Se realizo audiencia de manera adecuada y el juez aprobó la acusación" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "En observaciones no presentar fecha futura",
+      "regla_id_asociada": "regla-20261119114551117-16",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-20261119115444578-26",
+      "registrada": "2026-11-19T11:54:44.578-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "25 DE SEPTIEMBRE [PROCESADO] Rad: [RADICADO] J11 no se hizo audiencia juicio oral, no han podido notificar al procesado. Próxima fecha: 20 de noviembre.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "25/09/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Usuario",
+        "observaciones": "No se realizó porque no han podido notificar al procesado. Próxima fecha 20/11/2026."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "25/09/2026",
+        "hora": "",
+        "juzgado": "Juzgado 11 Penal Municipal",
+        "realizada": "NO",
+        "motivo": "Juez",
+        "observaciones": "No se realizó porque el despacho no ha podido notificar al procesado."
+      },
+      "campos": [
+        { "campo": "motivo", "valor_ia": "Usuario", "valor_usuario": "Juez" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "",
+      "regla_id_asociada": "regla-20261119115511987-30",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "david felipe ariza perez"
+    },
+    {
+      "id": "corr-20261122214306987-6",
+      "registrada": "2026-11-22T21:43:06.987-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "Audiencia en J2PCA por porte de [PROCESADO] de fuego, una [PROCESADO] de 55 meses, aplazada por solicitud del abogado.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "22/11/2026",
+        "hora": "09:00",
+        "juzgado": "Juzgado 2 Promiscuo del Circuito de Aguachica",
+        "realizada": "NO",
+        "motivo": "Defensor Confianza",
+        "observaciones": "Aplazada por solicitud del abogado."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia de juicio oral",
+        "fecha": "22/11/2026",
+        "hora": "09:00",
+        "juzgado": "Juzgado 2 Promiscuo del Circuito de Aguachica",
+        "realizada": "NO",
+        "motivo": "Defensor Público",
+        "observaciones": "Aplazada por solicitud del defensor."
+      },
+      "campos": [
+        { "campo": "motivo", "valor_ia": "Defensor Confianza", "valor_usuario": "Defensor Público" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "",
+      "regla_id_asociada": "regla-20261122214447804-8",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "ivan cordoba"
+    },
+    {
+      "id": "corr-20261122215900000-2",
+      "registrada": "2026-11-22T21:59:00.000-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "Audiencia concentrada en Juzgado 1 Promiscuo Municipal de San [PROCESADO] por [RADICADO]",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "22/11/2026",
+        "hora": "10:00",
+        "juzgado": "Juzgado 1 Promiscuo Municipal de San [PROCESADO]",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó audiencia de manera adecuada."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia concentrada",
+        "fecha": "22/11/2026",
+        "hora": "10:00",
+        "juzgado": "Juzgado 1 Promiscuo Municipal de San [PROCESADO]",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó audiencia de manera adecuada."
+      },
+      "campos": [
+        { "campo": "juzgado", "valor_ia": "", "valor_usuario": "Juzgado 1 Promiscuo Municipal de San [PROCESADO]" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "",
+      "regla_id_asociada": "regla-20261122221500000-99",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "ivan cordoba"
+    },
+    {
+      "id": "corr-20261122220400000-1",
+      "registrada": "2026-11-22T22:04:00.000-05:00",
+      "proveedor": "openai",
+      "modelo": "gpt-6-luna",
+      "texto_original": "Audiencia en Juzgado 10 Penal Maunicipal sin novedad.",
+      "prediccion": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia preliminar",
+        "fecha": "22/11/2026",
+        "hora": "08:00",
+        "juzgado": "Juzgado 10 Penal Maunicipal",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Sin novedad."
+      },
+      "final_usuario": {
+        "radicado": "[PROCESADO] - [RADICADO]",
+        "tipo": "Audiencia preliminar",
+        "fecha": "22/11/2026",
+        "hora": "08:00",
+        "juzgado": "Juzgado 10 Penal Municipal",
+        "realizada": "SI",
+        "motivo": "",
+        "observaciones": "Se realizó audiencia de manera adecuada."
+      },
+      "campos": [
+        { "campo": "juzgado", "valor_ia": "Juzgado 10 Penal Maunicipal", "valor_usuario": "Juzgado 10 Penal Municipal" }
+      ],
+      "estado": "analizada",
+      "regla_generada": "",
+      "regla_id_asociada": "regla-20261122220534348-37",
+      "pregunta_ia": "",
+      "nota_usuario": "",
+      "exportada": true,
+      "defensor_clave": "david felipe ariza perez"
+    }
+  ]
+}

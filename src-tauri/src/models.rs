@@ -12,34 +12,43 @@ pub const MOTIVOS_LABELS: [&str; 8] = [
     "Defensor Público",
 ];
 
-pub const TIPOS_AUDIENCIA: [&str; 18] = [
+pub const TIPOS_AUDIENCIA: [&str; 27] = [
     "Alegatos de conclusión",
+    "Aplicación principio de oportunidad",
     "Audiencia concentrada",
     "Audiencia de acusación",
+    "Audiencia de celebración de preacuerdo",
     "Audiencia de conciliación",
+    "Audiencia de continuación de juicio oral",
     "Audiencia de control de legalidad",
+    "Audiencia de formulación de acusación",
     "Audiencia de individualización de pena",
     "Audiencia de imputación",
     "Audiencia de incidente de reparación integral",
     "Audiencia de juicio oral",
+    "Audiencia de lectura de decisión",
+    "Audiencia de libertad por vencimiento de términos",
     "Audiencia de medidas de aseguramiento",
     "Audiencia de nulidad",
     "Audiencia de preclusión",
     "Audiencia de prórroga",
     "Audiencia de revisión de medida",
+    "Audiencia de sentido de fallo",
+    "Audiencia de verificación de allanamiento a cargos",
     "Audiencia de verificación de cumplimiento",
     "Audiencia preliminar",
     "Audiencia preparatoria",
+    "Sentencia",
     "Otra",
 ];
 
 pub const HORAS_RAPIDAS: [(&str, &str); 6] = [
+    ("07:30", "7:30 AM"),
     ("08:00", "8:00 AM"),
     ("09:00", "9:00 AM"),
     ("10:00", "10:00 AM"),
     ("14:00", "2:00 PM"),
     ("15:00", "3:00 PM"),
-    ("16:00", "4:00 PM"),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
