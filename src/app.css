@@ -1178,7 +1178,9 @@ body.is-dragging-tree {
 .workspace-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: clamp(14px, 2vw, 28px) clamp(14px, 2.4vw, 34px);
+  padding-inline: clamp(14px, 2.4vw, 34px);
+  padding-block: clamp(14px, 2vw, 28px);
+  padding-block-end: calc(clamp(14px, 2vw, 28px) + env(safe-area-inset-bottom, 0px) + 16px);
   scroll-padding-block: 16px;
 }
 
@@ -3503,6 +3505,7 @@ dialog.modal-overflow-visible .modal-footer {
   .header-right {
     order: 2;
     margin-inline-start: auto;
+    min-width: 0;
     gap: 6px;
   }
   .workspace-header .mini-icon-btn,
@@ -3538,7 +3541,9 @@ dialog.modal-overflow-visible .modal-footer {
   }
   .extract-panel.is-unconfigured .extract-panel-head > :first-child {
     flex: 1 1 100%;
+    display: block;
     max-width: none;
+    line-height: 1.32;
   }
   .extract-panel.is-unconfigured .btn {
     min-height: 36px;
@@ -3571,10 +3576,28 @@ dialog.modal-overflow-visible .modal-footer {
   }
   .workspace-scroll {
     padding: 12px;
+    padding-bottom: calc(22px + env(safe-area-inset-bottom, 0px));
   }
   .dossier-form-card {
     padding: 14px;
     gap: 14px;
+  }
+  .dossier-actions {
+    gap: 8px;
+  }
+  .dossier-actions-right {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+    gap: 8px;
+  }
+  .dossier-actions-right .action-with-shortcut {
+    justify-content: space-between;
+    width: 100%;
+    gap: 10px;
+  }
+  .dossier-actions-right .btn {
+    min-height: 36px;
   }
   .inline-action-link {
     min-height: 32px;
@@ -3612,7 +3635,11 @@ dialog.modal-overflow-visible .modal-footer {
     font-size: 12px;
   }
   .calendar-popover {
-    width: min(286px, calc(100vw - 20px));
+    width: min(272px, calc(100vw - 24px));
+    padding: 7px;
+  }
+  .calendar-header {
+    padding-bottom: 4px;
   }
   .calendar-select-trigger {
     height: 32px;
@@ -3625,6 +3652,9 @@ dialog.modal-overflow-visible .modal-footer {
   .calendar-day {
     height: 30px;
     font-size: 12px;
+  }
+  .calendar-grid {
+    gap: 1px;
   }
   .calendar-weekdays {
     font-size: 11px;
@@ -3655,6 +3685,11 @@ dialog.modal-overflow-visible .modal-footer {
   }
   .motivos-grid {
     grid-template-columns: 1fr;
+  }
+  .dossier-actions-right {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-end;
   }
 }
 
