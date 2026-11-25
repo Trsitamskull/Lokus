@@ -932,7 +932,35 @@ fn construir_url_autorizacion(
 
 fn abrir_navegador_sistema(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    let resultado = Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let url_ps = url.replace('\'', "''");
+        let script = format!("Start-Process '{}'", url_ps);
+        return Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &script,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .or_else(|_| {
+                Command::new("rundll32")
+                    .args(["url.dll,FileProtocolHandler", url])
+                    .spawn()
+            })
+            .map(|_| ())
+            .map_err(|e| {
+                format!(
+                    "No se pudo abrir el navegador para iniciar sesión con Google: {}",
+                    e
+                )
+            });
+    }
 
     #[cfg(target_os = "macos")]
     let resultado = Command::new("open").arg(url).spawn();
@@ -940,6 +968,7 @@ fn abrir_navegador_sistema(url: &str) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let resultado = Command::new("xdg-open").arg(url).spawn();
 
+    #[cfg(not(target_os = "windows"))]
     resultado
         .map(|_| ())
         .map_err(|e| format!("No se pudo abrir el navegador para iniciar sesión con Google: {}", e))

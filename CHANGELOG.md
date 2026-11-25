@@ -1,5 +1,10 @@
 # Historial de Versiones (Lokus)
 
+## [5.4.1] - 2026-11-24
+
+### Corrección de errores (Bugs)
+- **Inicio de sesión con Google en Windows (`Error 400: Required parameter is missing: response_type`):** Se reemplazó la apertura del navegador vía `cmd /C start` (que truncaba la URL de OAuth en el primer `&`) por `powershell Start-Process` con respaldo `rundll32`, enviando íntegros todos los parámetros `response_type`, `redirect_uri`, `scope`, `code_challenge` y `state`.
+
 ## [5.4.0] - 2026-11-24
 
 ### Nuevas funciones
